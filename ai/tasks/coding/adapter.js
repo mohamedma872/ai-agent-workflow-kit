@@ -72,11 +72,19 @@ function fill(template, vars) { return String(template).replace(/\{(\w+)\}/g, (m
 function answerFrom(agent, stdout, lastMessageFile) {
   const spec = agent.result || {};
   let json = null;
-  try { json = JSON.parse(stdout); } catch { /* not JSON */ }
-  if (spec.json_field && json && typeof json[spec.json_field] === 'string') {return { answer: json[spec.json_field], json };}
-  if (spec.file && fs.existsSync(lastMessageFile)) {return { answer: fs.readFileSync(lastMessageFile, 'utf8'), json };}
-  if (json && typeof json.result === 'string') {return { answer: json.result, json };}
-  return { answer: String(stdout || '').slice(-4000), json };
+  try { json = JSON.parse(stdout); } catch { /* not a single JSON document */ }
+  // event streams (codex --json prints JSON lines): keep the last event carrying token usage —
+  // Codex reports tokens, not dollars, so this is what the ledger can record for it
+  let usage = null;
+  if (!json) {
+    for (const line of String(stdout || '').split('\n')) {
+      try { const ev = JSON.parse(line); if (ev && ev.usage && typeof ev.usage === 'object') {usage = ev.usage;} } catch { /* not JSON */ }
+    }
+  }
+  if (spec.json_field && json && typeof json[spec.json_field] === 'string') {return { answer: json[spec.json_field], json, usage };}
+  if (spec.file && fs.existsSync(lastMessageFile)) {return { answer: fs.readFileSync(lastMessageFile, 'utf8'), json, usage };}
+  if (json && typeof json.result === 'string') {return { answer: json.result, json, usage };}
+  return { answer: String(stdout || '').slice(-4000), json, usage };
 }
 
 module.exports = {
@@ -119,10 +127,10 @@ module.exports = {
     meta.timed_out = !!(res.error && res.error.code === 'ETIMEDOUT') || res.signal === 'SIGTERM';
     if (res.error && !meta.timed_out) {meta.spawn_error = res.error.message;}
     fs.writeFileSync(path.join(runDir, 'agent-stderr.log'), res.stderr || '');
-    const { answer, json } = answerFrom(agent, res.stdout || '', lastMessageFile);
+    const { answer, json, usage } = answerFrom(agent, res.stdout || '', lastMessageFile);
     const cost = agent.cost && json && typeof json[agent.cost.json_field] === 'number' ? json[agent.cost.json_field] : null;
     const duration = agent.duration && json && typeof json[agent.duration.json_field] === 'number' ? json[agent.duration.json_field] / 60000 : meta.wall_min;
-    fs.writeFileSync(path.join(runDir, 'agent-output.json'), JSON.stringify({ agent: agent.name, answer, cost_usd: cost, duration_min: duration, exit_status: res.status, raw: json || (res.stdout || '').slice(-20000) }, null, 2));
+    fs.writeFileSync(path.join(runDir, 'agent-output.json'), JSON.stringify({ agent: agent.name, answer, cost_usd: cost, usage, duration_min: duration, exit_status: res.status, raw: json || (res.stdout || '').slice(-20000) }, null, 2));
     // end state (incl. files written into ignored paths — status "!!")
     const changes = changedFiles(ignoredBefore);
     fs.writeFileSync(path.join(runDir, 'changed-files.json'), JSON.stringify(changes, null, 2));
@@ -175,7 +183,7 @@ module.exports = {
       cost_usd: typeof out.cost_usd === 'number' ? out.cost_usd : null,
       duration_min: typeof out.duration_min === 'number' ? out.duration_min : (meta.wall_min ?? null),
       models: [],
-      extra: { agent: out.agent, changed_files: files, violations, verify: verify.map(v => ({ cmd: v.cmd, status: v.status })) },
+      extra: { agent: out.agent, usage: out.usage || null, changed_files: files, violations, verify: verify.map(v => ({ cmd: v.cmd, status: v.status })) },
     };
   },
 

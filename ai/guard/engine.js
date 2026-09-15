@@ -13,7 +13,9 @@
  *
  * Who calls it (all read JSON on stdin, print a decision on stdout, exit 0):
  *   Claude Code   .claude/settings.json  PreToolUse → node ai/guard/engine.js        (native format)
- *   Codex CLI     .codex/hooks.json      PreToolUse → node ai/guard/engine.js        (same format)
+ *   Codex CLI     .codex/hooks.json      PreToolUse → node ai/guard/engine.js --agent codex
+ *                 (same format; Codex ignores an "ask" answer and runs the call, so with --agent codex an ask
+ *                  becomes a deny; Codex sends apply_patch with the patch text under tool_input.command)
  *   Cursor        .cursor/hooks.json     before* / preToolUse → ai/guard/cursor-hook.js (payload adapter)
  *   git           .husky/pre-commit, pre-push → ai/guard/git-pre-commit.js / git-pre-push.js (every agent, every human)
  *
@@ -259,7 +261,7 @@ function fileRules(tool, input, ctx, deny, ask) {
 
 // Codex edits files through apply_patch: one patch, several files.
 function patchRules(input, ctx, deny, ask) {
-  const patch = String(input.patch || input.input || input.content || '');
+  const patch = String(input.patch || input.command || input.input || input.content || ''); // Codex ≥ 0.150 sends the patch as "command"
   const files = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete|Move to) File: (.+)$/gm)].map(m => m[1].trim());
   for (const f of files) {
     if (ctx.isSecretPath(f)) {ask(`secrets shield: writing a credential file (${ctx.rel(f)}) — the user does this by hand`);}
@@ -383,7 +385,10 @@ async function budgetRule(payload, ctx, ask) {
 
 const FILE_TOOLS = ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 
-async function evaluate(payload) {
+// agents whose hook protocol has no "ask": Codex ignores an ask answer and runs the call, so an ask must become a deny
+const NO_ASK_AGENTS = ['codex'];
+
+async function evaluate(payload, opts = {}) {
   const verdicts = [];
   const deny = r => verdicts.push({ decision: 'deny', reason: r });
   const ask = r => verdicts.push({ decision: 'ask', reason: r });
@@ -405,8 +410,13 @@ async function evaluate(payload) {
   } catch (e) {
     process.stderr.write(`ai-guard: internal error, allowing (${e.message})\n`);
   }
-  const decision = verdicts.some(v => v.decision === 'deny') ? 'deny' : verdicts.length ? 'ask' : 'allow';
-  return { decision, reasons: verdicts.filter(v => v.decision === decision).map(v => v.reason) };
+  let decision = verdicts.some(v => v.decision === 'deny') ? 'deny' : verdicts.length ? 'ask' : 'allow';
+  let reasons = verdicts.filter(v => v.decision === decision).map(v => v.reason);
+  if (decision === 'ask' && NO_ASK_AGENTS.includes(String(opts.agent || '').toLowerCase())) {
+    decision = 'deny';
+    reasons = reasons.map(r => `needs the user's OK, and ${opts.agent} hooks cannot ask — refused; ask the user to run it, or do it in Claude Code / Cursor where the fence can ask: ${r}`);
+  }
+  return { decision, reasons };
 }
 
 // ---------------------------------------------------------------- --check / --explain
@@ -517,6 +527,10 @@ async function selftest() {
     ['Codex apply_patch on AGENTS.md → ask', P('apply_patch', { patch: '*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-a\n+b\n*** End Patch' }), {}, 'ask'],
     ['Codex apply_patch with token → deny', P('apply_patch', { patch: `*** Begin Patch\n*** Add File: notes.md\n+token ${secret}\n*** End Patch` }), {}, 'deny'],
     ['Codex apply_patch normal → allow', P('apply_patch', { patch: '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** End Patch' }), {}, 'allow'],
+    ['Codex patch under "command" on AGENTS.md → ask', P('apply_patch', { command: '*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-a\n+b\n*** End Patch' }), {}, 'ask'],
+    ['Codex patch under "command" with token → deny', P('apply_patch', { command: `*** Begin Patch\n*** Add File: notes.md\n+token ${secret}\n*** End Patch` }), {}, 'deny'],
+    ['--agent codex: sudo (ask) → deny', P('Bash', { command: 'sudo -n true' }), {}, 'deny', null, { agent: 'codex' }],
+    ['--agent codex: git status → allow', P('Bash', { command: 'git status' }), {}, 'allow', null, { agent: 'codex' }],
     ['shell rewrite of settings → ask', P('Bash', { command: "sed -i '' 's/a/b/' .claude/settings.json" }), {}, 'ask'],
     ['node one-liner rewriting guard.yaml → ask', P('Bash', { command: 'node -e "require(\'fs\').writeFileSync(\'ai/guard.yaml\', \'{}\')"' }), {}, 'ask'],
     ['grep in the engine → allow', P('Bash', { command: 'grep -n budget ai/guard/engine.js' }), {}, 'allow'],
@@ -578,12 +592,12 @@ async function selftest() {
   }
   const ENV = ['AI_EVAL', 'QC_EVAL', 'AI_SESSION_BUDGET_USD', 'CLAUDE_PROJECT_DIR'];
   let failed = 0;
-  for (const [name, payload, env, expect, setup] of cases) {
+  for (const [name, payload, env, expect, setup, opts] of cases) {
     if (setup) {setup();}
     const saved = {};
     for (const k of ENV) { saved[k] = process.env[k]; delete process.env[k]; }
     Object.assign(process.env, env);
-    const r = await evaluate(payload);
+    const r = await evaluate(payload, opts || {});
     for (const k of ENV) { if (saved[k] === undefined) {delete process.env[k];} else {process.env[k] = saved[k];} }
     const ok = r.decision === expect;
     if (!ok) {failed++;}
@@ -608,7 +622,8 @@ function main() {
     process.stdin.on('end', async () => {
       let payload;
       try { payload = JSON.parse(raw || '{}'); } catch { process.exit(0); }
-      const r = await evaluate(payload);
+      const agentIdx = process.argv.indexOf('--agent'); // .codex/hooks.json passes --agent codex
+      const r = await evaluate(payload, { agent: agentIdx > -1 ? process.argv[agentIdx + 1] : undefined });
       if (r.decision !== 'allow') {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: r.decision, permissionDecisionReason: `[ai-guard] ${r.reasons.join(' | ')}` },

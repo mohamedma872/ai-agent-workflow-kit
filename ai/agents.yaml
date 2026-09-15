@@ -26,7 +26,13 @@ cursor:
 
 codex:
   label: OpenAI Codex CLI (codex exec)
-  command: [codex, exec, --sandbox, workspace-write, --ask-for-approval, never, -C, "{cwd}", --json, -o, "{last_message_file}", "{prompt}"]
+  command: [codex, exec, --sandbox, workspace-write, -c, approval_policy=never, --dangerously-bypass-hook-trust, -C, "{cwd}", --json, -o, "{last_message_file}", "{prompt}"]
   result: { file: "{last_message_file}" }
-  guard: hooks (.codex/hooks.json → ai/guard/engine.js) + Codex sandbox
-  note: not installed on this machine on 2026-09-15 — install with `npm i -g @openai/codex`
+  guard: hooks (.codex/hooks.json → ai/guard/engine.js --agent codex) + Codex sandbox
+  note: >-
+    codex-cli 0.154.0 installed 2026-09-15 (`npm i -g @openai/codex`), signed in with ChatGPT (`codex login status`).
+    Codex only runs a project hook after you trust it once in the interactive `codex` (review screen at start-up);
+    headless trials pass --dangerously-bypass-hook-trust instead — the flag OpenAI provides for automation that vets
+    its own hooks, and this hook is our own fence. `--ask-for-approval` no longer exists on `exec`; approval_policy=never
+    is the config key. Codex cannot "ask", so the fence turns every ask into a deny for it (engine --agent codex).
+    In a git worktree Codex reads .codex/hooks.json from the main checkout.

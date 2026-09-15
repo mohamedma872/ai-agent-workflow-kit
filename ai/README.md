@@ -58,7 +58,7 @@ started from a plain terminal (not from inside the agent being measured).
 ```bash
 node ai/guard/engine.js --check          # validate every YAML rule file + agents.yaml
 node ai/guard/engine.js --explain        # rules in words + which agents are wired
-node ai/guard/engine.js --selftest       # 66 behaviour checks, no agent needed
+node ai/guard/engine.js --selftest       # 70 behaviour checks, no agent needed
 echo '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | node ai/guard/engine.js   # ask the engine about one call
 ```
 
@@ -156,7 +156,7 @@ AGENTS.md                       ← the instructions EVERY agent reads (Codex na
 ├── agents/                     ← mobile-architect · android-expert · ios-expert · security-reviewer · qa-engineer · performance-reviewer · code-reviewer
 └── hooks/                      ← ai-guard.js (shim → engine) · format-on-edit.js
 .cursor/hooks.json              ← Cursor wiring: beforeShellExecution / beforeReadFile / beforeMCPExecution / preToolUse → ai/guard/cursor-hook.js  (+ rules/ai-guardrails.mdc)
-.codex/hooks.json               ← Codex wiring: PreToolUse → ai/guard/engine.js (same contract as Claude Code)
+.codex/hooks.json               ← Codex wiring: PreToolUse → ai/guard/engine.js --agent codex (same contract as Claude Code; Codex can't ask, so ask → deny)
 .husky/pre-commit, pre-push     ← git wiring for everyone → ai/guard/git-pre-commit.js, git-pre-push.js
 ```
 
@@ -573,7 +573,12 @@ for it to exit (timeout 20 min), captures `git status` + `git diff` +
 untracked file contents as `diff.patch` / `changed-files.json`, extracts the
 final answer from the agent's JSON (`result`) or last-message file, runs the
 case's `verify` commands, writes `verify.json`, then restores the tree
-(`git checkout -- <files>`, deletes new files). **Verdict** = PASS when every
+(`git checkout -- <files>`, deletes new files). Files the agent writes into
+**ignored** paths are caught too: this repo ignores `__tests__/` and
+`*.test.*`, so `git status` would never show a new test; the adapter snapshots
+the ignored files before the trial and lists new ones with status `!!`
+(graded, in the diff, removed on restore — a stale test can't leak into the
+next trial). **Verdict** = PASS when every
 constraint holds (`allowed_files`, `max_changed_files`, `must_not_contain`)
 and every verify command exits 0.
 
@@ -588,7 +593,7 @@ cases, same grader, same noise-floor rule: with 1 trial each the floor is
 |---|---|---|---|---|
 | Claude Code | `AGENTS.md` via `.claude/rules/ai-tasks.md` (+ `~/.claude/CLAUDE.md`) | `.claude/settings.json` PreToolUse → `ai/guard/engine.js` | pre-commit, pre-push | `claude -p "{prompt}" --output-format json --max-budget-usd {budget} --permission-mode bypassPermissions` |
 | Cursor (IDE + CLI) | `.cursor/rules/ai-guardrails.mdc` → `AGENTS.md` | `.cursor/hooks.json` beforeShellExecution / beforeReadFile / beforeMCPExecution / preToolUse → `ai/guard/cursor-hook.js` | pre-commit, pre-push | `cursor-agent -p --force --output-format json "{prompt}"` |
-| Codex CLI | `AGENTS.md` natively | `.codex/hooks.json` PreToolUse → `ai/guard/engine.js` (same JSON contract as Claude Code; Codex ≥ 0.114) + Codex's own sandbox | pre-commit, pre-push | `codex exec --sandbox workspace-write --ask-for-approval never -C {cwd} --json -o {last_message_file} "{prompt}"` |
+| Codex CLI | `AGENTS.md` natively | `.codex/hooks.json` PreToolUse → `ai/guard/engine.js --agent codex` (same JSON contract as Claude Code, verified on codex-cli 0.154; Codex has no "ask", so the fence answers deny instead) + Codex's own sandbox | pre-commit, pre-push | `codex exec --sandbox workspace-write -c approval_policy=never --dangerously-bypass-hook-trust -C {cwd} --json -o {last_message_file} "{prompt}"` |
 | Anything else (scripts, humans) | `AGENTS.md` | — | pre-commit (staged secrets / credential files), pre-push (force pushes) | — |
 
 What each layer can and cannot do:
@@ -596,6 +601,15 @@ What each layer can and cannot do:
 - **Hooks** see the action before it happens and can deny or ask. Claude Code
   and Codex share one payload format; Cursor's differs only in field names, so
   the adapter is ~40 lines. Cursor's `afterFileEdit` is post-hoc and not used.
+  Codex specifics (measured on codex-cli 0.154, 2026-09-15): it sends the
+  Claude-style JSON with `tool_name: Bash` for shell and `apply_patch` for
+  edits, with the patch text under `tool_input.command`; it **ignores an
+  `ask` answer and runs the call**, so `.codex/hooks.json` passes
+  `--agent codex` and the engine turns every ask into a deny whose reason
+  tells the agent to hand that step to the user. A project hook runs only
+  after it is trusted once in the interactive `codex` (review screen at
+  start-up) or, for headless runs, with `--dangerously-bypass-hook-trust`.
+  In a git worktree Codex reads `.codex/hooks.json` from the main checkout.
 - **Git hooks** see only what is committed or pushed, but they see it for
   everyone. They refuse staged credential files, token-shaped content, a
   task's declared secret values, and non-fast-forward pushes. Bypass is the
