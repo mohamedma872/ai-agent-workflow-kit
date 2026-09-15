@@ -1,3 +1,6 @@
+> **Start with the [README at the repo root](../README.md)** — it explains the idea in plain words.
+> This file is the full reference for when you need every detail.
+
 # AI tasks in this repo — complete architecture reference
 
 Version 2.0 · 2026-09-15 · agent-neutral · this copy is the public kit (client-specific tasks removed)
