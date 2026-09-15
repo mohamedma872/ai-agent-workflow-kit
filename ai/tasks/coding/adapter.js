@@ -149,9 +149,12 @@ module.exports = {
       { kind: 'answer', text: answer },
       ...verify.map(v => ({ kind: 'verify', text: `${v.cmd} → ${v.status === 0 ? 'pass' : 'fail'}` })),
     ];
+    // a non-zero exit (not signed in, crashed, refused to start) is plumbing, not a model result
+    const ran = !meta.timed_out && !meta.spawn_error && (out.exit_status === 0 || out.exit_status === null);
+    if (!ran) {violations.push(`agent did not complete (exit ${out.exit_status}${meta.timed_out ? ', timed out' : ''}) — see agent-output.json / agent-stderr.log`);}
     return {
       outputs,
-      complete: !meta.timed_out && !meta.spawn_error,
+      complete: ran,
       verdict: violations.length ? 'FAIL' : 'PASS',
       cost_usd: typeof out.cost_usd === 'number' ? out.cost_usd : null,
       duration_min: typeof out.duration_min === 'number' ? out.duration_min : (meta.wall_min ?? null),

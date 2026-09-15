@@ -169,7 +169,9 @@ function gradeCase(task, c, opts) {
   row.missed = missed;
   row.recall = expected.length ? matched.length / expected.length : null;
 
-  const forbidden = (opts.catalog || []).filter(e => !expected.some(x => x.id === e.id));
+  // phantoms are for report-style signatures (no `in:`): a famous finding reported where it
+  // was not seeded. Diff/answer keywords of other coding cases are not phantoms.
+  const forbidden = (opts.catalog || []).filter(e => !e.in && !expected.some(x => x.id === e.id));
   row.phantoms = outputs.filter(o => forbidden.some(e => task.adapter.matches(o, e))).map(o => String(o.text).slice(0, 90));
 
   row.verdict = got.verdict ?? null;

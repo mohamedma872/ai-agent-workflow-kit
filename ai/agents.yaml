@@ -22,6 +22,7 @@ cursor:
   command: [cursor-agent, -p, --force, --output-format, json, "{prompt}"]   # `agent` is the newer name; cursor-agent still works
   result: { json_field: result }
   guard: hooks (.cursor/hooks.json → ai/guard/cursor-hook.js)
+  note: sign in once from a terminal first — `cursor-agent login` — otherwise every trial prints the sign-in screen and exits 1 (recorded as incomplete)
 
 codex:
   label: OpenAI Codex CLI (codex exec)
