@@ -29,7 +29,7 @@ module.exports = {
   description: '<one line>',
   entry: '<ai/agents.yaml → any | node scripts/<name>/run.js | POST /api/…>',
   // resultsDir: '<dir>',                        // default: ai/evals/results/<name>
-  // agents: ['claude', 'cursor', 'codex'],      // omit = any
+  // agents: ['claude', 'codex'],                // omit = any
   defaults: { agent: 'claude', budget: 5, timeoutMin: 30, permissionMode: 'bypassPermissions' },
 
   // ADAPT 1 — run the real entry point and leave artifacts in runDir.

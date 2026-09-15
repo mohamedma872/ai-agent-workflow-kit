@@ -1,9 +1,8 @@
 # AGENTS.md — rules for every AI agent working in this repository
 
-Read by Codex natively, by Cursor through `.cursor/rules/ai-guardrails.mdc`,
-and by Claude Code through `.claude/rules/ai-tasks.md`. The same rules are
-**enforced** outside the model by `ai/guard.yaml` (hooks for Claude Code,
-Codex, Cursor) and by git pre-commit / pre-push for everyone. Full reference:
+Read by Codex natively and by Claude Code through `.claude/rules/ai-tasks.md`.
+The same rules are **enforced** outside the model by `ai/guard.yaml` (hooks
+for Claude Code and Codex) and by git pre-commit / pre-push for everyone. Full reference:
 `ai/README.md`.
 
 ## Never
@@ -17,7 +16,7 @@ Codex, Cursor) and by git pre-commit / pre-push for everyone. Full reference:
 - Delete a task's audit trail (`ai/runs/`, `ai/evals/results/`).
 - Change the fence or the instructions to make a task pass: `ai/guard.yaml`,
   `ai/tasks/*/guard.*`, `ai/guard/*`, `AGENTS.md`, `CLAUDE.md`,
-  `.claude/settings*.json`, `.cursor/hooks.json`, `.codex/*`, `.husky/*` are
+  `.claude/settings*.json`, `.codex/*`, `.husky/*` are
   edited only by the user.
 
 ## Ask first
@@ -42,7 +41,7 @@ analyses (`.claude/agents/`), a plan the user approves, implementation, tests,
 independent security / code / performance reviews, fixes, verification. Each
 step writes to `ai/runs/<id>/`. **The plan gate is enforced**: while a run is
 active and `plan.approved` does not exist, edits outside `ai/runs/` and commits
-are denied. Other agents (Cursor, Codex) follow the same steps by hand and keep
+are denied. Other agents (Codex) follow the same steps by hand and keep
 the same artifacts; only the subagent mechanism is Claude-specific.
 
 ## AI tasks are done only with guardrails + evals

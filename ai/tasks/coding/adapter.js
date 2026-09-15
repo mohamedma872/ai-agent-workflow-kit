@@ -89,14 +89,14 @@ function answerFrom(agent, stdout, lastMessageFile) {
 
 module.exports = {
   name: 'coding',
-  description: 'Any coding agent (claude / cursor / codex) doing plain repo tasks — graded by end state: files changed, diff, answer, verify commands',
-  entry: 'ai/agents.yaml → claude -p | cursor-agent -p | codex exec',
+  description: 'Any coding agent (claude / codex) doing plain repo tasks — graded by end state: files changed, diff, answer, verify commands',
+  entry: 'ai/agents.yaml → claude -p | codex exec',
   resultsDir: RESULTS_REL + '/coding',
-  agents: ['claude', 'cursor', 'codex'],
+  agents: ['claude', 'codex'],
   defaults: { agent: 'claude', budget: 5, timeoutMin: 20, permissionMode: 'bypassPermissions' },
 
   preflight(opts) {
-    if (!opts.agent) {throw new Error('pass --agent claude|cursor|codex (see ai/agents.yaml)');}
+    if (!opts.agent) {throw new Error('pass --agent claude|codex (see ai/agents.yaml)');}
     const bin = String(opts.agent.command[0]);
     if (spawnSync('which', [bin]).status !== 0) {throw new Error(`agent "${opts.agent.name}": "${bin}" is not on PATH${opts.agent.note ? ` — ${opts.agent.note}` : ''}`);}
   },

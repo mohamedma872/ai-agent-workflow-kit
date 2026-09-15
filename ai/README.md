@@ -8,12 +8,12 @@ provider's agent — is an **AI task**. An AI task is not done until it has a
 **fence** (guardrails that run outside the model) and an **exam** (evals that
 grade what it leaves on disk). This document is the single source of truth for
 how both work here. Shorter entry points: `AGENTS.md` (what every agent is
-told), `.claude/rules/ai-tasks.md` and `.cursor/rules/ai-guardrails.mdc` (the
-per-agent pointers to it), `.claude/skills/ai-task/SKILL.md` (scaffold / review).
+told), `.claude/rules/ai-tasks.md` (the Claude Code pointer to it),
+`.claude/skills/ai-task/SKILL.md` (scaffold / review).
 
 ## In plain words
 
-Two things, for any AI agent that works in this repo (Claude Code, Cursor, Codex):
+Two things, for any AI agent that works in this repo (Claude Code, Codex):
 
 - **A fence.** Before every action the agent takes, a small program reads the
   rules in `ai/guard.yaml` and answers *blocked*, *ask the user*, or *fine*.
@@ -76,9 +76,9 @@ node ai/evals/run.js coding run --case answer-navigation --agent claude --dry-ru
 
 ```bash
 node ai/evals/run.js coding run --case answer-navigation --agent claude   # cheapest live case, ~$0.5
-node ai/evals/run.js coding run --case answer-navigation --agent cursor
+node ai/evals/run.js coding run --case answer-navigation --agent codex
 node ai/evals/run.js coding run --all --agent claude --reps 3
-node ai/evals/run.js coding run --all --agent cursor --reps 3
+node ai/evals/run.js coding run --all --agent codex --reps 3
 node ai/evals/run.js coding summary      # one row per agent × case, with the noise floor
 ```
 
@@ -122,10 +122,9 @@ node ai/evals/run.js feature run --case plan-only-biometric --agent claude --dry
 ai/                             ← AGENT-NEUTRAL HOME (nothing here is Claude-specific)
 ├── README.md                   ← this reference
 ├── guard.yaml                  ← THE RULES, in plain words: secret files, guarded files, destructive shell, outward writes, leaks, budget (section 4)
-├── agents.yaml                 ← how to run each agent headlessly for evals: claude · cursor · codex (section 13)
+├── agents.yaml                 ← how to run each agent headlessly for evals: claude · codex (section 13)
 ├── guard/
 │   ├── engine.js               ← the ENGINE that reads guard.yaml + every task's guard.yaml on each tool call. `--check` · `--explain` · `--selftest`
-│   ├── cursor-hook.js          ← Cursor adapter: maps Cursor's hook payload to the engine, prints Cursor's {permission} answer
 │   ├── git-pre-commit.js       ← git-level fence for EVERYONE: refuses staged credential files / token-shaped content
 │   ├── git-pre-push.js         ← git-level fence for EVERYONE: refuses non-fast-forward (force) pushes
 │   └── rules.js                ← optional project-wide checks in code (rarely needed; the YAML files are the rules)
@@ -136,16 +135,16 @@ ai/                             ← AGENT-NEUTRAL HOME (nothing here is Claude-s
 │   │   ├── guard.js            ← optional: checks that must read run state (a gate, a budget); their values come from guard.yaml
 │   │   ├── cases.yaml          ← the exam in plain words: real, human-verified inputs + expected outcomes
 │   │   └── adapter.js          ← how one trial runs (with the chosen agent) and how its end state is read
-│   ├── coding/                 ← task #2: ANY coding agent doing plain repo tasks (section 8b) — the same cases for claude / cursor / codex
+│   ├── coding/                 ← task #2: ANY coding agent doing plain repo tasks (section 8b) — the same cases for claude / codex
 │   │   ├── TASK.md · guard.yaml · cases.yaml · adapter.js
 │   ├── feature/                ← task #3: the /feature agentic workflow (section 14) — plan gate in guard.js, runs.js, exam of the workflow
 ├── runs/<id>/                  ← one folder per /feature run: 00-request … 11-verification, analyses, reviews, plan.approved, state.json
 └── evals/                      ← THE EXAM ENGINE, task- and agent-independent (section 6)
-    ├── run.js                  ← node ai/evals/run.js <task> list|plan|run|grade|summary  [--agent claude|cursor|codex]
+    ├── run.js                  ← node ai/evals/run.js <task> list|plan|run|grade|summary  [--agent claude|codex]
     ├── grade.js                ← end-state grader: recall, phantoms, verdict, cost; oracle/null self-checks
     ├── README.md
 
-AGENTS.md                       ← the instructions EVERY agent reads (Codex natively; Cursor + Claude Code through their rule files)
+AGENTS.md                       ← the instructions EVERY agent reads (Codex natively; Claude Code through .claude/rules/ai-tasks.md)
 .mcp.json                       ← MCP servers (jira); the token is ${JIRA_API_TOKEN} from .claude/settings.local.json env, so the file is shareable
 .claude/
 ├── settings.json               ← PreToolUse → ai/guard/engine.js · PostToolUse → hooks/format-on-edit.js (Prettier on edited src files)
@@ -155,7 +154,6 @@ AGENTS.md                       ← the instructions EVERY agent reads (Codex na
 ├── skills/                     ← feature (the delivery workflow) · ai-task (scaffold/review AI tasks)
 ├── agents/                     ← mobile-architect · android-expert · ios-expert · security-reviewer · qa-engineer · performance-reviewer · code-reviewer
 └── hooks/                      ← ai-guard.js (shim → engine) · format-on-edit.js
-.cursor/hooks.json              ← Cursor wiring: beforeShellExecution / beforeReadFile / beforeMCPExecution / preToolUse → ai/guard/cursor-hook.js  (+ rules/ai-guardrails.mdc)
 .codex/hooks.json               ← Codex wiring: PreToolUse → ai/guard/engine.js --agent codex (same contract as Claude Code; Codex can't ask, so ask → deny)
 .husky/pre-commit, pre-push     ← git wiring for everyone → ai/guard/git-pre-commit.js, git-pre-push.js
 ```
@@ -164,10 +162,9 @@ AGENTS.md                       ← the instructions EVERY agent reads (Codex na
 
 ## 3. What happens on every tool call
 
-The same engine answers three callers: Claude Code and Codex send their native
-PreToolUse payload straight to `ai/guard/engine.js`; Cursor sends its own
-payload to `ai/guard/cursor-hook.js`, which maps it and prints Cursor's
-`{permission}` answer. Whatever the agent, git pre-commit / pre-push run the
+The same engine answers both callers: Claude Code and Codex send their native
+PreToolUse payload straight to `ai/guard/engine.js` (Codex with `--agent codex`,
+because it cannot ask). Whatever the agent, git pre-commit / pre-push run the
 secret and force-push checks again (section 13).
 
 ```mermaid
@@ -583,7 +580,7 @@ constraint holds (`allowed_files`, `max_changed_files`, `must_not_contain`)
 and every verify command exits 0.
 
 **Comparing agents.** `summary` prints one row per agent × case, so
-`claude · fix-debug-rows` sits next to `cursor · fix-debug-rows`. Same
+`claude · fix-debug-rows` sits next to `codex · fix-debug-rows`. Same
 cases, same grader, same noise-floor rule: with 1 trial each the floor is
 ±100 points — run `--reps 3` before reading anything into a difference.
 
@@ -592,15 +589,13 @@ cases, same grader, same noise-floor rule: with 1 trial each the floor is
 | Agent | Instructions it reads | Fence (before the action) | Fence (at git level) | Headless command for evals |
 |---|---|---|---|---|
 | Claude Code | `AGENTS.md` via `.claude/rules/ai-tasks.md` (+ `~/.claude/CLAUDE.md`) | `.claude/settings.json` PreToolUse → `ai/guard/engine.js` | pre-commit, pre-push | `claude -p "{prompt}" --output-format json --max-budget-usd {budget} --permission-mode bypassPermissions` |
-| Cursor (IDE + CLI) | `.cursor/rules/ai-guardrails.mdc` → `AGENTS.md` | `.cursor/hooks.json` beforeShellExecution / beforeReadFile / beforeMCPExecution / preToolUse → `ai/guard/cursor-hook.js` | pre-commit, pre-push | `cursor-agent -p --force --output-format json "{prompt}"` |
 | Codex CLI | `AGENTS.md` natively | `.codex/hooks.json` PreToolUse → `ai/guard/engine.js --agent codex` (same JSON contract as Claude Code, verified on codex-cli 0.154; Codex has no "ask", so the fence answers deny instead) + Codex's own sandbox | pre-commit, pre-push | `codex exec --sandbox workspace-write -c approval_policy=never --dangerously-bypass-hook-trust -C {cwd} --json -o {last_message_file} "{prompt}"` |
 | Anything else (scripts, humans) | `AGENTS.md` | — | pre-commit (staged secrets / credential files), pre-push (force pushes) | — |
 
 What each layer can and cannot do:
 
 - **Hooks** see the action before it happens and can deny or ask. Claude Code
-  and Codex share one payload format; Cursor's differs only in field names, so
-  the adapter is ~40 lines. Cursor's `afterFileEdit` is post-hoc and not used.
+  and Codex share one payload format.
   Codex specifics (measured on codex-cli 0.154, 2026-09-15): it sends the
   Claude-style JSON with `tool_name: Bash` for shell and `apply_patch` for
   edits, with the patch text under `tool_input.command`; it **ignores an
@@ -618,7 +613,7 @@ What each layer can and cannot do:
   `refuse-secret-dump` eval case measures whether an agent follows them
   when the hook also blocks the dump.
 - **Session budget** (rule 7) works only where the transcript is exposed to
-  the hook (Claude Code). Codex and Cursor runs are bounded by the eval
+  the hook (Claude Code). Codex runs are bounded by the eval
   runner's timeout and, for Claude, `--max-budget-usd`.
 
 Adding an agent: one entry in `ai/agents.yaml` (argv with `{prompt}`,
@@ -668,9 +663,9 @@ only the allowed files, a testID, both languages, and passing verify commands.
 The adapter copies the run folder into the trial dir, so the grader can pin a
 keyword to an artifact (`any_of: [[06-plan.md, biometric]]`).
 
-**Other agents.** Cursor and Codex have no equivalent of `.claude/agents`;
-they follow the same 13 steps by hand from `AGENTS.md` and keep the same
-artifacts, and the plan gate applies to them through the same task rule (the
+**Other agents.** Codex has no equivalent of `.claude/agents`;
+it follows the same 13 steps by hand from `AGENTS.md` and keeps the same
+artifacts, and the plan gate applies to it through the same task rule (the
 fence reads `ai/runs/_active`, not the agent's name).
 
 ## 9. Operations

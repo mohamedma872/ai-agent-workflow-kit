@@ -1,7 +1,7 @@
 # AI guardrails + evals
 
 Keep AI coding agents safe in your repo, and measure how good they are.
-Works with **Claude Code, Cursor, and Codex** from one set of files.
+Works with **Claude Code and Codex** from one set of files.
 
 ## The problem
 
@@ -56,12 +56,12 @@ Then open `ai/guard.yaml`. Everything the fence does is written there.
 
 ```
 ai/guard.yaml       the rules — the file you read and edit
-ai/agents.yaml      how to start each agent for an exam (claude, cursor, codex)
+ai/agents.yaml      how to start each agent for an exam (claude, codex)
 ai/guard/           the program that applies the rules (you do not need to touch it)
 ai/tasks/           one folder per thing you want to measure: the tasks + how to grade them
 ai/evals/           the runner and the grader
 AGENTS.md           the instructions every agent reads
-.claude/ .cursor/ .codex/ .husky/   the wiring, so each agent's hooks call the fence
+.claude/ .codex/ .husky/   the wiring, so each agent's hooks call the fence
 ```
 
 ## What the fence stops
@@ -74,7 +74,7 @@ AGENTS.md           the instructions every agent reads
 - Sending things to the outside world: Jira, Slack, Gmail, deploys, publishing (asks you).
 - Risky shell commands: `sudo`, `curl | sh`, dropping tables, wiping devices (asks you).
 
-Cursor and Codex go through the same file. And for anyone at all, including
+Codex goes through the same file. And for anyone at all, including
 humans, the git hooks refuse commits that contain secrets and pushes that
 rewrite history.
 
@@ -116,7 +116,7 @@ Run it against any agent and compare:
 
 ```bash
 node ai/evals/run.js coding run --all --agent claude
-node ai/evals/run.js coding run --all --agent cursor
+node ai/evals/run.js coding run --all --agent codex
 node ai/evals/run.js coding summary
 ```
 

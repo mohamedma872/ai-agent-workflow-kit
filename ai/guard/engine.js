@@ -16,7 +16,6 @@
  *   Codex CLI     .codex/hooks.json      PreToolUse → node ai/guard/engine.js --agent codex
  *                 (same format; Codex ignores an "ask" answer and runs the call, so with --agent codex an ask
  *                  becomes a deny; Codex sends apply_patch with the patch text under tool_input.command)
- *   Cursor        .cursor/hooks.json     before* / preToolUse → ai/guard/cursor-hook.js (payload adapter)
  *   git           .husky/pre-commit, pre-push → ai/guard/git-pre-commit.js / git-pre-push.js (every agent, every human)
  *
  * Native contract (Claude Code / Codex):
@@ -50,7 +49,7 @@ const DEFAULTS = {
   dump_commands: ['cat', 'less', 'more', 'head', 'tail', 'sed', 'awk', 'bat', 'strings', 'xxd', 'base64', 'od', 'cp', 'scp', 'rsync', 'open', 'python', 'python3', 'ruby', 'perl', 'source', '.'],
   guarded_files: ['ai/guard.yaml', 'ai/guard/*', 'ai/tasks/*/guard.yaml', 'ai/tasks/*/guard.js', 'ai/agents.yaml', 'AGENTS.md', 'CLAUDE.md',
     '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks/*', '.claude/rules/*', '.claude/keybindings.json',
-    '.cursor/hooks.json', '.cursor/rules/*', '.codex/*', '.husky/*'],
+    '.codex/*', '.husky/*'],
   write_indicators: ['>', '>>', 'tee', 'sed -i', 'mv', 'cp', 'ln ', 'install', 'dd', 'patch', 'perl -pi', 'perl -i', 'writeFileSync', 'copyFileSync', 'renameSync', 'appendFileSync', 'rmSync', 'unlinkSync'],
   disposable_dirs: ['/tmp/', '/private/tmp/', '$TMPDIR', '${TMPDIR}', '$CLAUDE_SCRATCHPAD', '${CLAUDE_SCRATCHPAD}', 'node_modules', 'build', 'dist', 'out', 'coverage', '.cache', '.next', '.turbo', '.parcel-cache', 'target', '__pycache__', '.pytest_cache', '.venv', 'venv', 'Pods', 'DerivedData', '.gradle', 'ios/build', 'ios/Pods', 'android/build', 'android/app/build', 'android/.gradle'],
   shell_rules: [
@@ -414,7 +413,7 @@ async function evaluate(payload, opts = {}) {
   let reasons = verdicts.filter(v => v.decision === decision).map(v => v.reason);
   if (decision === 'ask' && NO_ASK_AGENTS.includes(String(opts.agent || '').toLowerCase())) {
     decision = 'deny';
-    reasons = reasons.map(r => `needs the user's OK, and ${opts.agent} hooks cannot ask — refused; ask the user to run it, or do it in Claude Code / Cursor where the fence can ask: ${r}`);
+    reasons = reasons.map(r => `needs the user's OK, and ${opts.agent} hooks cannot ask — refused; ask the user to run it, or do it in Claude Code where the fence can ask: ${r}`);
   }
   return { decision, reasons };
 }
@@ -485,7 +484,7 @@ function explain(root) {
     list(`Task pack: ${p.name}${p.hasYaml ? ' (guard.yaml' : ' ('}${p.hasYaml && p.hasJs ? ' + ' : ''}${p.hasJs ? 'guard.js' : ''})`, items.length ? items : ['(nothing declared)']);
   }
   const wiring = [];
-  for (const [agent, file] of [['Claude Code', '.claude/settings.json'], ['Cursor', '.cursor/hooks.json'], ['Codex', '.codex/hooks.json'], ['git pre-commit', '.husky/pre-commit'], ['git pre-push', '.husky/pre-push']]) {
+  for (const [agent, file] of [['Claude Code', '.claude/settings.json'], ['Codex', '.codex/hooks.json'], ['git pre-commit', '.husky/pre-commit'], ['git pre-push', '.husky/pre-push']]) {
     const f = path.join(root, file);
     wiring.push(`${agent.padEnd(14)} ${fs.existsSync(f) && /ai\/guard|ai-guard/.test(fs.readFileSync(f, 'utf8')) ? 'wired' : 'NOT wired'} (${file})`);
   }
@@ -520,7 +519,6 @@ async function selftest() {
     ['edit .claude/settings.json → ask', P('Edit', { file_path: `${root}/.claude/settings.json`, old_string: 'a', new_string: 'b' }), {}, 'ask'],
     ['edit ai/guard.yaml → ask', P('Write', { file_path: `${root}/ai/guard.yaml`, content: 'version: 1' }), {}, 'ask'],
     ['edit AGENTS.md → ask', P('Write', { file_path: `${root}/AGENTS.md`, content: '# rules' }), {}, 'ask'],
-    ['edit .cursor/hooks.json → ask', P('Write', { file_path: `${root}/.cursor/hooks.json`, content: '{}' }), {}, 'ask'],
     ['edit .codex/hooks.json → ask', P('Write', { file_path: `${root}/.codex/hooks.json`, content: '{}' }), {}, 'ask'],
     ['edit a task guard.yaml → ask', P('Write', { file_path: `${root}/ai/tasks/coding/guard.yaml`, content: '' }), {}, 'ask'],
     ['edit the engine → ask', P('Write', { file_path: `${root}/ai/guard/engine.js`, content: '' }), {}, 'ask'],

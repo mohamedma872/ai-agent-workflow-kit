@@ -1,5 +1,5 @@
 # =============================================================================
-#  coding — rules for ANY coding agent (Claude Code, Cursor, Codex) doing
+#  coding — rules for ANY coding agent (Claude Code, Codex) doing
 #  plain tasks in this repo. The generic fence (ai/guard.yaml) already covers
 #  secrets, destructive shell, outward writes, leaks and eval mode; this adds
 #  only what a repo-editing agent must respect on top.

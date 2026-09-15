@@ -23,7 +23,7 @@ first if you have not this session. `$ARGUMENTS` is one of:
    `answer_must_contain`, `check`, `why`) — see `ai/README.md` § 6.2. Never generate expected outputs with a model.
 5. `adapter.js`: `execute()` calls the REAL entry point — for a coding-style task the
    agent chosen with `--agent` from `ai/agents.yaml` (`opts.agent.command`), so the same
-   cases run against Claude, Cursor and Codex — and leaves artifacts in the run dir;
+   cases run against Claude and Codex — and leaves artifacts in the run dir;
    `collect()` reads them; `matches()` defines a hit. Start from `ai/tasks/coding/adapter.js`.
 6. Prove it: `node ai/guard/engine.js --selftest`, then
    `node ai/evals/grade.js <name> <case> --oracle --no-write` and `--null`,

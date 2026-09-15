@@ -1,7 +1,7 @@
 {
   "name": "ai-guardrails-evals",
-  "version": "0.1.0",
-  "description": "Guardrails + evals + an agentic delivery workflow for any coding agent (Claude Code, Cursor, Codex): rules in YAML, one hook engine, git-level fence, end-state graded evals, enforced plan gate.",
+  "version": "0.2.0",
+  "description": "Guardrails + evals + an agentic delivery workflow for any coding agent (Claude Code, Codex): rules in YAML, one hook engine, git-level fence, end-state graded evals, enforced plan gate.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
   "repository": {

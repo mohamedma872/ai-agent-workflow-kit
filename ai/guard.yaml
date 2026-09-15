@@ -1,8 +1,7 @@
 # =============================================================================
 #  ai/guard.yaml — THE FENCE, in plain words. Applies to EVERY agent:
-#  Claude Code and Codex call the engine from their hooks, Cursor through a
-#  payload adapter, and git pre-commit / pre-push run the secret checks for
-#  anyone who commits. This is the file to READ and EDIT; the engine
+#  Claude Code and Codex call the engine from their hooks, and git
+#  pre-commit / pre-push run the secret checks for anyone who commits. This is the file to READ and EDIT; the engine
 #  (ai/guard/engine.js) reads it on every tool call — no restart needed.
 #  Task-specific rules live in ai/tasks/<task>/guard.yaml and are added on top.
 #
@@ -75,8 +74,6 @@ guarded_files:
   - ".claude/hooks/*"
   - ".claude/rules/*"
   - ".claude/keybindings.json"
-  - ".cursor/hooks.json"
-  - ".cursor/rules/*"
   - ".codex/*"
   - ".husky/*"
 # a shell command naming a guarded file together with one of these is a rewrite → ask

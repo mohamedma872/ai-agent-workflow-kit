@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "hooks": {
-    "beforeShellExecution": [{ "command": "ai/guard/cursor-hook.js" }],
-    "beforeReadFile": [{ "command": "ai/guard/cursor-hook.js" }],
-    "beforeMCPExecution": [{ "command": "ai/guard/cursor-hook.js" }],
-    "preToolUse": [{ "command": "ai/guard/cursor-hook.js" }]
-  }
-}
