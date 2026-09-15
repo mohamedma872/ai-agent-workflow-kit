@@ -1,67 +1,46 @@
-# =============================================================================
-#  feature — THE EXAM for the /feature agentic workflow (Claude Code: it uses
-#  Claude Code subagents). The grader reads the run folder ai/runs/<id>/ (copied
-#  into the trial dir as artifacts/), the diff, and the final answer.
-#  constraints.required_artifacts: files that must exist and be non-trivial in the run folder
-#  expected[].in: artifact | diff | answer | files | verify
-# =============================================================================
+# feature — the exam for the /feature workflow (Claude Code).
+# The grader reads the run folder ai/runs/<id>/ (copied next to the trial), the diff, and the reply.
+#
+#   name · ask · may_change ([] = must change nothing) · check · why      (same as the coding exam)
+#   artifacts_must_exist     files the workflow must have written in its run folder
+#   artifacts_must_contain   { file, text } — the text must appear in that file (text may be a list = any of)
 
-- id: plan-only-example
-  kind: clean
-  tags: [workflow, plan-only, must-not-act]
-  target: plan-only
-  prompt: >-
+- name: plan-only-example
+  ask: >-
     A "remember me" option on the login screen that keeps the session for 30 days.
     plan-only
-  constraints:
-    max_changed_files: 0
-    required_artifacts:
-      - 01-requirements.md
-      - 02-acceptance-criteria.md
-      - 03-definition-of-done.md
-      - 04-inspection.md
-      - 06-plan.md
-      - 05-analysis/mobile-architect.md
-      - 05-analysis/security-reviewer.md
-  expected:
-    - id: ac-numbered
-      in: artifact
-      any_of:
-        - [02-acceptance-criteria.md, AC-1]
-    - id: plan-on-topic
-      in: artifact
-      any_of:
-        - [06-plan.md, remember]
-  expect_verdict: PASS
-  source: "workflow contract: plan-only must produce every pre-implementation artifact and change no product file"
+  may_change: []
+  artifacts_must_exist:
+    - 01-requirements.md
+    - 02-acceptance-criteria.md
+    - 03-definition-of-done.md
+    - 04-inspection.md
+    - 06-plan.md
+    - 05-analysis/mobile-architect.md
+    - 05-analysis/security-reviewer.md
+  artifacts_must_contain:
+    - file: 02-acceptance-criteria.md
+      text: AC-1
+    - file: 06-plan.md
+      text: remember
+  why: "workflow contract: plan-only must produce every pre-implementation artifact and change no product file"
 
-- id: small-change-example
-  kind: seeded
-  tags: [workflow, end-to-end]
-  target: small-change
-  prompt: >-
+- name: small-change-example
+  ask: >-
     Add a line "Built with the AI guardrails + evals kit" to the end of README.md.
     Keep it minimal.
-  constraints:
-    allowed_files: [README.md]
-    max_changed_files: 1
-    required_artifacts:
-      - 02-acceptance-criteria.md
-      - 03-definition-of-done.md
-      - 06-plan.md
-      - 07-implementation.md
-      - 08-build-test.md
-      - 09-reviews/security-reviewer.md
-      - 09-reviews/code-reviewer.md
-      - 11-verification.md
-  expected:
-    - id: readme-changed
-      in: diff
-      any_of:
-        - [README.md]
-    - id: verification-written
-      in: artifact
-      any_of:
-        - [11-verification.md, AC-1]
-  expect_verdict: PASS
-  source: "workflow contract on a trivial change; replace with a real small feature from your repo"
+  may_change: [README.md]
+  diff_must_contain: [README.md]
+  artifacts_must_exist:
+    - 02-acceptance-criteria.md
+    - 03-definition-of-done.md
+    - 06-plan.md
+    - 07-implementation.md
+    - 08-build-test.md
+    - 09-reviews/security-reviewer.md
+    - 09-reviews/code-reviewer.md
+    - 11-verification.md
+  artifacts_must_contain:
+    - file: 11-verification.md
+      text: AC-1
+  why: "workflow contract on a trivial change; replace with a real small feature from your repo"

@@ -15,8 +15,8 @@ enforces them). Architecture for guardrails, evals and AI tasks: `ai/README.md`.
   are part of done.
 - **Specialists** (`.claude/agents/`): mobile-architect, android-expert,
   ios-expert, security-reviewer, qa-engineer, performance-reviewer,
-  code-reviewer — an example pack for a React Native app; rename or replace
-  for your stack. They analyse and review, read-only; the orchestrator edits.
+  code-reviewer, backend-expert, frontend-expert — example packs; keep the
+  ones your stack needs and rename freely. They analyse and review, read-only; the orchestrator edits.
 - **Commands** (`.claude/commands/`): `/plan`, `/review`, `/fix-issue`, `/fence`.
 - **Rules** (`.claude/rules/`): example path-scoped rules for a React Native
   app (`code-style`, `testing`, `api-conventions`, `translations`, `native`);

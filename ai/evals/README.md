@@ -1,7 +1,7 @@
 # `ai/evals/` — generic eval runner + grader
 
 Task-independent. Each AI task under `ai/tasks/<task>/` brings its own
-`cases.yaml` (what to run, what must come out — plain YAML with comments) and
+`cases.yaml` (tasks in plain words: `ask`, `may_change`, `diff_must_contain`, `check`, `why` …) and
 `adapter.js` (how one trial runs, how its end state is read, what counts as a match). This folder
 turns that into numbers.
 

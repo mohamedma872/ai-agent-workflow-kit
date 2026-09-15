@@ -19,8 +19,8 @@ first if you have not this session. `$ARGUMENTS` is one of:
    template). Nothing generic — the fence has it. Validate: `node ai/guard/engine.js --check`.
 4. `cases.yaml`: ask for 3–5 real, human-verified cases to start (both
    directions: must act / must not act) and how the truth was established.
-   Write them as readable YAML entries (`id`, `kind`, `target`, `expected[].any_of`,
-   `source`). Never generate expected outputs with a model.
+   Write them in the plain vocabulary (`name`, `ask`, `may_change`, `diff_must_contain`,
+   `answer_must_contain`, `check`, `why`) — see `ai/README.md` § 6.2. Never generate expected outputs with a model.
 5. `adapter.js`: `execute()` calls the REAL entry point — for a coding-style task the
    agent chosen with `--agent` from `ai/agents.yaml` (`opts.agent.command`), so the same
    cases run against Claude, Cursor and Codex — and leaves artifacts in the run dir;

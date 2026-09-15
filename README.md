@@ -97,19 +97,20 @@ No code, no restart.
 
 ## Write an exam
 
-Open `ai/tasks/coding/cases.yaml`. Each task says what to ask, which files may
-change, and what must appear in the result:
+Open `ai/tasks/coding/cases.yaml`. A task is four lines: what to ask, which
+files may change, what must appear in the result, and where you know that from.
 
 ```yaml
-- id: add-changelog-entry
-  prompt: Add a line "Added: AI guardrails and evals kit" under Unreleased in CHANGELOG.md.
-  constraints:
-    allowed_files: [CHANGELOG.md]
-  expected:
-    - id: entry-added
-      in: diff
-      any_of: [[AI guardrails and evals kit]]
+- name: add-changelog-entry
+  ask: Add a line "Added: AI guardrails and evals kit" under Unreleased in CHANGELOG.md.
+  may_change: [CHANGELOG.md]
+  diff_must_contain: ["AI guardrails and evals kit"]
+  why: "starter — replace with a bug you already fixed"
 ```
+
+A task that must change nothing is `may_change: []`. A question gets
+`answer_must_contain`. A command that must pass afterwards goes under `check`.
+Two words that must both appear are written `"word + word"`.
 
 Run it against any agent and compare:
 
@@ -130,6 +131,26 @@ acceptance criteria, inspect the repo, get analyses from specialist subagents
 for your approval**, implement, test, get independent reviews, fix, verify.
 Every step leaves a file in `ai/runs/<id>/`, and the fence blocks any edit
 before you approve the plan.
+
+## Mobile, backend, frontend — any stack
+
+Nothing in the fence, the exam engine, the git hooks, or the workflow knows
+what language your repo is in. They look at tool names, file paths, command
+text, and what is left on disk. Use them as they are in a Node API, a Django
+service, a React web app, a mobile app.
+
+What *is* stack-specific are the examples, and they are meant to be swapped:
+
+| Piece | In this kit | For your stack |
+|---|---|---|
+| Specialists (`.claude/agents/`) | mobile-architect, android-expert, ios-expert, backend-expert, frontend-expert, security-reviewer, qa-engineer, performance-reviewer, code-reviewer | keep the ones you need, rename, add your own |
+| Rules (`.claude/rules/`) | examples for a React Native app | replace with your conventions |
+| Exam tasks (`ai/tasks/coding/cases.yaml`) | three starters | your own fixed bugs and questions |
+| `AGENTS.md` "Repo facts" | placeholders | your commands and folder map |
+
+`ai/guard.yaml` already covers secrets, destructive commands, deploys and
+publishing for any project; add your own paths to `secret_files` and
+`disposable_dirs`.
 
 ## Go deeper
 

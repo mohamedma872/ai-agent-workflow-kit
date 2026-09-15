@@ -36,20 +36,56 @@ function listTasks() {
   return fs.readdirSync(TASKS_DIR).filter(d => !d.startsWith('_') && !d.startsWith('.') && fs.existsSync(path.join(TASKS_DIR, d, 'adapter.js')));
 }
 
-// Cases are written by humans in cases.yaml (preferred); cases.jsonl (one JSON
-// object per line) is still accepted. Both are normalised to the same shape:
-//   case_id · kind · target · expected[{ id, severity, match: [[kw…], …] }] · expect_verdict · mutation · source
+// Cases are written by humans in cases.yaml. The PLAIN vocabulary:
+//   name · ask · may_change ([] = must change nothing) · max_files
+//   diff_must_contain / answer_must_contain / files_must_include   ("a + b" = both; a list = any of them)
+//   artifacts_must_exist · artifacts_must_contain [{file, text}]
+//   must_report [{name, severity?, any_of: ["a + b", …]}]          (agents that write findings)
+//   must_not_contain (regexes) · check (shell commands) · undo_fix (commit to revert for the run)
+//   expect_verdict · run / run_ticket / run_dir / replay · why · note
+// The internal shape (case_id · kind · target · constraints · expected[{id, in, match}] ·
+// verify · mutation · source) is still accepted, so older files keep working.
+const one = s => String(s).split(/\s\+\s/).map(x => x.trim()).filter(Boolean);       // "a + b" → [a, b]
+const textReq = entry => (Array.isArray(entry) ? entry.map(one) : [one(entry)]);      // list = any of
+
 function normaliseCase(c, file, i) {
   if (!c || typeof c !== 'object') {throw new Error(`${path.relative(ROOT, file)} entry ${i + 1}: not an object`);}
+  const where = `${path.relative(ROOT, file)} entry ${i + 1}`;
   const out = { ...c };
-  out.case_id = c.case_id || c.id;
-  if (!out.case_id) {throw new Error(`${path.relative(ROOT, file)} entry ${i + 1}: missing id`);}
-  out.kind = c.kind || 'seeded';
-  out.expected = (c.expected || []).map((e, j) => {
-    const groups = e.match || e.any_of || [];
-    if (!e.id) {throw new Error(`${path.relative(ROOT, file)} case ${out.case_id}: expected[${j}] has no id`);}
-    return { ...e, match: groups.map(g => (Array.isArray(g) ? g : [g])) };
+  out.case_id = c.case_id || c.id || c.name;
+  if (!out.case_id) {throw new Error(`${where}: missing name`);}
+  if (c.ask && !c.prompt) {out.prompt = c.ask;}
+  out.target = c.target || c.run || out.case_id;
+  if (c.why && !c.source) {out.source = c.why;}
+  if (c.note && !c.notes) {out.notes = c.note;}
+  if (c.check && !c.verify) {out.verify = c.check;}
+  if (c.undo_fix && !c.mutation) {out.mutation = { type: 'revert', sha: String(c.undo_fix) };}
+
+  const cons = { ...(c.constraints || {}) };
+  if (Array.isArray(c.may_change)) { if (c.may_change.length) {cons.allowed_files = c.may_change;} else {cons.max_changed_files = 0;} }
+  if (typeof c.max_files === 'number') {cons.max_changed_files = c.max_files;}
+  if (Array.isArray(c.must_not_contain)) {cons.must_not_contain = c.must_not_contain;}
+  if (Array.isArray(c.artifacts_must_exist)) {cons.required_artifacts = c.artifacts_must_exist;}
+  if (Object.keys(cons).length) {out.constraints = cons;}
+
+  const expected = (c.expected || []).map((e, j) => {
+    if (!e.id) {throw new Error(`${where}: expected[${j}] has no id`);}
+    return { ...e, match: (e.match || e.any_of || []).map(g => (Array.isArray(g) ? g : [g])) };
   });
+  const add = (kind, entries, prefix) => (entries || []).forEach((e, j) => expected.push({ id: `${prefix}-${j + 1}`, in: kind, match: textReq(e) }));
+  add('diff', c.diff_must_contain, 'diff');
+  add('answer', c.answer_must_contain, 'answer');
+  add('files', c.files_must_include, 'files');
+  (c.artifacts_must_contain || []).forEach((e, j) => {
+    const alts = Array.isArray(e.text) ? e.text : [e.text];
+    expected.push({ id: `artifact-${j + 1}`, in: 'artifact', match: alts.map(t => [e.file, ...one(t)]) });
+  });
+  (c.must_report || []).forEach((e, j) => expected.push({ id: e.name || `report-${j + 1}`, severity: e.severity, match: textReq(e.any_of || e.text || []) }));
+  out.expected = expected;
+
+  const plain = ['may_change', 'diff_must_contain', 'answer_must_contain', 'artifacts_must_exist', 'artifacts_must_contain', 'files_must_include'].some(k => k in c);
+  if (!out.expect_verdict && plain) {out.expect_verdict = 'PASS';}
+  out.kind = c.kind || (c.replay || c.run_ticket || c.run_dir ? 'replay' : (cons.max_changed_files === 0 ? 'clean' : 'seeded'));
   return out;
 }
 

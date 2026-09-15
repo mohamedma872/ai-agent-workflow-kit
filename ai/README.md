@@ -1,6 +1,3 @@
-> **Start with the [README at the repo root](../README.md)** — it explains the idea in plain words.
-> This file is the full reference for when you need every detail.
-
 # AI tasks in this repo — complete architecture reference
 
 Version 2.0 · 2026-09-15 · agent-neutral · this copy is the public kit (client-specific tasks removed)
@@ -13,6 +10,24 @@ grade what it leaves on disk). This document is the single source of truth for
 how both work here. Shorter entry points: `AGENTS.md` (what every agent is
 told), `.claude/rules/ai-tasks.md` and `.cursor/rules/ai-guardrails.mdc` (the
 per-agent pointers to it), `.claude/skills/ai-task/SKILL.md` (scaffold / review).
+
+## In plain words
+
+Two things, for any AI agent that works in this repo (Claude Code, Cursor, Codex):
+
+- **A fence.** Before every action the agent takes, a small program reads the
+  rules in `ai/guard.yaml` and answers *blocked*, *ask the user*, or *fine*.
+  The agent cannot argue with it. Secrets stay unread, history stays intact,
+  nothing goes to Jira or a store without you, and the rules themselves can
+  only be changed by you.
+- **An exam.** Real tasks with known outcomes in `ai/tasks/<task>/cases.yaml`.
+  A runner gives them to an agent, a grader checks what it left on disk, and
+  you get a score per agent. Same tasks for everyone, so numbers compare.
+
+Plus a delivery workflow (`/feature`) where the plan must be approved before
+any edit — enforced by the fence, not by politeness.
+
+If you only read one thing: section 0 (commands) and section 2 (folder layout).
 
 Contents
 
@@ -379,7 +394,41 @@ file + fields in YAML).
   and `errors.jsonl` (trials that produced nothing gradable). `<results>` is
   `adapter.resultsDir` or `ai/evals/results/<task>/`.
 
-### 6.2 `cases.yaml` schema (a YAML list, one entry per case; `cases.jsonl` still accepted)
+### 6.2 `cases.yaml` — the plain vocabulary
+
+One entry per task, written the way you would brief a person:
+
+```yaml
+- name: fix-debug-rows
+  ask: >-
+    ProfileScreen.tsx renders debug rows in release builds. Gate them behind __DEV__. Touch only that file.
+  may_change: [src/screens/profile/ProfileScreen.tsx]
+  diff_must_contain: [__DEV__]
+  check: [npx eslint src/screens/profile/ProfileScreen.tsx --max-warnings=999]
+  why: "QC sweep finding, fixed in <sha> on another branch"
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | short id |
+| `ask` | what to tell the agent |
+| `may_change` | files it may touch (globs); `[]` = it must change nothing |
+| `max_files` | optional cap on the number of changed files |
+| `diff_must_contain` / `answer_must_contain` / `files_must_include` | words that must appear in the diff / the final reply / the changed-file list. `"a + b"` = both words; a list = any one of them |
+| `must_not_contain` | regexes that must appear nowhere (diff or answer) |
+| `check` | shell commands that must pass afterwards |
+| `undo_fix` | a commit to revert for the run, to re-seed a bug that is already fixed (skipped when the fix is not on HEAD) |
+| `artifacts_must_exist` / `artifacts_must_contain` | for workflows that leave files: names that must exist; `{file, text}` pairs that must match (`text` may be a list = any of) |
+| `must_report` | for agents that write findings: `{name, severity?, any_of: ["a + b", …]}` entries the agent must have recorded |
+| `expect_verdict` | `PASS` / `FAIL` / `BLOCKED` the run's own headline must equal (defaults to `PASS` for coding-style cases) |
+| `run` / `run_ticket` / `run_dir` / `replay: true` | what to run, or which existing artifacts to grade offline |
+| `why` / `note` | where the truth comes from (never a model's own output) / free text |
+
+The grader turns this into its internal shape (`expected[{id, in, match}]`,
+`constraints`, `verify`, `mutation`); that shape is still accepted directly in
+a `cases.yaml`, so older or hand-tuned files keep working.
+
+Internal shape reference (for adapters and `--json` rows):
 
 | Field | Required | Meaning |
 |---|---|---|

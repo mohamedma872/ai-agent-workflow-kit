@@ -3,7 +3,7 @@ name: feature
 description: Deliver a feature or ticket end-to-end with the agentic workflow — requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analysis (mobile-architect, android-expert, ios-expert, security-reviewer, qa-engineer, performance-reviewer) → plan for approval (an ENFORCED gate) → implementation → build and tests → independent security, code and performance reviews → fixes → AC/DoD verification. Every step leaves an artifact in ai/runs/<id>/. Usage — /feature <request or PROJ-123> [plan-only]
 ---
 
-You are the orchestrator. Specialists analyse and review; you decide, plan,
+You are the orchestrator. The specialists in `.claude/agents/` are examples — mobile, backend and frontend; keep the ones your stack needs and rename freely. Specialists analyse and review; you decide, plan,
 implement, and verify. Every step writes its artifact to `ai/runs/<id>/` so
 the user can read it, the run can resume, and the eval can grade it.
 `$ARGUMENTS` = the request (free text or a Jira key like `PROJ-123`), optionally
@@ -62,6 +62,8 @@ can also approve from a terminal: `node ai/tasks/feature/runs.js approve <id>`.
    | `android-expert` | `android/` touched, native module, permissions, Play policy, platform behaviour |
    | `ios-expert` | `ios/` touched, native module, permissions, App Store policy, platform behaviour |
    | `performance-reviewer` (mode `analysis`) | lists, rendering-heavy UI, startup, network/caching changes |
+   | `backend-expert` | server code, a database, an API contract touched |
+   | `frontend-expert` | web UI touched (components, routing, forms, a11y) |
 
 6. **Run the analysis subagents in parallel** — one Agent call per subagent in
    the SAME message, `run_in_background: true`, then wait for all. Each prompt

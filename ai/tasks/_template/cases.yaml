@@ -1,49 +1,36 @@
-# =============================================================================
-#  <name> — THE EXAM, in plain words. One entry per case. Start with 3–5 real
-#  cases, grow to 25–30. Cover both directions: cases where the task MUST act
-#  and cases where it must NOT.
+# <name> — the exam. One task per entry. Start with 3–5 real ones, grow to 25–30.
+# Always include tasks where the agent must act AND tasks where it must not.
 #
-#  kind:  seeded  = these outcomes MUST be produced
-#         clean   = NONE of the known signatures may be produced (phantoms = 0)
-#         replay  = grade artifacts that already exist (free, offline)
-#  expected[].any_of: groups of keywords; an output matches when EVERY word of
-#         ANY group appears (case-insensitive) — adapter.js matches() decides.
-#  mutation: {type: revert, sha: <fix commit>} re-seeds a fixed defect for the run,
-#            or {type: edit, file, find, replace} for a text edit.
-#  source: where the truth comes from — human-verified, never a model's output.
-# =============================================================================
+#   name                 short id
+#   ask                  what to tell the agent
+#   may_change           files it may touch (globs). [] = it must change nothing
+#   diff_must_contain    words that must appear in the diff ("a + b" = both words; a list = any one of them)
+#   answer_must_contain  words that must appear in the agent's final reply
+#   must_not_contain     regexes that must appear nowhere (diff or answer)
+#   check                shell commands that must pass afterwards
+#   undo_fix             optional: a commit to revert for the run, to re-seed a bug that is already fixed
+#   why                  where the truth comes from — a real ticket or a human check, never a model's own output
+#
+# For agents that write findings/reports instead of code, use:
+#   must_report          [{ name, severity?, any_of: ["a + b", …] }]
+#   expect_verdict       PASS / FAIL / BLOCKED
+# For workflows that leave artifacts: artifacts_must_exist [files] · artifacts_must_contain [{ file, text }]
 
-- id: seed-<defect>
-  kind: seeded
-  target: <what the entry point receives, e.g. TICKET-123>
-  expect_verdict: FAIL
-  tags: [core, seeded]
-  mutation: {type: revert, sha: <fix commit sha>}
-  source: "human-verified: found on <date>, fixed in <PR>"
-  expected:
-    - id: <defect-id>
-      severity: red
-      any_of:
-        - [keyword a, keyword b]
-        - [alternative phrasing]
+- name: fix-something-real
+  ask: >-
+    <what to tell the agent — the way a user would ask, without the answer in the prompt>
+  may_change:
+    - src/<file that should change>
+  diff_must_contain:
+    - <a word the fix must contain>
+  check:
+    - <a command that must pass, e.g. yarn jest <pattern>>
+  undo_fix: <sha of the merged fix>
+  why: "human-verified: found on <date>, fixed in <PR>"
 
-- id: clean-<known-good>
-  kind: clean
-  target: <a known-good input>
-  expect_verdict: PASS
-  tags: [core, negative]
-  source: "both-directions coverage: a known-good input must stay good; none of the seeded signatures may appear"
-  expected: []
-
-- id: replay-<existing-run>
-  kind: replay
-  target: <same target>
-  run_dir: <path to an existing run dir>
-  expect_verdict: FAIL
-  tags: [replay]
-  source: "offline: grades artifacts that already exist — costs nothing, validates the grader (oracle 1.0 / null 0)"
-  expected:
-    - id: <defect-id>
-      severity: red
-      any_of:
-        - [keyword a]
+- name: answer-a-question
+  ask: >-
+    <a question about the code> Reply with the answer only. Do not create or modify any file.
+  may_change: []
+  answer_must_contain: [<the expected answer>]
+  why: "an agent that edits when asked a question fails"
