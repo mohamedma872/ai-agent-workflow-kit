@@ -23,17 +23,32 @@ const RESULTS_REL = 'ai/evals/results';
 function git(...a) { return execFileSync('git', a, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
 function readJSON(f) { try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } }
 
-// tracked + untracked (non-ignored) changes, excluding the eval ledger itself
-function changedFiles() {
-  return git('status', '--porcelain', '--untracked-files=all').split('\n').filter(Boolean)
+// tracked + untracked (non-ignored) changes, excluding the eval ledger itself.
+// Pass the ignored-file snapshot taken before the trial to also catch files the agent
+// wrote into IGNORED paths (this repo ignores __tests__/ and *.test.*): git status never
+// shows them, so without the snapshot they would be neither graded nor cleaned up.
+function changedFiles(ignoredBefore) {
+  const rows = git('status', '--porcelain', '--untracked-files=all').split('\n').filter(Boolean)
     .map(l => ({ status: l.slice(0, 2).trim(), file: l.slice(3).replace(/^"|"$/g, '') }))
     .filter(e => !e.file.startsWith(`${RESULTS_REL}/`));
+  if (ignoredBefore) {
+    for (const f of ignoredFiles()) {if (!ignoredBefore.has(f)) {rows.push({ status: '!!', file: f });}}
+  }
+  return rows;
 }
+
+// ignored files, minus the heavy build folders and the AI audit trail (ai/runs is meant to stay)
+const IGNORED_SKIP = ['node_modules', 'ai', 'ios/Pods', 'ios/build', 'android/build', 'android/app/build', '.git'];
+function ignoredFiles() {
+  return new Set(git('ls-files', '--others', '--ignored', '--exclude-standard', '--', '.', ...IGNORED_SKIP.map(d => `:!${d}`)).split('\n').filter(Boolean));
+}
+
+const isNew = c => c.status === '??' || c.status === '!!';
 
 function fullDiff(changes) {
   let out = '';
   try { out += git('diff', 'HEAD', '--'); } catch { /* no tracked changes */ }
-  for (const c of changes.filter(x => x.status === '??')) {
+  for (const c of changes.filter(isNew)) {
     const f = path.join(ROOT, c.file);
     try {
       if (fs.statSync(f).isDirectory()) {continue;}
@@ -45,9 +60,9 @@ function fullDiff(changes) {
 }
 
 function restore(changes) {
-  const tracked = changes.filter(c => c.status !== '??').map(c => c.file);
+  const tracked = changes.filter(c => !isNew(c)).map(c => c.file);
   if (tracked.length) {git('checkout', '--', ...tracked);}
-  for (const c of changes.filter(x => x.status === '??')) {
+  for (const c of changes.filter(isNew)) {
     try { fs.rmSync(path.join(ROOT, c.file), { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
@@ -89,6 +104,7 @@ module.exports = {
     if (opts.dryRun) {return meta;}
     const before = changedFiles();
     if (before.length) {throw new Error(`working tree not clean before the trial: ${before.map(b => b.file).join(', ')}`);}
+    const ignoredBefore = ignoredFiles();
     const t0 = Date.now();
     const res = spawnSync(argv[0], argv.slice(1), {
       cwd: ROOT,
@@ -107,8 +123,8 @@ module.exports = {
     const cost = agent.cost && json && typeof json[agent.cost.json_field] === 'number' ? json[agent.cost.json_field] : null;
     const duration = agent.duration && json && typeof json[agent.duration.json_field] === 'number' ? json[agent.duration.json_field] / 60000 : meta.wall_min;
     fs.writeFileSync(path.join(runDir, 'agent-output.json'), JSON.stringify({ agent: agent.name, answer, cost_usd: cost, duration_min: duration, exit_status: res.status, raw: json || (res.stdout || '').slice(-20000) }, null, 2));
-    // end state
-    const changes = changedFiles();
+    // end state (incl. files written into ignored paths — status "!!")
+    const changes = changedFiles(ignoredBefore);
     fs.writeFileSync(path.join(runDir, 'changed-files.json'), JSON.stringify(changes, null, 2));
     fs.writeFileSync(path.join(runDir, 'diff.patch'), fullDiff(changes));
     const verify = (c.verify || []).map(cmd => {
@@ -172,4 +188,4 @@ module.exports = {
 };
 
 // shared with other agent-driven tasks (e.g. ai/tasks/feature)
-module.exports.helpers = { changedFiles, fullDiff, restore, fill, answerFrom, RESULTS_REL };
+module.exports.helpers = { changedFiles, ignoredFiles, fullDiff, restore, fill, answerFrom, RESULTS_REL };

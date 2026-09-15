@@ -18,7 +18,7 @@ const ROOT = path.resolve(__dirname, '..', '..', '..');
 const RUNS = path.join(ROOT, 'ai', 'runs');
 const { helpers } = require(path.join(ROOT, 'ai', 'tasks', 'coding', 'adapter.js'));
 const { globToRegex } = require(path.join(ROOT, 'ai', 'guard', 'engine.js'));
-const { changedFiles, fullDiff, restore, fill, answerFrom } = helpers;
+const { changedFiles, ignoredFiles, fullDiff, restore, fill, answerFrom } = helpers;
 
 function readJSON(f) { try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } }
 
@@ -57,6 +57,7 @@ module.exports = {
     if (opts.dryRun) {return meta;}
     const before = changedFiles();
     if (before.length) {throw new Error(`working tree not clean before the trial: ${before.map(b => b.file).join(', ')}`);}
+    const ignoredBefore = ignoredFiles();
     const t0 = Date.now();
     const res = spawnSync(argv[0], argv.slice(1), {
       cwd: ROOT,
@@ -77,8 +78,8 @@ module.exports = {
     // run folder → artifacts/
     const src = path.join(RUNS, runId);
     if (fs.existsSync(src)) {fs.cpSync(src, path.join(runDir, 'artifacts'), { recursive: true });}
-    // end state
-    const changes = changedFiles();
+    // end state (incl. files written into ignored paths — status "!!")
+    const changes = changedFiles(ignoredBefore);
     fs.writeFileSync(path.join(runDir, 'changed-files.json'), JSON.stringify(changes, null, 2));
     fs.writeFileSync(path.join(runDir, 'diff.patch'), fullDiff(changes));
     const verify = (c.verify || []).map(cmd => {
