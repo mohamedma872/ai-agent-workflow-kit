@@ -1,0 +1,38 @@
+# =============================================================================
+#  <name> — this task's own rules, in plain words.
+#  Added on top of ai/guard.yaml on every tool call. Delete what you do
+#  not need; every key is optional. Checks that must read run state (a gate
+#  that looks at a status file, a budget that reads a cost file) go in
+#  guard.js next to this file — keep their VALUES here so they stay readable.
+# =============================================================================
+
+# extra credential files (globs) — never read or dumped into the context
+secret_files:
+  # - config/<name>-credentials.json
+
+# files only you change (agent asks)
+guarded_files:
+  # - "ai/tasks/<name>/budget.json"
+
+# folders that are this task's audit trail — any `rm` target under them is denied
+evidence:
+  # - <name>-runs
+
+# one entry per pattern; deny / ask / off
+shell_rules:
+  # - id: <name>-reset
+  #   decision: ask
+  #   description: Resetting a run erases its progress — only on your explicit request
+  #   contains: ["scripts/<name>/reset"]
+
+# values read by guard.js (examples — adapt or remove)
+# run_budget:
+#   usd: 20
+#   trigger_commands: [scripts/<name>/step.js]
+# publish_gate:
+#   requires_state_file: <name>-runs/state.json
+#   requires_field: review
+#   requires_value: pass
+# secrets:
+#   file: config/<name>-credentials.json
+#   fields: [password, apiToken]

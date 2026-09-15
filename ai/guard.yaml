@@ -1,0 +1,193 @@
+# =============================================================================
+#  ai/guard.yaml — THE FENCE, in plain words. Applies to EVERY agent:
+#  Claude Code and Codex call the engine from their hooks, Cursor through a
+#  payload adapter, and git pre-commit / pre-push run the secret checks for
+#  anyone who commits. This is the file to READ and EDIT; the engine
+#  (ai/guard/engine.js) reads it on every tool call — no restart needed.
+#  Task-specific rules live in ai/tasks/<task>/guard.yaml and are added on top.
+#
+#  Decisions:   deny = the call never runs      ask = the user is prompted
+#               off  = rule disabled            (Claude Code auto mode answers "ask" for you)
+#  File patterns are globs:  *  = within one folder,  ** = across folders,
+#               a bare name (".env", "CLAUDE.md") matches at any depth.
+#  Command patterns: `contains:` = plain text, any of the entries;  `regex:` = only when text is not enough.
+#
+#  Check an edit:   node ai/guard/engine.js --check      (validates this file + task files)
+#  See what is on:  node ai/guard/engine.js --explain    (prints the active rules and the wiring)
+#  Prove behaviour: node ai/guard/engine.js --selftest   (behaviour checks, no agent needed)
+# =============================================================================
+version: 1
+
+# ── Budget ───────────────────────────────────────────────────────────────────
+session_budget:
+  usd: 50            # ask once every $50 of spend in a session (env AI_SESSION_BUDGET_USD overrides; Claude Code only — it exposes the transcript)
+
+# ── Eval mode (AI_EVAL=1 — set by ai/evals/run.js, never by hand) ────────────
+eval_mode:
+  deny_git: [commit, push, merge, rebase, tag, cherry-pick]   # trials never leave commits
+  deny_outward_writes: true                                    # …or Jira/Slack/Gmail/… writes
+
+# ── Rule 1: secrets shield — never read or dumped into the model's context (deny) ──
+secret_files:
+  - ".env"
+  - ".env.*"
+  - ".mcp.json"
+  - "*.pem"
+  - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "*.jks"
+  - "*.keystore"
+  - "*.mobileprovision"
+  - "*.kdbx"
+  - "*.tfvars"
+  - "id_rsa"
+  - "id_ed25519"
+  - "id_ecdsa"
+  - "id_dsa"
+  - ".npmrc"
+  - ".netrc"
+  - ".pypirc"
+  - ".git-credentials"
+  - "secret.*"
+  - "secrets.*"
+  - "credential.*"
+  - "credentials.*"
+  - "service-account*.json"
+  - "service_account*.json"
+  - ".aws/credentials"
+  - "fastlane/.env*"
+# a shell command that combines one of these with a secret file is a dump → deny
+dump_commands: [cat, less, more, head, tail, sed, awk, bat, strings, xxd, base64, od, cp, scp, rsync, open, python, python3, ruby, perl, source, "."]
+# allowed on purpose: `grep KEY .env` (one key, not the file), `ENVFILE=.env.dev <command>` (no dump verb)
+
+# ── Rule 2: self-protection — only you change these; the agent asks ──
+guarded_files:
+  - "ai/guard.yaml"
+  - "ai/guard/*"
+  - "ai/tasks/*/guard.yaml"
+  - "ai/tasks/*/guard.js"
+  - "ai/agents.yaml"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+  - ".claude/settings.json"
+  - ".claude/settings.local.json"
+  - ".claude/hooks/*"
+  - ".claude/rules/*"
+  - ".claude/keybindings.json"
+  - ".cursor/hooks.json"
+  - ".cursor/rules/*"
+  - ".codex/*"
+  - ".husky/*"
+# a shell command naming a guarded file together with one of these is a rewrite → ask
+write_indicators: [">", ">>", tee, "sed -i", mv, cp, "ln ", install, dd, patch, "perl -pi", "perl -i", writeFileSync, copyFileSync, renameSync, appendFileSync, rmSync, unlinkSync]
+
+# ── Rule 3: destructive shell ──
+# `rm -r` on anything NOT in this list asks; a trailing "/" means "this prefix"
+disposable_dirs:
+  - /tmp/
+  - /private/tmp/
+  - $TMPDIR
+  - ${TMPDIR}
+  - $CLAUDE_SCRATCHPAD
+  - ${CLAUDE_SCRATCHPAD}
+  - node_modules
+  - build
+  - dist
+  - out
+  - coverage
+  - .cache
+  - .next
+  - .turbo
+  - .parcel-cache
+  - target
+  - __pycache__
+  - .pytest_cache
+  - .venv
+  - venv
+  - Pods
+  - DerivedData
+  - .gradle
+  - ios/build
+  - ios/Pods
+  - android/build
+  - android/app/build
+  - android/.gradle
+
+# one entry per pattern; `deny` blocks, `ask` prompts, `off` disables
+shell_rules:
+  - id: force-push
+    decision: deny
+    description: Force-push rewrites shared history — never from the agent
+    regex: 'git push\b[^;&|]*\s(-f|--force|--force-with-lease)\b'
+
+  - id: git-discard
+    decision: ask
+    description: This git command discards local work or rewrites refs
+    regex: 'git\s+(reset\s+--hard|clean\s|checkout\s+(--\s+)?\.(\s|$)|restore\s+(--\s+)?\.(\s|$)|branch\s+-D\b|stash\s+(drop|clear)\b|filter-branch|update-ref\s+-d)'
+
+  - id: sql-destructive
+    decision: ask
+    description: Destructive SQL (DROP / TRUNCATE / DELETE without WHERE)
+    regex: '\b(DROP\s+(TABLE|DATABASE|SCHEMA|INDEX)|TRUNCATE\s+TABLE|DELETE\s+FROM\s+\w+\s*;)'
+    flags: i
+
+  - id: remote-script-to-shell
+    decision: ask
+    description: Pipes a remote script straight into a shell
+    regex: '\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b'
+
+  - id: containers-clusters
+    decision: ask
+    description: Deletes containers, images, volumes, or cluster objects
+    regex: '\b(docker\s+(system\s+prune|rm\s+-f|volume\s+rm|rmi)|kubectl\s+delete|podman\s+rm\s+-f)'
+
+  - id: sudo
+    decision: ask
+    description: Runs as root
+    regex: '(^|[;&|]\s*)sudo\s'
+
+  - id: chmod-777
+    decision: ask
+    description: World-writable permissions
+    contains: ["chmod -R 777"]
+
+  - id: device-wipe
+    decision: ask
+    description: Wipes app or device state (emulator / simulator)
+    regex: '\b(adb\b[^;&|]*\b(uninstall|pm\s+clear|shell\s+rm)\b|emulator\b[^;&|]*-wipe-data|xcrun\s+simctl\s+(erase|delete))'
+
+  - id: disk-wipe
+    decision: ask
+    description: Wipes a disk
+    regex: '\b(diskutil\s+(erase|partition)|mkfs\.|dd\s+if=)'
+
+  # ── Rule 4 (shell side): publishing, deploying, merging, infrastructure ──
+  - id: publish-deploy
+    decision: ask
+    description: Publishes, deploys, merges, or changes infrastructure — confirm before it leaves the machine
+    regex: '\b(gh\s+(pr\s+merge|release\s+create|repo\s+delete)|npm\s+publish|yarn\s+(npm\s+)?publish|pnpm\s+publish|twine\s+upload|docker\s+push|eas\s+submit|xcrun\s+altool|fastlane\b[^;&|]*\b(upload|release|deliver|supply|pilot|submit|match\s+nuke)|terraform\s+(apply|destroy)|pulumi\s+(up|destroy)|kubectl\s+(apply|delete|drain)|helm\s+(install|upgrade|uninstall)|aws\s+\S+\s+(delete|put|create|terminate)|gcloud\s+\S+\s+(delete|deploy)|firebase\s+deploy|vercel\s+(--prod|deploy)|netlify\s+deploy)'
+
+# ── Rule 4 (MCP side): writes to outside systems ask; reads pass ──
+outward_services: [jira, atlassian, gmail, slack, calendar, linear, github, bitbucket, drive, notion, confluence, trello, asana, hubspot, salesforce, figma]
+write_verbs: [send, create, delete, update, post, add_, reply, forward, trash, upload, transition, assign, move, rank, bulk, label, watch, vote, worklog, respond, start_, complete_, apply, remove, resolve, archive, invite, publish, merge]
+read_verbs:  [get, list, search, read, fetch, find, describe, lookup, parse, validate, autocomplete, whoami, auth_status, count, suggest, check, retrieve, query, status]
+
+# ── Rule 5: credential leak — these shapes never go into files, commits, or outbound payloads (deny; also enforced by git pre-commit) ──
+leak_patterns:
+  - label: AWS access key
+    regex: 'AKIA[0-9A-Z]{16}'
+  - label: Atlassian API token
+    regex: 'ATATT3x[A-Za-z0-9_\-=]{20,}'
+  - label: GitHub token
+    regex: 'gh[pousr]_[A-Za-z0-9]{30,}'
+  - label: Slack token
+    regex: 'xox[baprs]-[A-Za-z0-9-]{10,}'
+  - label: API secret key
+    regex: 'sk-(ant-)?[A-Za-z0-9_-]{24,}'
+  - label: Google API key
+    regex: 'AIza[0-9A-Za-z_-]{35}'
+  - label: private key
+    regex: '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  - label: JWT
+    regex: 'eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}'

@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+# AI-agent guardrails at git level (any agent, any human): refuse staged secrets / credential files.
+# See ai/README.md. Bypass is the user's explicit call: git commit --no-verify
+if [ -f ai/guard/git-pre-commit.js ]; then
+  node ai/guard/git-pre-commit.js || exit 1
+fi

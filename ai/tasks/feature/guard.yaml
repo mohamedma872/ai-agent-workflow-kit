@@ -1,0 +1,19 @@
+# =============================================================================
+#  feature — rules for the /feature agentic workflow (orchestrator + subagents
+#  in .claude/agents/). Added on top of ai/guard.yaml. The plan gate that must
+#  read run state is implemented in guard.js next to this file.
+# =============================================================================
+
+# every run's artifacts are evidence — never deleted by an agent
+evidence:
+  - ai/runs
+
+shell_rules:
+  - id: feature-close-run
+    decision: ask
+    description: Closing a /feature run lifts the plan gate — confirm it is really finished
+    contains: ["ai/tasks/feature/runs.js close"]
+
+# read by guard.js
+plan_gate:
+  message: "plan gate: no approved plan for the active /feature run — present ai/runs/<id>/06-plan.md and get it approved before editing product files or committing"

@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+# Ensure Node.js binaries are in PATH
+export PATH="/opt/homebrew/bin:$PATH"
+
+# AI-agent guardrails at git level (any agent, any human): refuse force-pushes.
+# Local tooling — a no-op when ai/ is absent. See ai/README.md.
+if [ -f ai/guard/git-pre-push.js ]; then
+  node ai/guard/git-pre-push.js "$@" || exit 1
+fi

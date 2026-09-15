@@ -1,0 +1,31 @@
+# =============================================================================
+#  ai/agents.yaml — how to run each coding agent headlessly for evals.
+#  `node ai/evals/run.js <task> run --agent <name> …` fills the placeholders:
+#     {prompt}   the case prompt        {budget}  dollars      {cwd}  repo root
+#     {last_message_file}  a file path the agent may write its final answer to
+#  Commands are argument lists (no shell quoting problems). `result` says where
+#  the final answer text is: a JSON field of stdout, or the last-message file.
+#  Every agent gets AI_EVAL=1 in its environment, so the fence denies commits
+#  and outward writes during a trial; the runner restores the tree afterwards.
+# =============================================================================
+
+claude:
+  label: Claude Code (claude -p)
+  command: [claude, -p, "{prompt}", --output-format, json, --max-budget-usd, "{budget}", --permission-mode, bypassPermissions]
+  result: { json_field: result }
+  cost: { json_field: total_cost_usd }
+  duration: { json_field: duration_ms }
+  guard: hooks (.claude/settings.json → ai/guard/engine.js)
+
+cursor:
+  label: Cursor CLI (cursor-agent -p --force)
+  command: [cursor-agent, -p, --force, --output-format, json, "{prompt}"]   # `agent` is the newer name; cursor-agent still works
+  result: { json_field: result }
+  guard: hooks (.cursor/hooks.json → ai/guard/cursor-hook.js)
+
+codex:
+  label: OpenAI Codex CLI (codex exec)
+  command: [codex, exec, --sandbox, workspace-write, --ask-for-approval, never, -C, "{cwd}", --json, -o, "{last_message_file}", "{prompt}"]
+  result: { file: "{last_message_file}" }
+  guard: hooks (.codex/hooks.json → ai/guard/engine.js) + Codex sandbox
+  note: not installed on this machine on 2026-09-15 — install with `npm i -g @openai/codex`

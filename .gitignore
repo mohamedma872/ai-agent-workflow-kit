@@ -1,0 +1,13 @@
+node_modules/
+ai/evals/results/
+ai/runs/
+.claude/settings.local.json
+CLAUDE.local.md
+.mcp.json
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+*.pem
+.DS_Store

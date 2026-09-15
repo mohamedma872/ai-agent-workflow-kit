@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "mcp-jira-cloud@latest"],
+      "env": {
+        "JIRA_BASE_URL": "https://example.atlassian.net",
+        "JIRA_EMAIL": "you@example.com",
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+      }
+    }
+  }
+}

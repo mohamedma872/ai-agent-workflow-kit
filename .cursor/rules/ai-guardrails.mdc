@@ -1,0 +1,13 @@
+---
+description: Guardrails and AI-task standard for this repository (enforced by ai/guard.yaml through .cursor/hooks.json and git hooks)
+alwaysApply: true
+---
+
+Follow `AGENTS.md` at the repository root: never read or dump credential
+files, never write token-shaped strings anywhere, never force-push or delete
+a task's audit trail, never edit the fence (`ai/guard.yaml`, `ai/tasks/*/guard.*`,
+`AGENTS.md`, `.cursor/hooks.json`) — the user does that. Ask before anything
+that leaves the machine or destroys local work. When `AI_EVAL=1` is set you
+are being measured: do the task, do not commit, finish with a short summary.
+Any new LLM/agent feature is an AI task under `ai/tasks/<name>/` with
+guardrails and evals (`ai/README.md`).

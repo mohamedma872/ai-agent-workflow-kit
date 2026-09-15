@@ -1,0 +1,21 @@
+# =============================================================================
+#  coding — rules for ANY coding agent (Claude Code, Cursor, Codex) doing
+#  plain tasks in this repo. The generic fence (ai/guard.yaml) already covers
+#  secrets, destructive shell, outward writes, leaks and eval mode; this adds
+#  only what a repo-editing agent must respect on top.
+# =============================================================================
+
+# eval ledgers and run dirs are the audit trail of every measured trial
+evidence:
+  - ai/evals/results
+
+shell_rules:
+  - id: coding-dependency-change
+    decision: ask
+    description: Adding or removing a dependency changes the lockfile and the native build — confirm first
+    regex: '\b(yarn\s+(add|remove)\s+\S|npm\s+(install|i|uninstall|remove)\s+[^-\s]|pnpm\s+(add|remove)\s+\S|pod\s+install)\b'
+
+  - id: coding-global-install
+    decision: ask
+    description: Global installs change the machine, not the repo
+    regex: '\b(npm|yarn|pnpm)\s+(install|i|add)\s+(-g|--global)\b'
