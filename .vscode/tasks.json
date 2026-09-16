@@ -2,51 +2,123 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "AI: Guard check",
+      "type": "shell",
+      "command": "npm run guard:check",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI: Workflow show",
+      "type": "shell",
+      "command": "npm run workflow:show",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI: Feature workflow status",
+      "type": "shell",
+      "command": "node ai/tasks/feature/runs.js status",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "AI Workflow: Live Progress",
       "type": "shell",
       "command": "npm run workflow:progress:watch",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "isBackground": true,
-      "problemMatcher": [],
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
         "clear": true,
         "focus": false
-      }
-    },
-    {
-      "label": "AI Workflow: Live GitHub PR Progress",
-      "type": "shell",
-      "command": "npm run workflow:progress:github:watch",
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": false,
-        "focus": false
-      }
+      },
+      "problemMatcher": []
     },
     {
       "label": "AI Workflow: Progress Snapshot",
       "type": "shell",
       "command": "npm run workflow:progress",
-      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
         "clear": true
-      }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI Workflow: Live GitHub PR Progress",
+      "type": "shell",
+      "command": "npm run workflow:progress:github:watch",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false,
+        "focus": false
+      },
+      "problemMatcher": []
     },
     {
       "label": "AI Workflow: Update GitHub PR Progress Once",
       "type": "shell",
       "command": "npm run workflow:progress:github",
-      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "presentation": {
         "reveal": "always",
         "panel": "dedicated"
-      }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI: Verify repo",
+      "type": "shell",
+      "command": "npm run guard:check && npm run workflow:check && npm run exam:check",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
     }
   ]
 }

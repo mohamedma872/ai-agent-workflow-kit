@@ -78,7 +78,7 @@ The important part is the **human approval gate**:
 
 # Live workflow progress
 
-The workflow already stores progress in:
+The workflow stores progress in:
 
 ```text
 ai/runs/<run-id>/state.json
@@ -164,24 +164,52 @@ The dashboard understands both **phase status** and individual parallel **role s
 
 This repo includes `.vscode/tasks.json`.
 
-In VS Code:
+Open the repository root in VS Code, then:
 
 ```text
-Command Palette
+Cmd/Ctrl + Shift + P
 → Tasks: Run Task
 → AI Workflow: Live Progress
 ```
 
-This opens a dedicated terminal panel that refreshes while the agents work.
+This opens a **dedicated terminal panel that stays running and refreshes** while `state.json` changes.
 
-Available tasks:
+> **Important:** `AI: Workflow show` is not the live dashboard. It prints the workflow definition once and exits. `AI: Feature workflow status` also prints only a one-time snapshot. For continuous updates, use `AI Workflow: Live Progress`.
 
-- `AI Workflow: Live Progress`
-- `AI Workflow: Progress Snapshot`
-- `AI Workflow: Live GitHub PR Progress`
-- `AI Workflow: Update GitHub PR Progress Once`
+The included tasks are:
 
-This also works in editors that understand VS Code-compatible task definitions.
+| VS Code task | What it does |
+|---|---|
+| `AI: Guard check` | Runs the guard configuration check once. |
+| `AI: Workflow show` | Prints the workflow definition once. This is **not** live progress. |
+| `AI: Feature workflow status` | Prints the current run state once. |
+| `AI Workflow: Live Progress` | Runs `npm run workflow:progress:watch` and continuously refreshes the local dashboard. |
+| `AI Workflow: Progress Snapshot` | Prints one formatted progress dashboard snapshot. |
+| `AI Workflow: Live GitHub PR Progress` | Keeps one GitHub PR progress comment synchronized while the workflow runs. |
+| `AI Workflow: Update GitHub PR Progress Once` | Updates the PR progress comment once and exits. |
+| `AI: Verify repo` | Runs guard, workflow, and exam validation checks. |
+
+If the task does not appear, confirm VS Code is opened at the project root and that this file exists:
+
+```bash
+ls .vscode/tasks.json
+```
+
+You can always bypass VS Code Tasks and start the watcher directly:
+
+```bash
+npm run workflow:progress:watch
+```
+
+The terminal should remain open. If it exits immediately, check that there is an active run:
+
+```bash
+node ai/tasks/feature/runs.js status
+```
+
+and verify the active run marker/state exists under `ai/runs/`.
+
+This task setup also works in editors that understand VS Code-compatible task definitions.
 
 ## JSON output
 
@@ -413,13 +441,13 @@ npm run workflow:check
 npm run exam:check
 ```
 
-Inspect the workflow:
+Inspect the workflow definition once:
 
 ```bash
 npm run workflow:show
 ```
 
-Start the progress view:
+Start the live progress view:
 
 ```bash
 npm run workflow:progress:watch
@@ -442,7 +470,7 @@ Then use Claude Code:
 | `ai/workflow/progress.js` | Terminal / JSON / Markdown progress renderer |
 | `ai/workflow/github-progress.js` | Safe single-comment GitHub PR progress publisher |
 | `ai/tasks/feature/runs.js` | Local phase and per-role state store |
-| `.vscode/tasks.json` | Editor tasks for live progress |
+| `.vscode/tasks.json` | Editor tasks for checks, snapshots, and live progress |
 | `ai/agents.yaml` | Claude/Codex launch definitions |
 | `ai/guard.yaml` | Safety rules |
 | `.claude/skills/feature/SKILL.md` | Claude orchestration procedure |
