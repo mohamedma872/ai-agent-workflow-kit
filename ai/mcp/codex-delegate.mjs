@@ -12,7 +12,7 @@
  * compact status object to the MCP host.
  *
  * Security properties:
- * - prompt/output files must stay inside ai/runs/
+ * - prompt/output files must stay inside the same ai/runs/<id>/ tree
  * - the actual Codex process still uses the repo's Codex hook/guardrail wiring
  * - no shell interpolation: child_process.spawnSync receives argv directly
  * - stdout is reserved for MCP; diagnostics go to stderr
@@ -20,22 +20,28 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, '..', '..');
 const RUNS = path.join(ROOT, 'ai', 'runs');
 const ROUTER = path.join(ROOT, 'ai', 'workflow', 'router.js');
 
-function insideRuns(input, label) {
+function runScopedPath(input, label) {
   const abs = path.resolve(ROOT, String(input || ''));
   const rel = path.relative(RUNS, abs);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`${label} must be inside ai/runs/<id>/`);
   }
-  return abs;
+  const [runId] = rel.split(path.sep);
+  if (!runId || runId === '.' || runId === '..') {
+    throw new Error(`${label} must identify a concrete ai/runs/<id>/ run`);
+  }
+  return { abs, runId };
 }
 
 function repoRelative(file) {
@@ -88,26 +94,26 @@ server.registerTool(
   async ({ workflow, role, prompt_file, output_file, budget_usd, timeout_min }) => {
     const started = Date.now();
     try {
-      const promptAbs = insideRuns(prompt_file, 'prompt_file');
-      const outputAbs = insideRuns(output_file, 'output_file');
-      if (!fs.existsSync(promptAbs) || !fs.statSync(promptAbs).isFile()) {
-        throw new Error(`prompt_file does not exist: ${repoRelative(promptAbs)}`);
+      const prompt = runScopedPath(prompt_file, 'prompt_file');
+      const output = runScopedPath(output_file, 'output_file');
+      if (prompt.runId !== output.runId) {
+        throw new Error('prompt_file and output_file must belong to the same ai/runs/<id>/ run');
       }
-      if (fs.statSync(promptAbs).size > 2 * 1024 * 1024) {
+      if (!fs.existsSync(prompt.abs) || !fs.statSync(prompt.abs).isFile()) {
+        throw new Error(`prompt_file does not exist: ${repoRelative(prompt.abs)}`);
+      }
+      if (fs.statSync(prompt.abs).size > 2 * 1024 * 1024) {
         throw new Error('prompt_file is larger than 2 MB; create a focused context artifact instead');
       }
-      if (path.dirname(promptAbs) !== path.dirname(outputAbs) && !repoRelative(outputAbs).startsWith(repoRelative(path.dirname(promptAbs)) + '/')) {
-        throw new Error('output_file must stay in the same run directory tree as prompt_file');
-      }
 
-      fs.mkdirSync(path.dirname(outputAbs), { recursive: true });
+      fs.mkdirSync(path.dirname(output.abs), { recursive: true });
       const before = new Set(currentChanges());
       const args = [
         ROUTER,
         'exec', workflow, role,
         '--agent', 'codex',
-        '--prompt-file', promptAbs,
-        '--output-file', outputAbs,
+        '--prompt-file', prompt.abs,
+        '--output-file', output.abs,
         '--budget', String(budget_usd),
         '--timeout-min', String(timeout_min),
       ];
@@ -133,7 +139,8 @@ server.registerTool(
         workflow,
         role,
         executor: 'codex',
-        output_file: repoRelative(outputAbs),
+        run_id: prompt.runId,
+        output_file: repoRelative(output.abs),
         changed_files: changed,
         duration_seconds: durationSeconds,
         exit_status: typeof res.status === 'number' ? res.status : null,
