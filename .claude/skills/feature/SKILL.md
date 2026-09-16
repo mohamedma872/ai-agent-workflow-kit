@@ -58,6 +58,8 @@ CLAUDE ORCHESTRATOR
            |
            +--> Codex through MCP (implementation/fix roles)
            |
+           +--> feature-runner (executable conditional verification roles)
+           |
            +--> future executor from ai/agents.yaml
   |
   v
@@ -336,47 +338,62 @@ objective evidence: file/line, test name, command result, review finding, or
 device screenshot. Never mark an item passed only because an executor said it
 passed.
 
-### Final Appium screenshot evidence for mobile/UI features
+### Executable Appium evidence gate
 
-If `state.json` says mobile screenshots are `required`, resolve
-`mobile-evidence` and use the `mobile-device-qc` skill **after implementation,
-reviews, and fixes are complete**. This is final evidence of the finished
-feature, not an intermediate screenshot run.
+Do **not** manually perform or merely describe the `mobile-evidence` role here.
+The workflow runner owns execution of the conditional role declared by the
+verification stage in `ai/workflows/feature.yaml`.
 
-This applies to native Android/iOS, React Native, and Flutter. For Flutter,
-Appium still runs an Android or iOS session against the built app. Prefer
-accessibility/semantics identifiers exposed to the platform. If the repository
-already uses a Flutter-specific Appium driver/plugin, follow that existing
-setup; do not introduce one only to satisfy the workflow.
+After fixes and affected tests are complete, run:
 
-Use Appium in headless evidence mode:
+```bash
+node ai/workflow/feature-runner.js verification --run <id>
+```
 
-- prefer Appium MCP with `NO_UI=true`;
-- use a headless emulator/simulator when the local platform/project supports it;
-- execute the device-relevant acceptance criteria;
-- capture `appium_screenshot` at important successful checkpoints and required
-  negative/error states;
-- save images under `ai/runs/<id>/device/screenshots/`;
-- write `ai/runs/<id>/device/mobile-device-qc.md` mapping ACs to screenshot paths;
-- terminate the Appium session when finished.
+or for the active run:
 
-A normal mobile/UI run must not mark verification `pass` without those files.
-`runs.js` enforces at least one screenshot plus the device-QC manifest when
-mobile evidence is required.
+```bash
+npm run workflow:mobile-evidence
+```
 
-If Appium/device/build access is unavailable, record `pending-device` in
-`11-verification.md` and mark verification `blocked`; do not fake or reuse stale
-screenshots.
+When mobile screenshot evidence is `required`, the runner automatically:
 
-For genuinely non-mobile/non-UI work, the earlier explicit `not-required`
-classification is sufficient.
+1. resolves and executes the routed `mobile-evidence` role through `router.js`;
+2. instructs that role to use Appium MCP against the final post-fix build;
+3. waits for the headless agent process to finish;
+4. requires a fresh manifest at:
+   `ai/runs/<id>/device/mobile-device-qc.md`;
+5. requires one or more fresh PNG screenshots matching:
+   `ai/runs/<id>/device/screenshots/*.png`;
+6. requires the manifest `## Verdict` to be `PASS`;
+7. records execution status, timestamps, manifest path, and screenshot paths in
+   `state.json`.
 
-Then:
+The runner applies to native Android/iOS, React Native, and Flutter. Flutter and
+React Native are tested through their built Android/iOS application. Android
+uses the appropriate Appium Android session/driver; iOS uses the appropriate
+Appium iOS session/driver.
+
+If Appium MCP is not available to the headless Claude session, the build is not
+runnable, no simulator/emulator/device is available, credentials/test data are
+missing, the agent exits non-zero, the manifest is missing, the screenshots are
+missing/stale, or the verdict is not PASS, the runner fails and records mobile
+evidence as blocked. Do not continue to a passing verification in that case.
+
+For genuinely non-mobile/non-UI work classified as `not-required`, the runner
+returns successfully without launching Appium.
+
+After the runner succeeds, write/update `11-verification.md` with the device
+evidence paths and then mark verification:
 
 ```bash
 node ai/tasks/feature/runs.js set verification pass
 node ai/tasks/feature/runs.js close
 ```
+
+`runs.js` independently enforces the required evidence files before accepting
+`verification = pass`; the runner is what now **executes** the previously
+passive `conditional_role` and produces fresh evidence.
 
 Final response:
 
@@ -411,5 +428,5 @@ grader evaluates end state and artifacts rather than trusting agent messages.
 - Parallelize only independent work; dependencies in `ai/workflows/feature.yaml` are authoritative.
 - Selected parallel roles must be registered so parent phases reconcile automatically.
 - Flutter is a first-class mobile stack: select `flutter` for Flutter behavior and add Android/iOS roles when native integration changes.
-- Mobile/UI completion requires fresh post-fix Appium screenshot evidence unless the run is explicitly non-mobile/non-UI or is running under the eval harness.
+- Required mobile/UI completion must execute `feature-runner.js verification` and produce fresh Appium evidence under the active run.
 - Artifacts are evidence; end-state verification decides whether the feature is done.
