@@ -17,6 +17,8 @@ Codex implements it
         ↓
 Tests + reviews verify it
         ↓
+Final Appium evidence for mobile/UI
+        ↓
 Claude gives you the final result
 ```
 
@@ -33,7 +35,7 @@ At the same time, **guardrails** protect the repository and **evals** check whet
 | **Claude + Codex delegation** | Claude coordinates the work. Codex handles implementation and fixes by default. |
 | **Guardrails** | Agents are blocked from dangerous actions such as reading secrets, force-pushing, bypassing hooks, or editing protected workflow files. |
 | **Current documentation** | Context7 gives agents current library/framework documentation instead of relying only on model memory. |
-| **Mobile QA** | Appium can verify Android/iOS acceptance criteria on an emulator, simulator, or device. |
+| **Mobile QA evidence** | Mobile/UI features finish with headless Appium validation and screenshots stored with the run evidence. |
 | **Evals** | Tasks are graded from the final repository state, not from what the agent claims it did. |
 
 ---
@@ -67,7 +69,11 @@ flowchart TD
     H --> I[Build and tests]
     I --> J[Independent reviews]
     J --> K[Fixes if needed]
-    K --> L[Final verification]
+    K --> M{Mobile/UI feature?}
+    M -->|Yes| N[Headless Appium + screenshots]
+    M -->|No| O[Evidence not required + reason]
+    N --> L[Final verification]
+    O --> L
 ```
 
 The important part is the **human approval gate**:
@@ -107,7 +113,7 @@ flowchart LR
     G --> P[One PR comment<br/>updated as status changes]
 ```
 
-`ai/runs/` stays gitignored. Prompts, detailed agent output, test evidence, and local artifacts are **not published to GitHub** by the progress feature.
+`ai/runs/` stays gitignored. Prompts, detailed agent output, test evidence, screenshots, and local artifacts are **not published to GitHub** by the progress feature.
 
 Only a safe status summary can be sent to the PR.
 
@@ -162,7 +168,7 @@ The dashboard understands both **phase status** and individual parallel **role s
 
 ## Automatic state reconciliation
 
-Parallel phases are now closed from the selected role states instead of relying on the orchestrator to remember a second manual update.
+Parallel phases are closed from the selected role states instead of relying on the orchestrator to remember a second manual update.
 
 Before launching parallel analysis or reviews, the workflow registers the exact roles selected for that run:
 
@@ -283,43 +289,6 @@ npm run workflow:progress:github:watch
 
 The command maintains **one comment** and edits it when progress changes instead of adding a new comment every time.
 
-Example PR view:
-
-```text
-🤖 Agentic Workflow Progress
-
-Run: PAYMENTS-123
-██████████░░░░░░░░░░ 52%
-
-✅ Requirements
-✅ Acceptance Criteria
-✅ Repository Inspection
-🔄 Specialist Analysis
-   ✅ Architecture
-   ✅ QA
-   🔄 Security
-   ⏳ Android
-
-⏳ Plan
-🔒 Human Approval
-⏳ Codex Implementation
-⏳ Build + Tests
-⏳ Reviews
-⏳ Final Verification
-```
-
-Requirements for PR publishing:
-
-```bash
-gh auth login
-```
-
-and the current branch must have a GitHub pull request. You can also pass a PR explicitly:
-
-```bash
-node ai/workflow/github-progress.js --pr 123 --watch
-```
-
 ## Progress states
 
 ```text
@@ -338,7 +307,7 @@ node ai/workflow/github-progress.js --pr 123 --watch
 
 | Role | Responsibility |
 |---|---|
-| **Claude** | Orchestrates the workflow, requirements, analysis, planning, reviews, and final verification. |
+| **Claude** | Orchestrates the workflow, requirements, analysis, planning, reviews, final device evidence, and verification. |
 | **Codex** | Implements the approved plan and fixes validated review findings by default. |
 | **Specialists** | Focused architecture, security, QA, performance, Android, iOS, backend, frontend, and code-review analysis. |
 | **Human** | Approves the implementation plan before product code can be changed. |
@@ -375,25 +344,72 @@ Useful for framework upgrades, deprecated APIs, SDK setup, migrations, build set
 
 ---
 
-# Mobile QA with Appium
+# Final mobile evidence with Appium
 
-For native mobile tasks, Appium can verify Android and iOS behavior.
+For mobile/UI features, Appium is not only an optional test tool. The finished post-fix feature must produce screenshot evidence before final verification can pass.
 
-```text
-Acceptance criteria
-        ↓
-QA agent
-        ↓
-Appium
-        ↓
-Android / iOS device
-        ↓
-Evidence
-        ↓
-PASS / FAIL / BLOCKED
+During repository inspection, classify the feature:
+
+```bash
+# Mobile or device-visible UI feature
+node ai/tasks/feature/runs.js evidence required "mobile/UI feature"
+
+# Non-mobile/non-UI work
+node ai/tasks/feature/runs.js evidence not-required "backend-only change"
 ```
 
-Typical checks include permissions, biometrics, RTL, deep links, WebViews, lifecycle behavior, gestures, and scrolling.
+For required mobile evidence, the final Appium run happens **after implementation, reviews, and fixes**.
+
+```text
+Finished feature
+      ↓
+Headless Appium
+      ↓
+Run device acceptance criteria
+      ↓
+Capture screenshots
+      ↓
+ai/runs/<id>/device/
+      ↓
+Final verification
+```
+
+Evidence is stored locally as:
+
+```text
+ai/runs/<id>/device/
+├── mobile-device-qc.md
+└── screenshots/
+    ├── 01-launch.png
+    ├── 02-ac-1-success.png
+    ├── 03-ac-2-error-state.png
+    └── ...
+```
+
+Use Appium MCP with `NO_UI=true`. When the project/platform supports it, run the emulator/simulator without a visible window too. The agent still captures screenshots with Appium and saves them to files.
+
+The manifest maps screenshots back to acceptance criteria:
+
+```text
+| AC | result | screenshot |
+|---|---|---|
+| AC-1 | PASS | device/screenshots/02-ac-1-success.png |
+| AC-2 | PASS | device/screenshots/03-ac-2-error-state.png |
+```
+
+For a normal mobile/UI run, `verification = pass` is rejected when:
+
+- evidence is still `unclassified`;
+- screenshots are required but the screenshot folder is empty; or
+- `device/mobile-device-qc.md` is missing.
+
+If Appium/device/build access is unavailable, the workflow must report `blocked` / `pending-device` instead of pretending the feature is verified.
+
+The detailed reusable procedure is:
+
+```text
+.claude/skills/mobile-device-qc/SKILL.md
+```
 
 ---
 
@@ -406,7 +422,7 @@ Think of MCP as a **bridge between an AI agent and another capability**.
 | **codex-delegate** | Claude hands implementation/fix work to Codex |
 | **Context7** | Current framework/library documentation |
 | **Atlassian** | Jira and Confluence context |
-| **Appium** | Android/iOS device testing |
+| **Appium** | Android/iOS device testing and final screenshot evidence |
 | **Playwright** | Optional browser testing |
 | **GitHub** | Optional PR/CI/repository context |
 
@@ -514,11 +530,12 @@ Then use Claude Code:
 | `ai/workflow/progress.js` | Terminal / JSON / Markdown progress renderer and consistency detection |
 | `ai/workflow/progress-selftest.js` | Regression checks for stale/contradictory workflow states |
 | `ai/workflow/github-progress.js` | Safe single-comment GitHub PR progress publisher |
-| `ai/tasks/feature/runs.js` | Local phase/per-role state store and automatic reconciliation |
+| `ai/tasks/feature/runs.js` | Local phase/per-role state store, evidence gate, and automatic reconciliation |
 | `.vscode/tasks.json` | Editor tasks for checks, snapshots, and live progress |
 | `ai/agents.yaml` | Claude/Codex launch definitions |
 | `ai/guard.yaml` | Safety rules |
 | `.claude/skills/feature/SKILL.md` | Claude orchestration procedure |
+| `.claude/skills/mobile-device-qc/SKILL.md` | Final headless Appium screenshot procedure |
 | `ai/mcp/README.md` | MCP/tool setup |
 | `ai/README.md` | Advanced guardrail/eval reference |
 
@@ -541,11 +558,14 @@ flowchart TB
     H --> X[Codex implementation]
 
     X --> T[Tests]
-    T --> A[Appium when mobile]
     T --> R[Independent reviews]
-
     R --> F[Codex fixes]
-    F --> V[Claude verification]
+
+    F --> M{Mobile/UI?}
+    M -->|Yes| A[Headless Appium]
+    A --> SS[Screenshots + device manifest]
+    SS --> V[Claude verification]
+    M -->|No| V
 
     C --> ST
     ST --> UI[Live progress views]
