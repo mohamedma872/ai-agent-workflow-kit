@@ -4,6 +4,12 @@
 
 - Added live agentic workflow progress rendering from the existing `ai/runs/<id>/state.json` source of truth: terminal dashboard, watch mode, JSON/Markdown output, VS Code tasks, and an optional single auto-updating GitHub PR progress comment.
 - Added per-role progress tracking for parallel analysis/review agents so the dashboard can show which specialists are running, done, blocked, failed, or skipped.
+- Added selected-role registration and automatic reconciliation for parallel `analysis` / `reviews` phases so completed specialists cannot leave a stale parent phase stuck `in_progress`.
+- Human plan approval now records both `plan` and `approval` as `pass`; legacy contradictory state is rendered defensively and can be repaired with `runs.js reconcile`.
+- Added regression self-tests for stale workflow-state combinations and downstream-current-stage selection.
+- Added explicit mobile screenshot-evidence classification (`required` / `not-required`) to feature runs and created `ai/runs/<id>/device/screenshots/` for final device evidence.
+- Mobile/UI verification now requires a post-fix headless Appium run, at least one screenshot, and `device/mobile-device-qc.md`; verification cannot pass when required evidence is missing.
+- Added a `mobile-evidence` workflow role and expanded the reusable Appium skill to capture final screenshots mapped to acceptance criteria.
 - Added Context7 to the project MCP example and a narrow `docs-researcher` Claude subagent for current, version-specific external documentation.
 - Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs-researcher.md` artifact instead of relying on model memory.
 - Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.

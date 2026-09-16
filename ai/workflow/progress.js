@@ -51,6 +51,7 @@ const ICONS = {
 
 const DONE = new Set(['pass', 'skipped']);
 const RUNNING = new Set(['in_progress']);
+const TERMINAL_ROLE_STATUSES = new Set(['pass', 'fail', 'blocked', 'skipped']);
 
 function activeId() {
   try {
@@ -84,6 +85,9 @@ function demoState() {
       inspection: { status: 'pass' },
       analysis: { status: 'in_progress' },
     },
+    selectedRoles: {
+      analysis: ['docs', 'architect', 'qa-plan', 'security', 'performance', 'android', 'ios'],
+    },
     roles: {
       analysis: {
         docs: { status: 'pass', executor: 'claude' },
@@ -98,12 +102,57 @@ function demoState() {
   };
 }
 
-function statusOf(state, phase) {
+function rawStatusOf(state, phase) {
   return state?.phases?.[phase]?.status || 'pending';
 }
 
 function roleEntries(state, group) {
   return Object.entries(state?.roles?.[group] || {});
+}
+
+function selectedRoleNames(state, group) {
+  const explicit = state?.selectedRoles?.[group];
+  if (Array.isArray(explicit) && explicit.length) return explicit;
+  return roleEntries(state, group).map(([role]) => role);
+}
+
+function downstreamStarted(state, phase) {
+  const index = PHASES.indexOf(phase);
+  return PHASES.slice(index + 1).some(next => rawStatusOf(state, next) !== 'pending');
+}
+
+function deriveRoleGroupStatus(state, group) {
+  const entries = roleEntries(state, group);
+  const explicitSelection = Array.isArray(state?.selectedRoles?.[group]) && state.selectedRoles[group].length > 0;
+  const legacyCanClose = !explicitSelection
+    && entries.length > 0
+    && entries.every(([, entry]) => TERMINAL_ROLE_STATUSES.has(entry.status))
+    && downstreamStarted(state, group);
+
+  if (!explicitSelection && !legacyCanClose) return null;
+  const names = selectedRoleNames(state, group);
+  if (!names.length) return null;
+  const statuses = names.map(role => state?.roles?.[group]?.[role]?.status || 'pending');
+
+  if (statuses.includes('fail')) return 'fail';
+  if (statuses.includes('blocked')) return 'blocked';
+  if (statuses.some(status => status === 'pending' || status === 'in_progress')) return 'in_progress';
+  if (statuses.every(status => status === 'skipped')) return 'skipped';
+  if (statuses.every(status => status === 'pass' || status === 'skipped')) return 'pass';
+  return 'in_progress';
+}
+
+function effectiveStatus(state, phase) {
+  if (phase === 'analysis' || phase === 'reviews') {
+    const derived = deriveRoleGroupStatus(state, phase);
+    if (derived) return derived;
+  }
+
+  const raw = rawStatusOf(state, phase);
+  if (phase === 'plan' && rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(raw)) {
+    return 'pass';
+  }
+  return raw;
 }
 
 function unitProgress(status) {
@@ -115,10 +164,12 @@ function unitProgress(status) {
 function phaseProgress(state, phase) {
   const roles = roleEntries(state, phase);
   if ((phase === 'analysis' || phase === 'reviews') && roles.length) {
-    const value = roles.reduce((sum, [, entry]) => sum + unitProgress(entry.status || 'pending'), 0);
-    return value / roles.length;
+    const selected = selectedRoleNames(state, phase);
+    const considered = selected.length ? selected : roles.map(([role]) => role);
+    const value = considered.reduce((sum, role) => sum + unitProgress(state?.roles?.[phase]?.[role]?.status || 'pending'), 0);
+    return value / considered.length;
   }
-  return unitProgress(statusOf(state, phase));
+  return unitProgress(effectiveStatus(state, phase));
 }
 
 function percentComplete(state) {
@@ -137,16 +188,48 @@ function lastUpdated(state) {
 }
 
 function currentWork(state) {
-  for (const group of ['analysis', 'reviews']) {
-    const running = roleEntries(state, group).find(([, entry]) => entry.status === 'in_progress');
-    if (running) return `${LABELS[group]} → ${running[0]}`;
+  // Prefer the furthest downstream blocked/failed stage: it is the actionable stop.
+  for (const phase of [...PHASES].reverse()) {
+    const status = effectiveStatus(state, phase);
+    if (status === 'blocked' || status === 'fail') return `${LABELS[phase]} (${status})`;
   }
-  const runningPhase = PHASES.find(phase => statusOf(state, phase) === 'in_progress');
-  if (runningPhase) return LABELS[runningPhase];
-  const blocked = PHASES.find(phase => ['blocked', 'fail'].includes(statusOf(state, phase)));
-  if (blocked) return `${LABELS[blocked]} (${statusOf(state, blocked)})`;
-  const pending = PHASES.find(phase => statusOf(state, phase) === 'pending');
+
+  // If stale earlier phases remain in_progress, the furthest downstream active phase wins.
+  for (const phase of [...PHASES].reverse()) {
+    if (effectiveStatus(state, phase) !== 'in_progress') continue;
+    if (phase === 'analysis' || phase === 'reviews') {
+      const running = roleEntries(state, phase).find(([, entry]) => entry.status === 'in_progress');
+      if (running) return `${LABELS[phase]} → ${running[0]}`;
+    }
+    return LABELS[phase];
+  }
+
+  const pending = PHASES.find(phase => effectiveStatus(state, phase) === 'pending');
   return pending ? `Waiting for ${LABELS[pending]}` : 'Done';
+}
+
+function consistencyIssues(state) {
+  const issues = [];
+
+  for (const group of ['analysis', 'reviews']) {
+    const derived = deriveRoleGroupStatus(state, group);
+    const raw = rawStatusOf(state, group);
+    if (derived && raw !== derived) {
+      issues.push(`${LABELS[group]} stored as ${raw}, but role states imply ${derived}.`);
+    }
+  }
+
+  const rawPlan = rawStatusOf(state, 'plan');
+  if (rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(rawPlan)) {
+    issues.push(`Human Approval is pass, so Implementation Plan is treated as pass instead of stale ${rawPlan}.`);
+  }
+
+  const rawRunning = PHASES.filter(phase => rawStatusOf(state, phase) === 'in_progress');
+  if (rawRunning.length > 1) {
+    issues.push(`Multiple stored phases are in_progress (${rawRunning.join(', ')}); Current uses the furthest downstream active stage.`);
+  }
+
+  return issues;
 }
 
 function progressBar(percent, width = 28) {
@@ -168,33 +251,40 @@ function buildSummary(id, state, options = {}) {
     planApproved: options.demo ? false : planApproved(id),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
-    phases: PHASES.map(phase => ({
-      id: phase,
-      label: LABELS[phase],
-      status: statusOf(state, phase),
-      note: state?.phases?.[phase]?.note || null,
-      roles: roleEntries(state, phase).map(([role, entry]) => ({
-        role,
-        status: entry.status || 'pending',
-        executor: entry.executor || null,
-        note: entry.note || null,
-      })),
-    })),
+    warnings: consistencyIssues(state),
+    phases: PHASES.map(phase => {
+      const rawStatus = rawStatusOf(state, phase);
+      const status = effectiveStatus(state, phase);
+      return {
+        id: phase,
+        label: LABELS[phase],
+        status,
+        ...(status !== rawStatus ? { rawStatus } : {}),
+        note: state?.phases?.[phase]?.note || null,
+        roles: roleEntries(state, phase).map(([role, entry]) => ({
+          role,
+          status: entry.status || 'pending',
+          executor: entry.executor || null,
+          note: entry.note || null,
+        })),
+      };
+    }),
   };
 }
 
 function renderTerminal(summary) {
   const lines = [];
   lines.push('');
-  lines.push(`╭────────────────────────────────────────────────────────────╮`);
+  lines.push('╭────────────────────────────────────────────────────────────╮');
   lines.push(`│  FEATURE: ${String(summary.id).padEnd(35)} ${String(summary.percent).padStart(3)}%  │`);
-  lines.push(`╰────────────────────────────────────────────────────────────╯`);
+  lines.push('╰────────────────────────────────────────────────────────────╯');
   lines.push(`   ${progressBar(summary.percent)}  ${summary.percent}%`);
   lines.push('');
 
   for (const phase of summary.phases) {
     const icon = ICONS[phase.status] || '•';
-    lines.push(` ${icon} ${phase.label.padEnd(24)} ${phase.status}`);
+    const reconciled = phase.rawStatus ? ` (stored: ${phase.rawStatus})` : '';
+    lines.push(` ${icon} ${phase.label.padEnd(24)} ${phase.status}${reconciled}`);
     for (const role of phase.roles) {
       const roleIcon = ICONS[role.status] || '•';
       const executor = role.executor ? ` · ${role.executor}` : '';
@@ -206,6 +296,11 @@ function renderTerminal(summary) {
   lines.push(` Current: ${summary.current}`);
   lines.push(` Plan gate: ${summary.planApproved ? '✅ approved' : '🔒 waiting for human approval'}`);
   if (summary.updatedAt) lines.push(` Last update: ${summary.updatedAt}`);
+  if (summary.warnings.length) {
+    lines.push('');
+    lines.push(' ⚠ State reconciliation:');
+    for (const warning of summary.warnings) lines.push(`   - ${warning}`);
+  }
   lines.push('');
   return lines.join('\n');
 }
@@ -213,7 +308,8 @@ function renderTerminal(summary) {
 function renderMarkdown(summary) {
   const rows = summary.phases.map(phase => {
     const icon = ICONS[phase.status] || '•';
-    return `| ${phase.label} | ${icon} ${phase.status} |`;
+    const reconciled = phase.rawStatus ? ` _(stored: ${phase.rawStatus})_` : '';
+    return `| ${phase.label} | ${icon} ${phase.status}${reconciled} |`;
   });
 
   const detailSections = summary.phases
@@ -224,6 +320,10 @@ function renderMarkdown(summary) {
     })
     .join('\n');
 
+  const warnings = summary.warnings.length
+    ? `\n> ⚠ **State reconciliation**\n> ${summary.warnings.join('\n> ')}`
+    : '';
+
   return [
     '## 🤖 Agentic Workflow Progress',
     '',
@@ -231,6 +331,7 @@ function renderMarkdown(summary) {
     `**Progress:** \`${progressBar(summary.percent, 20)}\` **${summary.percent}%**  `,
     `**Current:** ${summary.current}  `,
     `**Plan gate:** ${summary.planApproved ? '✅ Approved' : '🔒 Waiting for human approval'}`,
+    warnings,
     '',
     '| Stage | Status |',
     '|---|---|',
@@ -300,6 +401,13 @@ module.exports = {
   activeId,
   loadState,
   demoState,
+  rawStatusOf,
+  roleEntries,
+  deriveRoleGroupStatus,
+  effectiveStatus,
+  consistencyIssues,
+  percentComplete,
+  currentWork,
   buildSummary,
   renderTerminal,
   renderMarkdown,

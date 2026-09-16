@@ -31,6 +31,17 @@ Phases: `request`, `requirements`, `acceptance-criteria`, `definition-of-done`,
 `inspection`, `analysis`, `plan`, `approval`, `implementation`, `build-test`,
 `reviews`, `fixes`, `verification`.
 
+For parallel groups, register all selected roles before delegation:
+
+```bash
+node ai/tasks/feature/runs.js select-roles analysis <role...>
+node ai/tasks/feature/runs.js select-roles reviews <role...>
+```
+
+Then update each role with `set-role`. The parent `analysis`/`reviews` status is
+derived automatically from the selected role states; do not leave a stale
+parent `in_progress` after all children have finished.
+
 ## Execution model
 
 ```text
@@ -43,7 +54,7 @@ CLAUDE ORCHESTRATOR
   |
   +--> role router: ai/workflow/router.js
            |
-           +--> Claude subagent (analysis/review roles)
+           +--> Claude subagent (analysis/review/QA roles)
            |
            +--> Codex through MCP (implementation/fix roles)
            |
@@ -75,8 +86,8 @@ The project MCP config can expose:
 mcp__codex-delegate__delegate
 ```
 
-Use it for Codex-routed roles. **Do not put the full plan, ACs, diff or review
-text in the MCP arguments.** First write a focused context artifact under the
+Use it for Codex-routed roles. Do not put the full plan, ACs, diff or review
+text in the MCP arguments. First write a focused context artifact under the
 active run, then pass only paths and small control fields to the MCP tool.
 
 Example for implementation:
@@ -91,8 +102,7 @@ role         = implementation
 The MCP server reads the context file locally, invokes Codex through the
 provider-independent router, writes Codex's detailed final response to the
 output artifact, and returns only compact metadata such as status, changed file
-names and the artifact path. This keeps large delegation payloads and Codex
-responses out of Claude's conversational context.
+names and the artifact path.
 
 If the MCP server is unavailable, fall back to the equivalent CLI call:
 
@@ -116,6 +126,7 @@ the normal workflow or:
 node ai/tasks/feature/runs.js approve <id>
 ```
 
+Approval automatically records both `plan = pass` and `approval = pass`.
 Never delegate implementation or fixes before the plan gate is open.
 
 ## 1 — Request → `00-request.md`
@@ -143,11 +154,26 @@ when applicable, translations, accessibility/testIDs, security/code/performance
 reviews, documentation, and eval coverage when the feature adds an LLM/agent
 capability.
 
+For mobile/UI features, include final Appium screenshot evidence in the DoD.
+
 ## 5 — Inspect the repository → `04-inspection.md`
 
 Inspect navigation, modules, services, APIs, translations, tests, native
 folders and neighbouring patterns. Record reusable pieces and concrete
 `file:line` evidence. Decide which selective analysis roles are relevant.
+
+Classify final mobile screenshot evidence during inspection:
+
+```bash
+# Mobile or device-visible UI feature
+node ai/tasks/feature/runs.js evidence required "mobile/UI feature"
+
+# Genuinely non-mobile/non-UI work; a reason is mandatory
+node ai/tasks/feature/runs.js evidence not-required "backend-only change"
+```
+
+Do not leave evidence `unclassified`. Final verification will reject `pass` for
+normal runs until this classification is explicit.
 
 ## 6 — Specialist analysis
 
@@ -160,11 +186,30 @@ Possible roles are declared in `ai/workflows/feature.yaml`:
 - `performance` — rendering, startup, networking/caching, memory/concurrency.
 - `backend` — server/API/database/queue/migration work.
 - `frontend` — web UI/routing/forms/a11y/browser behavior.
+- `docs` — when current/version-specific external docs matter.
+
+Before launching specialists, register the exact selected set:
+
+```bash
+node ai/tasks/feature/runs.js set analysis in_progress
+node ai/tasks/feature/runs.js select-roles analysis architect qa-plan security
+```
+
+Use the actual selected roles, not the example list above. For each role:
+
+```bash
+node ai/tasks/feature/runs.js set-role analysis <role> in_progress <executor>
+# delegate, collect artifact/evidence
+node ai/tasks/feature/runs.js set-role analysis <role> pass <executor>
+```
+
+On failure/block/skip, record that exact status. `runs.js` automatically derives
+the parent `analysis` status once selected roles change.
 
 Give each selected role the request, ACs and relevant inspection evidence. Run
 independent roles in parallel. For Claude-routed roles, use the declared
-`.claude/agents/` subagent. Store reports under `05-analysis/` using the
-artifact names declared by the workflow.
+`.claude/agents/` subagent. Store reports under `05-analysis/` using artifact
+names declared by the workflow.
 
 Specialists analyze; they do not implement.
 
@@ -198,11 +243,11 @@ Resolve `implementation`; the default is Codex with Claude fallback.
 
 Create `ai/runs/<id>/implementation-context.md`. Keep it focused but complete:
 
-- approved `06-plan.md`,
-- `02-acceptance-criteria.md`,
-- relevant DoD items,
-- known allowed scope/files,
-- repository patterns from inspection,
+- approved `06-plan.md`;
+- `02-acceptance-criteria.md`;
+- relevant DoD items;
+- known allowed scope/files;
+- repository patterns from inspection;
 - explicit instruction not to commit/push/deploy or modify guard/workflow state.
 
 When Codex is selected, call `mcp__codex-delegate__delegate` with only:
@@ -229,10 +274,20 @@ is traced to the approved plan.
 
 ## 10 — Independent reviews
 
-Resolve and run `code-review` and `security-review`; run `performance-review`
-when relevant. Parallelize independent reviews. Save reports under
-`09-reviews/`. Reviewers are read-only and review the actual diff, ACs and plan.
-An implementation-agent self-review does not replace independent review.
+Resolve `code-review` and `security-review`; run `performance-review` when
+relevant. Register the selected review set before delegation:
+
+```bash
+node ai/tasks/feature/runs.js set reviews in_progress
+node ai/tasks/feature/runs.js select-roles reviews code-review security-review performance-review
+```
+
+Use only the reviewers actually selected. Update each with `set-role` before and
+after delegation. The parent `reviews` status is derived automatically.
+
+Parallelize independent reviews. Save reports under `09-reviews/`. Reviewers are
+read-only and review the actual diff, ACs and plan. An implementation-agent
+self-review does not replace independent review.
 
 ## 11 — Fix validated findings
 
@@ -256,8 +311,38 @@ risk areas.
 ## 12 — Verification → `11-verification.md`
 
 For every `AC-n` and `D-n`, record `PASS`, `FAIL`, or `pending-device` plus
-objective evidence: file/line, test name, command result or review finding.
-Never mark an item passed only because an executor said it passed.
+objective evidence: file/line, test name, command result, review finding, or
+device screenshot. Never mark an item passed only because an executor said it
+passed.
+
+### Final Appium screenshot evidence for mobile/UI features
+
+If `state.json` says mobile screenshots are `required`, resolve
+`mobile-evidence` and use the `mobile-device-qc` skill **after implementation,
+reviews, and fixes are complete**. This is final evidence of the finished
+feature, not an intermediate screenshot run.
+
+Use Appium in headless evidence mode:
+
+- prefer Appium MCP with `NO_UI=true`;
+- use a headless emulator/simulator when the local platform/project supports it;
+- execute the device-relevant acceptance criteria;
+- capture `appium_screenshot` at important successful checkpoints and required
+  negative/error states;
+- save images under `ai/runs/<id>/device/screenshots/`;
+- write `ai/runs/<id>/device/mobile-device-qc.md` mapping ACs to screenshot paths;
+- terminate the Appium session when finished.
+
+A normal mobile/UI run must not mark verification `pass` without those files.
+`runs.js` enforces at least one screenshot plus the device-QC manifest when
+mobile evidence is required.
+
+If Appium/device/build access is unavailable, record `pending-device` in
+`11-verification.md` and mark verification `blocked`; do not fake or reuse stale
+screenshots.
+
+For genuinely non-mobile/non-UI work, the earlier explicit `not-required`
+classification is sufficient.
 
 Then:
 
@@ -273,6 +358,7 @@ Feature: <request> · run ai/runs/<id>/
 AC: <n>/<n> PASS · DoD: <n>/<n> PASS (<pending-device items>)
 Routing: architect <agent> · implementation <agent> · QA <agent> · fixes <agent>
 Reviews: security <verdict> · code <verdict> · performance <verdict>
+Device evidence: <required/not-required> · <screenshot count/path or reason>
 Changed: <files>
 Tests: <commands/results>
 Commit: <sha or "not committed">
@@ -283,8 +369,9 @@ Commit: <sha or "not committed">
 `AI_EVAL=1` is set by the eval harness, never manually. There is no human to
 approve. Use `FEATURE_RUN_ID`; complete `06-plan.md`, let the eval-mode gate
 open according to the task guard, never commit/push/write externally, skip
-physical-device checks, and still produce all artifacts. The grader evaluates
-end state and artifacts rather than trusting agent messages.
+physical-device checks, and still produce all normal non-device artifacts. The
+verification evidence gate is bypassed only by the harness in `AI_EVAL=1`; the
+grader evaluates end state and artifacts rather than trusting agent messages.
 
 ## Invariants
 
@@ -295,4 +382,6 @@ end state and artifacts rather than trusting agent messages.
 - No executor may modify `ai/guard*`, `ai/workflow*`, `ai/workflows*`, task guards, agent wiring, or workflow state to make itself pass.
 - Read-only roles do not edit product files.
 - Parallelize only independent work; dependencies in `ai/workflows/feature.yaml` are authoritative.
+- Selected parallel roles must be registered so parent phases reconcile automatically.
+- Mobile/UI completion requires fresh post-fix Appium screenshot evidence unless the run is explicitly non-mobile/non-UI or is running under the eval harness.
 - Artifacts are evidence; end-state verification decides whether the feature is done.

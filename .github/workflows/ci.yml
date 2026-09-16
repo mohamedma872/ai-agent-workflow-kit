@@ -26,6 +26,7 @@ jobs:
         run: |
           node --check ai/workflow/router.js
           node --check ai/workflow/progress.js
+          node --check ai/workflow/progress-selftest.js
           node --check ai/workflow/github-progress.js
           node --check ai/mcp/codex-delegate.mjs
           node --check ai/tasks/feature/guard.js
@@ -43,6 +44,8 @@ jobs:
 
       - name: Workflow progress smoke test
         run: |
+          node ai/tasks/feature/runs.js selftest
+          node ai/workflow/progress-selftest.js
           node ai/workflow/progress.js --demo
           node ai/workflow/progress.js --demo --json > /dev/null
           node ai/workflow/progress.js --demo --markdown > /dev/null
