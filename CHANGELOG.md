@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added Context7 to the project MCP example and a narrow `docs-researcher` Claude subagent for current, version-specific external documentation.
+- Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs.md` artifact instead of relying on model memory.
+- Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.
+- Added role-scoped MCP metadata to the feature workflow and `ai/mcp/README.md` with least-privilege guidance for GitHub, Sentry, Playwright, Appium and Maestro.
+
 ## 0.3.0 — 2026-09-16
 
 - Added a provider-independent workflow DAG in `ai/workflows/feature.yaml` and a generic role router in `ai/workflow/router.js`.
