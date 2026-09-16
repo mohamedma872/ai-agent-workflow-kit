@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "codex-delegate": {
+      "command": "node",
+      "args": ["ai/mcp/codex-delegate.mjs"]
+    },
     "jira": {
       "command": "npx",
       "args": ["-y", "mcp-jira-cloud@latest"],

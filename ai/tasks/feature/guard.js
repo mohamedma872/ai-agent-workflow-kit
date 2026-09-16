@@ -9,6 +9,10 @@
  * Writing plan.approved (or `runs.js approve`) is the human's act → ask, except
  * in eval mode (AI_EVAL=1) where nobody is there: the gate opens once
  * 06-plan.md exists and is non-trivial.
+ *
+ * Direct shell mutation of plan.approved / _active is denied. This matters in a
+ * multi-executor workflow: an implementation agent must not be able to open or
+ * close the gate by touching workflow state directly.
  * Values (protected paths) come from guard.yaml next to this file.
  */
 const fs = require('fs');
@@ -31,6 +35,11 @@ function gateOpen(id) {
   return false;
 }
 
+function mutatesWorkflowMarker(cmd) {
+  if (!/(?:plan\.approved|ai\/runs\/_active)/.test(cmd)) {return false;}
+  return /(?:^|[;&|]\s*)(?:touch|rm|mv|cp|tee|truncate|install|ln|dd|python3?|node\s+-e|ruby|perl|sed\s+-i)\b|(?:>|>>)|(?:writeFile|appendFile|unlink|rename)Sync?\s*\(/.test(cmd);
+}
+
 module.exports = {
   rules(payload, ctx, { deny, ask }) {
     const id = activeRun();
@@ -41,10 +50,17 @@ module.exports = {
     const gate = (cfg().plan_gate || {});
     const runPrefix = 'ai/runs/';
     const target = rel(input.file_path || input.notebook_path || '');
+    const cmd = String(input.command || '');
+    const shell = tool === 'Bash' || tool === 'Shell';
 
-    // approval is the human's act
+    // Approval is a human action. The official helper asks; direct shell
+    // mutation is never accepted because it would make the marker forgeable.
     const isMarker = /(^|\/)ai\/runs\/[^/]+\/plan\.approved$/.test(target);
-    const isApproveCmd = tool === 'Bash' && /ai\/tasks\/feature\/runs\.js\s+approve\b/.test(String(input.command || ''));
+    const isApproveCmd = shell && /ai\/tasks\/feature\/runs\.js\s+approve\b/.test(cmd);
+    if (shell && mutatesWorkflowMarker(cmd) && !isApproveCmd) {
+      deny('plan gate: workflow state markers (plan.approved / ai/runs/_active) cannot be modified directly; use ai/tasks/feature/runs.js');
+      return;
+    }
     if ((isMarker && ['Write', 'Edit'].includes(tool)) || isApproveCmd) {
       if (!evalMode()) {ask(`plan gate: approving the plan for run "${id}" — allow only if you have read and approved ai/runs/${id}/06-plan.md`);}
       return;
@@ -54,6 +70,6 @@ module.exports = {
     const message = gate.message || `plan gate: run "${id}" has no approved plan yet — finish ai/runs/${id}/06-plan.md, get approval (AskUserQuestion, then plan.approved), then edit`;
     if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && !target.startsWith(runPrefix)) {deny(`${message} (${target || 'file'})`);}
     if (/^apply_patch$/i.test(tool)) {deny(message);}
-    if (tool === 'Bash' && /\bgit\s+commit\b/.test(String(input.command || ''))) {deny(`plan gate: no commits before the plan for run "${id}" is approved`);}
+    if (shell && /\bgit\s+commit\b/.test(cmd)) {deny(`plan gate: no commits before the plan for run "${id}" is approved`);}
   },
 };

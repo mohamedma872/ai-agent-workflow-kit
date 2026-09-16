@@ -64,6 +64,8 @@ dump_commands: [cat, less, more, head, tail, sed, awk, bat, strings, xxd, base64
 guarded_files:
   - "ai/guard.yaml"
   - "ai/guard/*"
+  - "ai/workflow/*"
+  - "ai/workflows/*"
   - "ai/tasks/*/guard.yaml"
   - "ai/tasks/*/guard.js"
   - "ai/agents.yaml"
@@ -117,6 +119,11 @@ shell_rules:
     decision: deny
     description: Force-push rewrites shared history — never from the agent
     regex: 'git push\b[^;&|]*\s(-f|--force|--force-with-lease)\b'
+
+  - id: hook-bypass
+    decision: deny
+    description: Agents may not bypass the repository safety hooks
+    regex: '\b(git\s+(commit|push)\b[^;&|]*(--no-verify|\s-n\b)|HUSKY\s*=\s*0\b|core\.hooksPath\s*=\s*/dev/null)'
 
   - id: git-discard
     decision: ask

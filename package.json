@@ -1,7 +1,7 @@
 {
   "name": "ai-guardrails-evals",
-  "version": "0.2.0",
-  "description": "Guardrails + evals + an agentic delivery workflow for any coding agent (Claude Code, Codex): rules in YAML, one hook engine, git-level fence, end-state graded evals, enforced plan gate.",
+  "version": "0.3.0",
+  "description": "Provider-independent agentic workflows with shared guardrails, MCP delegation, and end-state evals for Claude Code, Codex, and future coding agents.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
   "repository": {
@@ -12,16 +12,21 @@
     "guard:check": "node ai/guard/engine.js --check",
     "guard:explain": "node ai/guard/engine.js --explain",
     "guard:selftest": "node ai/guard/engine.js --selftest",
+    "workflow:check": "node ai/workflow/router.js check",
+    "workflow:show": "node ai/workflow/router.js show feature",
+    "mcp:codex": "node ai/mcp/codex-delegate.mjs",
     "eval": "node ai/evals/run.js",
     "prepare": "husky"
   },
   "dependencies": {
-    "js-yaml": "^4.1.0"
+    "@modelcontextprotocol/server": "2.0.0",
+    "js-yaml": "^4.1.0",
+    "zod": "^4.2.0"
   },
   "devDependencies": {
     "husky": "^9.1.7"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

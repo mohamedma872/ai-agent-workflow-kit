@@ -1,142 +1,298 @@
 ---
 name: feature
-description: Deliver a feature or ticket end-to-end with the agentic workflow — requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analysis (mobile-architect, android-expert, ios-expert, security-reviewer, qa-engineer, performance-reviewer) → plan for approval (an ENFORCED gate) → implementation → build and tests → independent security, code and performance reviews → fixes → AC/DoD verification. Every step leaves an artifact in ai/runs/<id>/. Usage — /feature <request or PROJ-123> [plan-only]
+description: Deliver a feature or ticket end-to-end with the provider-independent agentic workflow — requirements → acceptance criteria → definition of done → repo inspection → specialist analysis → approved plan → implementation → tests → independent reviews → fixes → verification. Claude orchestrates; roles can execute through Claude, Codex, or future executors. Codex roles should be delegated through the local codex-delegate MCP server so detailed context/results stay in run artifacts instead of inflating Claude context. Usage — /feature <request or PROJ-123> [plan-only]
 ---
 
-You are the orchestrator. The specialists in `.claude/agents/` are examples — mobile, backend and frontend; keep the ones your stack needs and rename freely. Specialists analyse and review; you decide, plan,
-implement, and verify. Every step writes its artifact to `ai/runs/<id>/` so
-the user can read it, the run can resume, and the eval can grade it.
-`$ARGUMENTS` = the request (free text or a Jira key like `PROJ-123`), optionally
-followed by `plan-only` (stop after the plan; never edit product files).
+You are the workflow orchestrator, not the implementation provider.
 
-## Step 0 — run folder + resume (always first)
+The source of truth for stages and routing is `ai/workflows/feature.yaml`.
+Executor launch commands live in `ai/agents.yaml`. Validate and inspect the
+workflow through `ai/workflow/router.js`. Every phase leaves evidence in
+`ai/runs/<id>/` so the run can resume, humans can inspect it, and evals can
+grade the end state.
 
-1. Run id: the Jira key if present, else a kebab-case slug of the request; in
-   eval mode the environment variable `FEATURE_RUN_ID` wins.
-2. `node ai/tasks/feature/runs.js start <id>` — creates `ai/runs/<id>/`,
-   `state.json`, and marks the run active. If the run already exists this
-   prints its phase statuses: **resume at the first unresolved phase**, never
-   redo a passed one. Record every phase transition with
-   `node ai/tasks/feature/runs.js set <phase> <in_progress|pass|fail|blocked|skipped> [note]`.
-3. Create the visible task list (TaskCreate), one task per phase below, and
-   post a one-line status message at every transition.
+## 0 — Validate and start/resume
 
-Phases (state.json names): `request`, `requirements`, `acceptance-criteria`,
-`definition-of-done`, `inspection`, `analysis`, `plan`, `approval`,
-`implementation`, `build-test`, `reviews`, `fixes`, `verification`.
+```bash
+node ai/workflow/router.js check
+node ai/workflow/router.js show feature
+node ai/tasks/feature/runs.js start <id>
+```
 
-## The plan gate is enforced
+Run id: Jira key when present, otherwise a kebab-case slug. In eval mode,
+`FEATURE_RUN_ID` wins. Resume at the first unresolved phase in `state.json`.
+Record transitions with:
+
+```bash
+node ai/tasks/feature/runs.js set <phase> <pending|in_progress|pass|fail|blocked|skipped> [note]
+```
+
+Phases: `request`, `requirements`, `acceptance-criteria`, `definition-of-done`,
+`inspection`, `analysis`, `plan`, `approval`, `implementation`, `build-test`,
+`reviews`, `fixes`, `verification`.
+
+## Execution model
+
+```text
+USER
+  |
+  v
+CLAUDE ORCHESTRATOR
+  |
+  +--> workflow DAG: ai/workflows/feature.yaml
+  |
+  +--> role router: ai/workflow/router.js
+           |
+           +--> Claude subagent (analysis/review roles)
+           |
+           +--> Codex through MCP (implementation/fix roles)
+           |
+           +--> future executor from ai/agents.yaml
+  |
+  v
+SHARED GUARDRAILS: ai/guard.yaml + task guards
+  |
+  v
+FILES / SHELL / MCP / GIT
+```
+
+Resolve every concrete role before running it:
+
+```bash
+node ai/workflow/router.js resolve feature <role> --json
+```
+
+If the selected executor is `claude` and the role declares a
+`claude_subagent`, use that subagent. If the selected executor is `codex`,
+prefer MCP delegation as described below. Do not silently substitute a provider;
+the workflow/router owns provider selection and fallback.
+
+## Token-efficient Claude → Codex delegation through MCP
+
+The project MCP config can expose:
+
+```text
+mcp__codex-delegate__delegate
+```
+
+Use it for Codex-routed roles. **Do not put the full plan, ACs, diff or review
+text in the MCP arguments.** First write a focused context artifact under the
+active run, then pass only paths and small control fields to the MCP tool.
+
+Example for implementation:
+
+```text
+prompt_file  = ai/runs/<id>/implementation-context.md
+output_file  = ai/runs/<id>/implementation-agent.md
+workflow     = feature
+role         = implementation
+```
+
+The MCP server reads the context file locally, invokes Codex through the
+provider-independent router, writes Codex's detailed final response to the
+output artifact, and returns only compact metadata such as status, changed file
+names and the artifact path. This keeps large delegation payloads and Codex
+responses out of Claude's conversational context.
+
+If the MCP server is unavailable, fall back to the equivalent CLI call:
+
+```bash
+node ai/workflow/router.js exec feature <role> \
+  --agent codex \
+  --prompt-file ai/runs/<id>/<role>-context.md \
+  --output-file ai/runs/<id>/<role>-agent.md
+```
+
+The fallback should be exceptional; MCP is the preferred Claude→Codex transport.
+
+## Plan gate
 
 While the run is active and `ai/runs/<id>/plan.approved` does not exist, the
-fence (`ai/tasks/feature/guard.js`) **denies** every edit outside `ai/runs/`
-and every `git commit`. You cannot implement early even by accident. Writing
-`plan.approved` asks the user — allowing that write is the approval. The user
-can also approve from a terminal: `node ai/tasks/feature/runs.js approve <id>`.
+feature guard denies product-file edits and commits. Direct shell mutation of
+`plan.approved` or `ai/runs/_active` is denied. Approval is a human act through
+the normal workflow or:
 
-## Steps 1–8 — before implementation
-
-1. **Read the requirements** → `00-request.md` (the request verbatim + the Jira
-   ticket via `mcp__jira__jira_get_issue` when a key is given: summary,
-   description, acceptance criteria, links) and `01-requirements.md` (your
-   understanding: user story, scope, out of scope, assumptions, open questions).
-2. **Acceptance criteria** → `02-acceptance-criteria.md`: numbered `AC-1..n`,
-   each testable, each with the negative case where one exists; both languages
-   (EN + AR) and RTL when UI is involved.
-3. **Definition of Done** → `03-definition-of-done.md`: numbered `D-1..n` —
-   lint clean, tsc no new errors, unit tests for new logic, both platforms
-   considered, translations in EN + AR, testIDs, security review PASS, code
-   review APPROVE, performance review PASS or accepted concerns, docs/ticket
-   updated, and — if the feature adds an LLM/agent capability — an
-   `ai/tasks/<name>/` folder per `ai/README.md`.
-4. **Inspect the repository** yourself (navigation, screens, hooks, services,
-   translations, native folders, tests) → `04-inspection.md`: what exists,
-   what to reuse, `file:line`.
-5. **Decide which subagents are needed** — record the decision and why in
-   `04-inspection.md`:
-
-   | subagent | run when |
-   |---|---|
-   | `mobile-architect` | always |
-   | `qa-engineer` (mode `plan`) | always |
-   | `security-reviewer` (mode `threat-model`) | auth, session, storage, biometrics, payments, PII, deep links, WebView, permissions, new native dependency |
-   | `android-expert` | `android/` touched, native module, permissions, Play policy, platform behaviour |
-   | `ios-expert` | `ios/` touched, native module, permissions, App Store policy, platform behaviour |
-   | `performance-reviewer` (mode `analysis`) | lists, rendering-heavy UI, startup, network/caching changes |
-   | `backend-expert` | server code, a database, an API contract touched |
-   | `frontend-expert` | web UI touched (components, routing, forms, a11y) |
-
-6. **Run the analysis subagents in parallel** — one Agent call per subagent in
-   the SAME message, `run_in_background: true`, then wait for all. Each prompt
-   contains: the request, the full text of `02-acceptance-criteria.md`, the
-   run folder path, the mode, and "return your report as your final message
-   in the required structure". Save each report verbatim to
-   `05-analysis/<subagent>.md`. Subagents are read-only; you write the files.
-7. **Combine the findings** → the plan.
-8. **Plan for approval** → `06-plan.md`:
-
-   ```
-   # Plan — <request>
-   ## Summary (3 lines)
-   ## Change list (ordered)  | # | file | change | new/edit | from which analysis |
-   ## Test plan  (from qa-engineer, TC ↔ AC)
-   ## Risks and mitigations  (from security / platform / performance analyses)
-   ## Out of scope
-   ## Estimated effort and cost
-   ```
-   Then **STOP** and ask with AskUserQuestion: `Approve` / `Request changes`.
-   On changes: revise, ask again. On approve: write
-   `ai/runs/<id>/plan.approved` (content: `approved: <ISO date>`) — the fence
-   asks the user once more; that allow is the approval — and set `approval` to
-   `pass`. If `$ARGUMENTS` ends with `plan-only`: set `approval` to `skipped
-   plan-only`, close the run (Step 13c) and stop here.
-
-## Steps 9–13 — after approval
-
-9. **Implement the plan** exactly as listed; deviations go into
-   `07-implementation.md` with the reason. Log every file touched. Follow the
-   neighbouring patterns; translations in both languages; testIDs; no debug
-   code. Add unit tests for new logic (`git add -f` for `__tests__/`).
-10. **Build and test** — delegate to `qa-engineer` (mode `execute`) or run
-    yourself: `yarn lint`, `npx tsc --noEmit --skipLibCheck` (separate new
-    errors from the repo's pre-existing ones), `yarn jest <pattern>`, and any
-    DoD command → `08-build-test.md` with the exact commands and results. A
-    device pass is `/device-qc <id>` (separate run, Claude Code only) — note it
-    as pending when not run.
-11. **Independent reviews in parallel** — `security-reviewer` (mode
-    `diff-review`), `code-reviewer`, and `performance-reviewer` (mode
-    `diff-review`) when performance-relevant; `android-expert` / `ios-expert`
-    in review mode when their platform was touched. Same-message Agent calls,
-    background, wait for all. Save to `09-reviews/<subagent>.md` verbatim.
-12. **Fix valid findings** → `10-fixes.md`: a table of every finding with
-    `valid | rejected` and the reason; fix the valid ones; re-run step 10 for
-    the touched suites; re-request a review only for blockers.
-13. **Verify** → `11-verification.md`: every `AC-n` and `D-n` with `✓ / ✗ /
-    pending-device` and the evidence (file:line, test name, review verdict).
-    Then:
-    a. `node ai/tasks/feature/runs.js set verification pass`
-    b. Final message: the checklist below.
-    c. `node ai/tasks/feature/runs.js close` — the run stops being active and
-       the plan gate lifts for normal work.
-
+```bash
+node ai/tasks/feature/runs.js approve <id>
 ```
+
+Never delegate implementation or fixes before the plan gate is open.
+
+## 1 — Request → `00-request.md`
+
+Capture the request verbatim. If it contains a Jira key, read the ticket and
+record summary, description, acceptance criteria and relevant links. Reads are
+allowed; external writes are not part of this phase.
+
+## 2 — Requirements → `01-requirements.md`
+
+Write the user story, in-scope work, out-of-scope work, assumptions and open
+questions. Resolve ambiguities from repository/ticket evidence where possible;
+do not invent requirements.
+
+## 3 — Acceptance criteria → `02-acceptance-criteria.md`
+
+Number `AC-1..n`. Every AC must be testable and include a negative case when
+appropriate. For user-facing mobile/UI behavior, include EN + AR and RTL
+requirements where relevant.
+
+## 4 — Definition of Done → `03-definition-of-done.md`
+
+Number `D-1..n`. Cover relevant lint/type/build/test commands, both platforms
+when applicable, translations, accessibility/testIDs, security/code/performance
+reviews, documentation, and eval coverage when the feature adds an LLM/agent
+capability.
+
+## 5 — Inspect the repository → `04-inspection.md`
+
+Inspect navigation, modules, services, APIs, translations, tests, native
+folders and neighbouring patterns. Record reusable pieces and concrete
+`file:line` evidence. Decide which selective analysis roles are relevant.
+
+## 6 — Specialist analysis
+
+Possible roles are declared in `ai/workflows/feature.yaml`:
+
+- `architect` — always.
+- `qa-plan` — always.
+- `security` — auth/session/storage/PII/payments/deep links/WebView/permissions/native dependencies/external effects.
+- `android` / `ios` — when platform/native behavior is affected.
+- `performance` — rendering, startup, networking/caching, memory/concurrency.
+- `backend` — server/API/database/queue/migration work.
+- `frontend` — web UI/routing/forms/a11y/browser behavior.
+
+Give each selected role the request, ACs and relevant inspection evidence. Run
+independent roles in parallel. For Claude-routed roles, use the declared
+`.claude/agents/` subagent. Store reports under `05-analysis/` using the
+artifact names declared by the workflow.
+
+Specialists analyze; they do not implement.
+
+## 7 — Synthesize `06-plan.md`
+
+Combine findings rather than concatenating reports. Resolve disagreements and
+trace decisions to their analysis.
+
+```text
+# Plan — <request>
+## Summary
+## Change list
+| # | file | change | new/edit | source analysis |
+## Test plan
+| test | AC | level | expected result |
+## Risks and mitigations
+## Out of scope
+## Executor routing
+| stage/role | selected executor | fallback |
+## Estimated effort / cost constraints
+```
+
+Use `router.js resolve` for the routing table. Then STOP and ask the user:
+`Approve` or `Request changes`. Revise and ask again when changes are requested.
+For `plan-only`, mark approval skipped, close the run and stop without product
+edits.
+
+## 8 — Implementation: delegate to routed executor
+
+Resolve `implementation`; the default is Codex with Claude fallback.
+
+Create `ai/runs/<id>/implementation-context.md`. Keep it focused but complete:
+
+- approved `06-plan.md`,
+- `02-acceptance-criteria.md`,
+- relevant DoD items,
+- known allowed scope/files,
+- repository patterns from inspection,
+- explicit instruction not to commit/push/deploy or modify guard/workflow state.
+
+When Codex is selected, call `mcp__codex-delegate__delegate` with only:
+
+```text
+workflow=feature
+role=implementation
+prompt_file=ai/runs/<id>/implementation-context.md
+output_file=ai/runs/<id>/implementation-agent.md
+```
+
+After Codex returns, inspect the actual diff yourself. Write
+`07-implementation.md` with files changed, implementation evidence, tests added,
+and any deviation from the approved plan. Codex's final message is evidence,
+not proof.
+
+## 9 — Build/test
+
+Resolve `qa-execute`. If Claude is selected, use the configured `qa-engineer`
+subagent. Record exact commands, exit statuses and useful output in
+`08-build-test.md`. Use the repository's real lint/type/test/build commands.
+Never change product behavior merely to make a red test green unless the change
+is traced to the approved plan.
+
+## 10 — Independent reviews
+
+Resolve and run `code-review` and `security-review`; run `performance-review`
+when relevant. Parallelize independent reviews. Save reports under
+`09-reviews/`. Reviewers are read-only and review the actual diff, ACs and plan.
+An implementation-agent self-review does not replace independent review.
+
+## 11 — Fix validated findings
+
+Create `10-fixes.md`, marking every finding `valid` or `rejected` with reason.
+Resolve `fixes`; the default is Codex with Claude fallback.
+
+Create `ai/runs/<id>/fixes-context.md` containing only validated findings,
+relevant diff evidence and approved scope. When Codex is selected, delegate via
+MCP:
+
+```text
+workflow=feature
+role=fixes
+prompt_file=ai/runs/<id>/fixes-context.md
+output_file=ai/runs/<id>/fixes-agent.md
+```
+
+Re-run affected tests. Re-request review only for blockers or materially changed
+risk areas.
+
+## 12 — Verification → `11-verification.md`
+
+For every `AC-n` and `D-n`, record `PASS`, `FAIL`, or `pending-device` plus
+objective evidence: file/line, test name, command result or review finding.
+Never mark an item passed only because an executor said it passed.
+
+Then:
+
+```bash
+node ai/tasks/feature/runs.js set verification pass
+node ai/tasks/feature/runs.js close
+```
+
+Final response:
+
+```text
 Feature: <request> · run ai/runs/<id>/
-AC: <n>/<n> ✓ · DoD: <n>/<n> ✓ (<pending-device items>)
-Analyses: <subagents> · Reviews: security <verdict> · code <verdict> · perf <verdict>
-Changed: <files> · Tests: <commands green> · Commit: <sha or "not committed">
+AC: <n>/<n> PASS · DoD: <n>/<n> PASS (<pending-device items>)
+Routing: architect <agent> · implementation <agent> · QA <agent> · fixes <agent>
+Reviews: security <verdict> · code <verdict> · performance <verdict>
+Changed: <files>
+Tests: <commands/results>
+Commit: <sha or "not committed">
 ```
 
-## Eval mode (`AI_EVAL=1`, set by `ai/evals/run.js`, never by hand)
+## Eval mode
 
-Nobody is there to answer. Use `FEATURE_RUN_ID` as the run id; do not call
-AskUserQuestion — write `plan.approved` yourself after `06-plan.md` is complete
-(the fence allows this only in eval mode); never commit or push (denied
-anyway); skip the device pass; still produce every artifact — the grader reads
-`ai/runs/<id>/` and the diff.
+`AI_EVAL=1` is set by the eval harness, never manually. There is no human to
+approve. Use `FEATURE_RUN_ID`; complete `06-plan.md`, let the eval-mode gate
+open according to the task guard, never commit/push/write externally, skip
+physical-device checks, and still produce all artifacts. The grader evaluates
+end state and artifacts rather than trusting agent messages.
 
-## Rules that never bend
+## Invariants
 
-- Never touch product files before `plan.approved` exists (the fence denies it; do not try to work around it).
-- Never weaken the fence or the subagent definitions to pass a review.
-- Subagents get the AC text in their prompt; they do not get credentials, and the fence denies them the same files it denies you.
-- Combine, do not concatenate: the plan is your synthesis, with each decision traced to an analysis.
-- When a specialist and you disagree, say so in the plan and let the user decide.
+- Workflow definition is provider-independent; provider commands belong only in `ai/agents.yaml`.
+- Every executor runs under the same repository guardrails.
+- Claude→Codex delegation prefers MCP with artifact paths, not large inline prompts/results.
+- No implementation before approval.
+- No executor may modify `ai/guard*`, `ai/workflow*`, `ai/workflows*`, task guards, agent wiring, or workflow state to make itself pass.
+- Read-only roles do not edit product files.
+- Parallelize only independent work; dependencies in `ai/workflows/feature.yaml` are authoritative.
+- Artifacts are evidence; end-state verification decides whether the feature is done.
