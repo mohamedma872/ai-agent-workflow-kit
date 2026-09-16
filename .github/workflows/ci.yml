@@ -57,8 +57,10 @@ jobs:
       - name: Workflow routing smoke test
         run: |
           node ai/workflow/router.js show feature
+          node ai/workflow/router.js resolve feature flutter --json
           node ai/workflow/router.js resolve feature implementation --json
           node ai/workflow/router.js resolve feature fixes --json
+          node ai/workflow/router.js resolve feature mobile-evidence --json
 
       - name: MCP SDK import smoke test
         run: node -e "Promise.all([import('@modelcontextprotocol/server'), import('@modelcontextprotocol/server/stdio'), import('zod/v4')]).then(() => console.log('MCP imports OK'))"

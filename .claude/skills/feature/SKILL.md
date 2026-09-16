@@ -150,9 +150,9 @@ requirements where relevant.
 ## 4 — Definition of Done → `03-definition-of-done.md`
 
 Number `D-1..n`. Cover relevant lint/type/build/test commands, both platforms
-when applicable, translations, accessibility/testIDs, security/code/performance
-reviews, documentation, and eval coverage when the feature adds an LLM/agent
-capability.
+when applicable, translations, accessibility/test IDs or semantics,
+security/code/performance reviews, documentation, and eval coverage when the
+feature adds an LLM/agent capability.
 
 For mobile/UI features, include final Appium screenshot evidence in the DoD.
 
@@ -161,6 +161,11 @@ For mobile/UI features, include final Appium screenshot evidence in the DoD.
 Inspect navigation, modules, services, APIs, translations, tests, native
 folders and neighbouring patterns. Record reusable pieces and concrete
 `file:line` evidence. Decide which selective analysis roles are relevant.
+
+Detect the implementation stack from repository evidence rather than assuming
+React Native. For Flutter, inspect `pubspec.yaml`, `pubspec.lock`, `lib/`,
+`test/`, `integration_test/`, Flutter plugins/platform channels and Android/iOS
+integration where relevant.
 
 Classify final mobile screenshot evidence during inspection:
 
@@ -179,20 +184,26 @@ normal runs until this classification is explicit.
 
 Possible roles are declared in `ai/workflows/feature.yaml`:
 
-- `architect` — always.
+- `architect` — always; stack-aware across React Native, Flutter and native mobile.
 - `qa-plan` — always.
-- `security` — auth/session/storage/PII/payments/deep links/WebView/permissions/native dependencies/external effects.
+- `security` — auth/session/storage/PII/payments/deep links/WebView/permissions/native dependencies/plugins/external effects.
 - `android` / `ios` — when platform/native behavior is affected.
-- `performance` — rendering, startup, networking/caching, memory/concurrency.
+- `flutter` — when the repository is Flutter and the feature affects Dart/widget/state/navigation/plugin/platform-channel behavior.
+- `performance` — rendering/rebuilds, startup, networking/caching, memory/concurrency.
 - `backend` — server/API/database/queue/migration work.
 - `frontend` — web UI/routing/forms/a11y/browser behavior.
 - `docs` — when current/version-specific external docs matter.
+
+For Flutter changes that also modify native platform configuration, select
+`flutter` plus the relevant `android` and/or `ios` role. Flutter expertise does
+not replace platform expertise for manifests, plist/entitlements, Gradle/Xcode,
+permissions, or native plugin behavior.
 
 Before launching specialists, register the exact selected set:
 
 ```bash
 node ai/tasks/feature/runs.js set analysis in_progress
-node ai/tasks/feature/runs.js select-roles analysis architect qa-plan security
+node ai/tasks/feature/runs.js select-roles analysis architect qa-plan flutter security
 ```
 
 Use the actual selected roles, not the example list above. For each role:
@@ -268,14 +279,24 @@ not proof.
 
 Resolve `qa-execute`. If Claude is selected, use the configured `qa-engineer`
 subagent. Record exact commands, exit statuses and useful output in
-`08-build-test.md`. Use the repository's real lint/type/test/build commands.
+`08-build-test.md`. Use the repository's real lint/type/static-analysis/test/build
+commands. For Flutter, detect the project's actual commands and configuration;
+common examples include `flutter analyze`, `flutter test`, widget/integration
+tests and platform builds, but do not invent scripts/flavors the repo does not
+use.
+
 Never change product behavior merely to make a red test green unless the change
 is traced to the approved plan.
 
 ## 10 — Independent reviews
 
 Resolve `code-review` and `security-review`; run `performance-review` when
-relevant. Register the selected review set before delegation:
+relevant. The common reviewers are stack-aware; Flutter diffs must be reviewed
+using Flutter/Dart conventions rather than React Native assumptions. Use
+`flutter-expert` in review mode when Flutter-specific behavior needs a focused
+platform/framework review.
+
+Register the selected review set before delegation:
 
 ```bash
 node ai/tasks/feature/runs.js set reviews in_progress
@@ -321,6 +342,12 @@ If `state.json` says mobile screenshots are `required`, resolve
 `mobile-evidence` and use the `mobile-device-qc` skill **after implementation,
 reviews, and fixes are complete**. This is final evidence of the finished
 feature, not an intermediate screenshot run.
+
+This applies to native Android/iOS, React Native, and Flutter. For Flutter,
+Appium still runs an Android or iOS session against the built app. Prefer
+accessibility/semantics identifiers exposed to the platform. If the repository
+already uses a Flutter-specific Appium driver/plugin, follow that existing
+setup; do not introduce one only to satisfy the workflow.
 
 Use Appium in headless evidence mode:
 
@@ -383,5 +410,6 @@ grader evaluates end state and artifacts rather than trusting agent messages.
 - Read-only roles do not edit product files.
 - Parallelize only independent work; dependencies in `ai/workflows/feature.yaml` are authoritative.
 - Selected parallel roles must be registered so parent phases reconcile automatically.
+- Flutter is a first-class mobile stack: select `flutter` for Flutter behavior and add Android/iOS roles when native integration changes.
 - Mobile/UI completion requires fresh post-fix Appium screenshot evidence unless the run is explicitly non-mobile/non-UI or is running under the eval harness.
 - Artifacts are evidence; end-state verification decides whether the feature is done.

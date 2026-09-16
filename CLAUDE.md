@@ -14,11 +14,16 @@ enforces them). Architecture for guardrails, evals and AI tasks: `ai/README.md`.
 - **New or changed AI capability**: `/ai-task new <name>` — guardrails + evals
   are part of done.
 - **Specialists** (`.claude/agents/`): mobile-architect, android-expert,
-  ios-expert, security-reviewer, qa-engineer, performance-reviewer,
-  code-reviewer, backend-expert, frontend-expert — example packs; keep the
-  ones your stack needs and rename freely. They analyse and review, read-only; the orchestrator edits.
+  ios-expert, flutter-expert, security-reviewer, qa-engineer,
+  performance-reviewer, code-reviewer, backend-expert, frontend-expert —
+  example packs; keep the ones your stack needs and rename freely. They analyse
+  and review, read-only; the orchestrator edits.
+- **Flutter**: `pubspec.yaml` + Flutter/Dart application sources trigger the
+  `flutter` workflow role. Flutter UI features use the same final Appium
+  screenshot evidence gate through their Android/iOS build. Native platform
+  changes can additionally route to `android-expert` / `ios-expert`.
 - **Commands** (`.claude/commands/`): `/plan`, `/review`, `/fix-issue`, `/fence`.
-- **Rules** (`.claude/rules/`): example path-scoped rules for a React Native
-  app (`code-style`, `testing`, `api-conventions`, `translations`, `native`);
-  `ai-tasks` always. Replace the examples with your conventions.
+- **Rules** (`.claude/rules/`): example path-scoped rules plus workflow rules,
+  including Flutter routing; `ai-tasks` always. Replace examples with your
+  project conventions.
 - **Personal overrides** go in `CLAUDE.local.md` (never committed).

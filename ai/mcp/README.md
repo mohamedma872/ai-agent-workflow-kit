@@ -37,7 +37,7 @@ Enable these only when a workflow role needs them.
 |---|---|---|---|
 | GitHub official MCP | code-review, security-review, CI/release investigation | **read-only**, minimal toolsets | The local checkout is not enough: PR discussion, Actions, code scanning, Dependabot, remote branch state. |
 | Playwright MCP | frontend, QA execute | isolated browser/session | Web UI behavior must be verified in a real browser. |
-| **Appium MCP** | Android/iOS/mobile QA execute | isolated device/session, `NO_UI=true` for agents | Native mobile behavior must be verified on Android/iOS simulators, emulators, real devices, or an existing Appium/device-farm session. |
+| **Appium MCP** | Android/iOS/Flutter/mobile QA execute | isolated device/session, `NO_UI=true` for agents | Mobile behavior must be verified on Android/iOS simulators, emulators, real devices, or an existing Appium/device-farm session. Flutter is verified through its built Android/iOS app. |
 
 ### GitHub MCP
 
@@ -55,10 +55,13 @@ Use it for:
 
 - Android emulators and real devices through UiAutomator2;
 - iOS simulators and real devices through XCUITest;
+- native, React Native, and Flutter applications through their Android/iOS build;
 - native/WebView context switching;
 - deterministic element lookup and gestures;
 - screenshots, page source, screen recording and device state;
 - local embedded drivers or an existing remote Appium/device-farm server.
+
+For Flutter, prefer accessibility/semantics identifiers exposed to the Android/iOS platform. If a repository already uses a Flutter-specific Appium driver/plugin, keep using that project setup. Do not introduce a new driver/plugin merely to make the workflow pass.
 
 The current official `appium-mcp` requires **Node.js 22+**. The repository core remains Node 20+, so run Appium MCP in a Node 22-capable MCP environment rather than raising the runtime requirement for every contributor.
 
@@ -93,7 +96,7 @@ Useful Appium MCP tools include:
 - `appium_screen_recording` — record a failed/critical flow;
 - `appium_geolocation` / orientation / device-control tools when the acceptance criteria require them.
 
-Prefer stable accessibility IDs/resource IDs over XPath. Use AI/vision-based element finding only as a fallback when deterministic locators are unavailable.
+Prefer stable accessibility IDs/resource IDs over XPath. For Flutter, use stable semantics/accessibility identifiers exposed to the platform whenever possible. Use AI/vision-based element finding only as a fallback when deterministic locators are unavailable.
 
 If the project already has a remote Appium server/device farm, use `remoteServerUrl` rather than creating a new local embedded session. Restrict allowed remote URLs when possible.
 
@@ -106,10 +109,10 @@ Recommended reusable skills/procedures:
 1. **Current docs / migration** — detect installed version → Context7 lookup → concise decision artifact. Implemented here by `docs-researcher` + `.claude/rules/current-docs.md`.
 2. **Dependency upgrade** — inspect changelog/migration docs → compatibility matrix → staged upgrade → targeted tests.
 3. **CI failure investigation** — read failing workflow/logs → reproduce locally → isolate root cause → patch → rerun only relevant checks.
-4. **Mobile device QC** — Appium session → AC-driven flow → screenshots/page-source/log evidence → deterministic result → close/reset session. Implemented by `.claude/skills/mobile-device-qc/SKILL.md`.
+4. **Mobile device QC** — Appium session → AC-driven flow → screenshots/page-source/log evidence → deterministic result → close/reset session. Implemented by `.claude/skills/mobile-device-qc/SKILL.md` for native, React Native, and Flutter mobile apps.
 5. **Web UI QC** — isolated Playwright browser → AC-driven flow → accessibility/network evidence → deterministic test where valuable.
 
-The existing specialist agents (`android-expert`, `ios-expert`, `security-reviewer`, `qa-engineer`, etc.) should stay **roles**, while the procedures above should be shared skills/rules. That prevents duplicated instructions and makes it easier to swap Claude/Codex or add future executors.
+The existing specialist agents (`android-expert`, `ios-expert`, `flutter-expert`, `security-reviewer`, `qa-engineer`, etc.) should stay **roles**, while the procedures above should be shared skills/rules. That prevents duplicated instructions and makes it easier to swap Claude/Codex or add future executors.
 
 ## Recommended role map
 
@@ -121,10 +124,11 @@ Claude orchestrator
 ├── security ───────── local repo + Context7
 ├── performance ────── local repo + Context7
 ├── Android / iOS ──── local repo + Context7; Appium for device verification
+├── Flutter ─────────── local repo + Context7; Android/iOS experts too when native integration changes; Appium for final device evidence
 ├── frontend ───────── local repo + Context7; Playwright for browser verification
 ├── backend ────────── local repo + Context7
 ├── implementation ─── Codex delegate; receives focused docs artifact
-├── QA execute ─────── local tests + Appium for native device flows / Playwright for web
+├── QA execute ─────── local tests + Appium for mobile device flows / Playwright for web
 ├── reviews ────────── local diff; GitHub only when remote evidence is needed
 └── fixes ───────────── Codex delegate
 ```
