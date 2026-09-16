@@ -138,6 +138,14 @@ roles:
     artifact: 10-fixes.md
     optional_mcps: [context7]
 
+  mobile-evidence:
+    executor: claude
+    claude_subagent: qa-engineer
+    purpose: After implementation, reviews, and fixes are complete, run the finished mobile/UI feature with Appium in headless evidence mode and capture final screenshots mapped to acceptance criteria.
+    read_only: true
+    artifact: device/mobile-device-qc.md
+    optional_mcps: [appium]
+
 stages:
   - id: request
     owner: orchestrator
@@ -200,3 +208,5 @@ stages:
     owner: orchestrator
     needs: [fixes]
     artifact: 11-verification.md
+    conditional_role: mobile-evidence
+    condition: mobile_or_ui_feature
