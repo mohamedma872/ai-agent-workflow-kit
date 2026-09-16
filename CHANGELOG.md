@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added live agentic workflow progress rendering from the existing `ai/runs/<id>/state.json` source of truth: terminal dashboard, watch mode, JSON/Markdown output, VS Code tasks, and an optional single auto-updating GitHub PR progress comment.
+- Added per-role progress tracking for parallel analysis/review agents so the dashboard can show which specialists are running, done, blocked, failed, or skipped.
 - Added Context7 to the project MCP example and a narrow `docs-researcher` Claude subagent for current, version-specific external documentation.
 - Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs-researcher.md` artifact instead of relying on model memory.
 - Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.

@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AI Workflow: Live Progress",
+      "type": "shell",
+      "command": "npm run workflow:progress:watch",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": false
+      }
+    },
+    {
+      "label": "AI Workflow: Live GitHub PR Progress",
+      "type": "shell",
+      "command": "npm run workflow:progress:github:watch",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false,
+        "focus": false
+      }
+    },
+    {
+      "label": "AI Workflow: Progress Snapshot",
+      "type": "shell",
+      "command": "npm run workflow:progress",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "AI Workflow: Update GitHub PR Progress Once",
+      "type": "shell",
+      "command": "npm run workflow:progress:github",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
