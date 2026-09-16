@@ -9,7 +9,7 @@ For a completed mobile/UI feature, screenshot evidence is **required before fina
 
 ## Evidence location
 
-Always save final device evidence under the active run:
+Always finish with final device evidence under the active run:
 
 ```text
 ai/runs/<id>/device/
@@ -55,11 +55,13 @@ Prefer `NO_UI=true` in the Appium MCP server. When the local platform supports i
    - use `appium_context` when a WebView/native transition is part of the flow;
    - do not use vision/AI element lookup unless stable locators are unavailable.
 7. Capture screenshots with `appium_screenshot` after each important successful checkpoint and before leaving each important negative/error state.
-8. Save screenshots only under:
+8. Make sure the final image files end up under:
 
 ```text
 ai/runs/<id>/device/screenshots/
 ```
+
+If Appium MCP writes screenshots to its configured `SCREENSHOTS_DIR` (for example `ai/runs/device-artifacts`), use the returned screenshot file path and copy/move the final evidence file into the active run folder above with a stable ordered filename. Only copy files produced by this current device session. Do not scan or publish unrelated run artifacts.
 
 Do not inline screenshot base64 into prompts, artifacts, or the final answer.
 9. Run both positive and relevant negative paths from the QA plan (offline, permission denial, cancelled prompt, invalid input, RTL, etc.) when applicable.
