@@ -36,17 +36,12 @@ Enable these only when a workflow role needs them.
 | MCP | Recommended roles | Default mode | Add it when |
 |---|---|---|---|
 | GitHub official MCP | code-review, security-review, CI/release investigation | **read-only**, minimal toolsets | The local checkout is not enough: PR discussion, Actions, code scanning, Dependabot, remote branch state. |
-| Sentry MCP | performance, security, backend, incident/debugging | `inspect` only | You need production error, trace, release, or performance evidence. Add write/triage capabilities only for explicit operations. |
 | Playwright MCP | frontend, QA execute | isolated browser/session | Web UI behavior must be verified in a real browser. |
 | **Appium MCP** | Android/iOS/mobile QA execute | isolated device/session, `NO_UI=true` for agents | Native mobile behavior must be verified on Android/iOS simulators, emulators, real devices, or an existing Appium/device-farm session. |
 
 ### GitHub MCP
 
 Prefer GitHub's official server, `--read-only`, and a small toolset such as repository/PR/Actions context. Avoid `all` for normal subagents. The local git checkout remains the first source for source-code inspection.
-
-### Sentry MCP
-
-Prefer the official remote service and read-oriented `inspect` capability for reviewers. Production observations are evidence; they do not authorize an agent to resolve/assign issues automatically.
 
 ### Web QA — Playwright
 
@@ -111,9 +106,8 @@ Recommended reusable skills/procedures:
 1. **Current docs / migration** — detect installed version → Context7 lookup → concise decision artifact. Implemented here by `docs-researcher` + `.claude/rules/current-docs.md`.
 2. **Dependency upgrade** — inspect changelog/migration docs → compatibility matrix → staged upgrade → targeted tests.
 3. **CI failure investigation** — read failing workflow/logs → reproduce locally → isolate root cause → patch → rerun only relevant checks.
-4. **Production incident investigation** — Sentry read-only evidence → correlate release/trace → reproduce → propose fix; no production mutation by default.
-5. **Mobile device QC** — Appium session → AC-driven flow → screenshots/page-source/log evidence → deterministic result → close/reset session. Implemented by `.claude/skills/mobile-device-qc/SKILL.md`.
-6. **Web UI QC** — isolated Playwright browser → AC-driven flow → accessibility/network evidence → deterministic test where valuable.
+4. **Mobile device QC** — Appium session → AC-driven flow → screenshots/page-source/log evidence → deterministic result → close/reset session. Implemented by `.claude/skills/mobile-device-qc/SKILL.md`.
+5. **Web UI QC** — isolated Playwright browser → AC-driven flow → accessibility/network evidence → deterministic test where valuable.
 
 The existing specialist agents (`android-expert`, `ios-expert`, `security-reviewer`, `qa-engineer`, etc.) should stay **roles**, while the procedures above should be shared skills/rules. That prevents duplicated instructions and makes it easier to swap Claude/Codex or add future executors.
 
@@ -124,14 +118,14 @@ Claude orchestrator
 ├── requirements ───── Atlassian (read)
 ├── docs ───────────── Context7
 ├── architect ──────── local repo + Context7 when needed
-├── security ───────── local repo + Context7; Sentry when production evidence matters
-├── performance ────── local repo; Sentry when production evidence matters
+├── security ───────── local repo + Context7
+├── performance ────── local repo + Context7
 ├── Android / iOS ──── local repo + Context7; Appium for device verification
 ├── frontend ───────── local repo + Context7; Playwright for browser verification
-├── backend ────────── local repo + Context7; Sentry for runtime evidence
+├── backend ────────── local repo + Context7
 ├── implementation ─── Codex delegate; receives focused docs artifact
 ├── QA execute ─────── local tests + Appium for native device flows / Playwright for web
-├── reviews ────────── local diff; GitHub/Sentry only when remote evidence is needed
+├── reviews ────────── local diff; GitHub only when remote evidence is needed
 └── fixes ───────────── Codex delegate
 ```
 
