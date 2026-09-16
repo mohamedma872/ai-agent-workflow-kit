@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-09-16
+
+- Added a provider-independent workflow DAG in `ai/workflows/feature.yaml` and a generic role router in `ai/workflow/router.js`.
+- Claude Code remains the `/feature` orchestrator while implementation and fix roles default to Codex with Claude fallback.
+- Added `codex-delegate` MCP server: Claude passes run-artifact paths instead of large inline prompts; Codex writes detailed results back to `ai/runs/<id>/` and MCP returns compact status metadata.
+- Rebuilt the root README with architecture, workflow, guardrail, MCP token-saving, approval-gate and eval diagrams.
+- Hardened the feature approval gate against direct shell mutation of `plan.approved` / `ai/runs/_active` and denied common Git hook-bypass commands.
+- Added CI validation for package installation, syntax, guard self-tests, workflow routing and MCP SDK imports.
+- Runtime requirement is now Node.js 20+ for the MCP TypeScript SDK v2 server package.
+
 ## 0.2.0 — 2026-09-15
 
 - Cursor support removed: the agents are Claude Code and Codex.
