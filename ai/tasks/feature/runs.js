@@ -8,6 +8,7 @@
  *   set <phase> <status> [note]
  *   select-roles <analysis|reviews> <role...>
  *   set-role <analysis|reviews> <role> <status> [executor] [note]
+ *   evidence <required|not-required> [reason]
  *   reconcile [id]
  *   approve [id]
  *   close
@@ -23,11 +24,12 @@ const PHASES = ['request', 'requirements', 'acceptance-criteria', 'definition-of
 const ROLE_GROUPS = ['analysis', 'reviews'];
 const STATUSES = ['pending', 'in_progress', 'pass', 'fail', 'blocked', 'skipped'];
 const TERMINAL_ROLE_STATUSES = new Set(['pass', 'fail', 'blocked', 'skipped']);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const ICONS = { pass: '✓', fail: '✗', blocked: '⛔', skipped: '~', in_progress: '▸', pending: '·' };
 
 const [cmd, ...rest] = process.argv.slice(2);
 const usage = () => {
-  console.error('usage: runs.js start <id> | status [id] | set <phase> <status> [note] | select-roles <analysis|reviews> <role...> | set-role <analysis|reviews> <role> <status> [executor] [note] | reconcile [id] | approve [id] | close | selftest');
+  console.error('usage: runs.js start <id> | status [id] | set <phase> <status> [note] | select-roles <analysis|reviews> <role...> | set-role <analysis|reviews> <role> <status> [executor] [note] | evidence <required|not-required> [reason] | reconcile [id] | approve [id] | close | selftest');
   process.exit(1);
 };
 const activeId = () => { try { const id = fs.readFileSync(ACTIVE, 'utf8').trim(); return id && fs.existsSync(path.join(RUNS, id)) ? id : null; } catch { return null; } };
@@ -40,13 +42,53 @@ const save = (id, state) => {
 const safeId = id => /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(id || '');
 const safeRole = role => /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(role || '');
 const phaseStatus = (state, phase) => state.phases?.[phase]?.status || 'pending';
+const deviceDir = id => path.join(RUNS, id, 'device');
+const screenshotDir = id => path.join(deviceDir(id), 'screenshots');
+const deviceManifest = id => path.join(deviceDir(id), 'mobile-device-qc.md');
 
 function ensureShape(state, id) {
   const value = state || { id, status: 'active', startedAt: new Date().toISOString() };
   value.phases ||= {};
   value.roles ||= {};
   value.selectedRoles ||= {};
+  value.evidence ||= {};
+  value.evidence.mobileScreenshots ||= { requirement: 'unclassified' };
   return value;
+}
+
+function screenshotFiles(id) {
+  try {
+    return fs.readdirSync(screenshotDir(id))
+      .filter(name => IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase()))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function mobileEvidenceSummary(id, state) {
+  const evidence = state.evidence?.mobileScreenshots || { requirement: 'unclassified' };
+  return {
+    requirement: evidence.requirement || 'unclassified',
+    reason: evidence.reason || null,
+    screenshotCount: screenshotFiles(id).length,
+    manifest: fs.existsSync(deviceManifest(id)),
+  };
+}
+
+function verificationEvidenceProblem(id, state, options = {}) {
+  if (options.evalMode || process.env.AI_EVAL === '1') return null;
+  const evidence = mobileEvidenceSummary(id, state);
+  if (evidence.requirement === 'unclassified') {
+    return 'mobile screenshot evidence is unclassified — run: runs.js evidence required|not-required <reason>';
+  }
+  if (evidence.requirement === 'required' && evidence.screenshotCount < 1) {
+    return `mobile screenshot evidence is required but ai/runs/${id}/device/screenshots/ contains no screenshots`;
+  }
+  if (evidence.requirement === 'required' && !evidence.manifest) {
+    return `mobile screenshot evidence is required but ai/runs/${id}/device/mobile-device-qc.md is missing`;
+  }
+  return null;
 }
 
 function selectedRoleNames(state, group) {
@@ -91,7 +133,6 @@ function setDerivedPhase(state, phase, status, note) {
 function reconcileState(id, state) {
   let changed = false;
 
-  // Human approval is authoritative evidence that the plan is complete.
   const approvalMarker = id && fs.existsSync(path.join(RUNS, id, 'plan.approved'));
   if ((approvalMarker || phaseStatus(state, 'approval') === 'pass') && ['pending', 'in_progress'].includes(phaseStatus(state, 'plan'))) {
     changed = setDerivedPhase(state, 'plan', 'pass', 'approval implies completed plan') || changed;
@@ -126,6 +167,8 @@ function render(id, state) {
       console.log(`      ${ICONS[roleState.status] || '·'} ${role.padEnd(18)} ${String(roleState.status).padEnd(12)}${roleState.executor ? ` · ${roleState.executor}` : ''}${roleState.note ? ` — ${roleState.note}` : ''}`);
     }
   }
+  const evidence = mobileEvidenceSummary(id, state);
+  console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · manifest ${evidence.manifest ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
   const next = PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
   console.log(`\n→ resume at: ${next || 'done'}`);
 }
@@ -149,6 +192,14 @@ function selftest() {
   const legacyDerived = deriveRoleGroupStatus(legacy, 'analysis', { allowLegacy: true });
   assert.strictEqual(legacyDerived, 'pass');
 
+  const evidence = ensureShape({}, 'TEST');
+  assert.ok(verificationEvidenceProblem('TEST', evidence, { evalMode: false }).includes('unclassified'));
+  evidence.evidence.mobileScreenshots = { requirement: 'not-required', reason: 'backend-only' };
+  assert.strictEqual(verificationEvidenceProblem('TEST', evidence, { evalMode: false }), null);
+  evidence.evidence.mobileScreenshots = { requirement: 'required' };
+  assert.ok(verificationEvidenceProblem('TEST', evidence, { evalMode: false }).includes('no screenshots'));
+  assert.strictEqual(verificationEvidenceProblem('TEST', evidence, { evalMode: true }), null);
+
   console.log('runs.js selftest OK');
 }
 
@@ -158,6 +209,7 @@ switch (cmd) {
     if (!safeId(id)) usage();
     fs.mkdirSync(path.join(RUNS, id, '05-analysis'), { recursive: true });
     fs.mkdirSync(path.join(RUNS, id, '09-reviews'), { recursive: true });
+    fs.mkdirSync(screenshotDir(id), { recursive: true });
     let state = load(id);
     if (!state) {
       state = ensureShape(null, id);
@@ -188,6 +240,14 @@ switch (cmd) {
     if (!PHASES.includes(phase)) { console.error(`unknown phase "${phase}" — one of: ${PHASES.join(', ')}`); process.exit(1); }
     if (!STATUSES.includes(status)) { console.error(`unknown status "${status}" — one of: ${STATUSES.join(', ')}`); process.exit(1); }
     const state = ensureShape(load(id), id);
+    reconcileState(id, state);
+    if (phase === 'verification' && status === 'pass') {
+      const problem = verificationEvidenceProblem(id, state);
+      if (problem) {
+        console.error(`cannot mark verification pass: ${problem}`);
+        process.exit(1);
+      }
+    }
     state.phases[phase] = { status, updatedAt: new Date().toISOString(), ...(note ? { note } : {}) };
     reconcileState(id, state);
     save(id, state);
@@ -238,6 +298,30 @@ switch (cmd) {
     reconcileState(id, state);
     save(id, state);
     console.log(`${id} ${group}/${role} → ${status}${executor && executor !== '-' ? ` · ${executor}` : ''}${note ? ` (${note})` : ''}; ${group} → ${state.phases[group]?.status || 'pending'}`);
+    break;
+  }
+  case 'evidence': {
+    const [requirement] = rest;
+    const reason = rest.slice(1).join(' ');
+    const id = activeId();
+    if (!id) { console.error('no active run — runs.js start <id> first'); process.exit(1); }
+    if (!['required', 'not-required'].includes(requirement)) {
+      console.error('evidence requirement must be required or not-required');
+      process.exit(1);
+    }
+    if (requirement === 'not-required' && !reason) {
+      console.error('not-required evidence classification needs a reason');
+      process.exit(1);
+    }
+    const state = ensureShape(load(id), id);
+    state.evidence.mobileScreenshots = {
+      requirement,
+      updatedAt: new Date().toISOString(),
+      ...(reason ? { reason } : {}),
+    };
+    fs.mkdirSync(screenshotDir(id), { recursive: true });
+    save(id, state);
+    console.log(`${id}: mobile screenshot evidence → ${requirement}${reason ? ` (${reason})` : ''}`);
     break;
   }
   case 'reconcile': {
