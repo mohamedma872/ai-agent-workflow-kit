@@ -160,6 +160,50 @@ Example:
 
 The dashboard understands both **phase status** and individual parallel **role status**, so `analysis` and `reviews` do not appear as one opaque step.
 
+## Automatic state reconciliation
+
+Parallel phases are now closed from the selected role states instead of relying on the orchestrator to remember a second manual update.
+
+Before launching parallel analysis or reviews, the workflow registers the exact roles selected for that run:
+
+```bash
+node ai/tasks/feature/runs.js select-roles analysis architect qa-plan security
+node ai/tasks/feature/runs.js select-roles reviews code-review security-review performance-review
+```
+
+Each role then reports its own status with `set-role`. When all selected roles reach terminal states, the parent phase is derived automatically:
+
+```text
+architect ✅
+qa-plan   ✅
+security  ✅
+     ↓
+Specialist Analysis ✅ pass
+```
+
+The same behavior applies to independent reviews.
+
+Human approval also reconciles the plan consistently: approving a valid plan records both `plan = pass` and `approval = pass`.
+
+For older runs created before selected-role tracking, repair safe derived state with:
+
+```bash
+node ai/tasks/feature/runs.js reconcile
+```
+
+The renderer is defensive too. If an old `state.json` still contains contradictory values such as:
+
+```text
+Specialist Analysis   in_progress
+  architect           pass
+  security            pass
+  qa-plan             pass
+Implementation Plan   in_progress
+Human Approval        pass
+```
+
+it will no longer report `Current: Specialist Analysis`. It uses the effective dependency state, prefers the furthest downstream active stage, and displays a warning showing which stored values were stale.
+
 ## VS Code / editor view
 
 This repo includes `.vscode/tasks.json`.
@@ -467,9 +511,10 @@ Then use Claude Code:
 |---|---|
 | `README.md` | High-level explanation and progress visualization |
 | `ai/workflows/feature.yaml` | Workflow stages and role routing |
-| `ai/workflow/progress.js` | Terminal / JSON / Markdown progress renderer |
+| `ai/workflow/progress.js` | Terminal / JSON / Markdown progress renderer and consistency detection |
+| `ai/workflow/progress-selftest.js` | Regression checks for stale/contradictory workflow states |
 | `ai/workflow/github-progress.js` | Safe single-comment GitHub PR progress publisher |
-| `ai/tasks/feature/runs.js` | Local phase and per-role state store |
+| `ai/tasks/feature/runs.js` | Local phase/per-role state store and automatic reconciliation |
 | `.vscode/tasks.json` | Editor tasks for checks, snapshots, and live progress |
 | `ai/agents.yaml` | Claude/Codex launch definitions |
 | `ai/guard.yaml` | Safety rules |
@@ -489,6 +534,9 @@ flowchart TB
     C --> S[Specialist agents]
     C --> P[Plan]
 
+    S --> RS[Selected role states]
+    RS --> ST[state.json]
+
     P --> H{Human approval}
     H --> X[Codex implementation]
 
@@ -499,7 +547,7 @@ flowchart TB
     R --> F[Codex fixes]
     F --> V[Claude verification]
 
-    C --> ST[state.json]
+    C --> ST
     ST --> UI[Live progress views]
 
     G[Guardrails] -. protect .-> C
