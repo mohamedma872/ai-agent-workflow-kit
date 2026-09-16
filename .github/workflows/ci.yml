@@ -27,6 +27,7 @@ jobs:
           node --check ai/workflow/router.js
           node --check ai/mcp/codex-delegate.mjs
           node --check ai/tasks/feature/guard.js
+          node --check ai/evals/auto.js
 
       - name: Guard configuration
         run: npm run guard:check
@@ -36,6 +37,9 @@ jobs:
 
       - name: Workflow configuration
         run: npm run workflow:check
+
+      - name: Exam health (oracle + null self-check of every case)
+        run: npm run exam:check
 
       - name: Workflow routing smoke test
         run: |

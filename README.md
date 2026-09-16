@@ -429,6 +429,36 @@ node ai/evals/run.js coding summary
 
 The best eval cases are real bugs/features from your history with known correct outcomes.
 
+## The exam on autopilot
+
+`run.js` stays manual on purpose: a live trial spends money and edits files in
+place, so it refuses a dirty tree and a nested agent session. `ai/evals/auto.js`
+schedules it without loosening those rules:
+
+```bash
+npm run exam:check                                   # free, ~1 s: guard check + self-test, oracle + null self-check of every case
+node ai/evals/auto.js live --tasks coding            # the live exam in its own git worktree (~/.ai-evals/<repo>/worktree), cost cap $10, report + notification
+node ai/evals/auto.js live --dry-run                 # build the checkout, print the exact commands, spend nothing
+node ai/evals/auto.js schedule install --at 02:30 --tasks coding   # nightly macOS launchd job: check, then live
+node ai/evals/auto.js schedule status | run-now | uninstall
+node ai/evals/auto.js report                         # ai/evals/results/nightly/latest.md
+```
+
+```mermaid
+flowchart LR
+    L[launchd 02:30] --> C[check: rules valid, self-test, oracle/null]
+    C -->|pass| W[fresh worktree off the main checkout]
+    C -->|fail| R
+    W --> T[run.js per case x agent, cost + time cap]
+    T --> G[end-state grade → one ledger]
+    G --> R[report + notification]
+```
+
+The eval checkout gets the gitignored kit copied in (never credentials) and
+links `ai/evals/results` back to the main checkout, so the ledger stays in one
+place. The feature task is not scheduled by default (it costs about $10 per
+case); add it weekly with `--label com.ai-evals.<repo>.weekly --weekday 0 --tasks feature --cap 30`.
+
 ---
 
 # Quick start
@@ -452,6 +482,7 @@ npm run guard:check
 npm run guard:selftest
 npm run workflow:check
 npm run workflow:show
+npm run exam:check
 node ai/evals/run.js
 ```
 

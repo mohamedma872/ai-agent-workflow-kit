@@ -8,3 +8,8 @@ export PATH="/opt/homebrew/bin:$PATH"
 if [ -f ai/guard/git-pre-push.js ]; then
   node ai/guard/git-pre-push.js "$@" || exit 1
 fi
+
+# Exam health gate (free, ~1 s): rule files valid, fence self-test, oracle + null self-check of every case.
+if [ -f ai/evals/auto.js ]; then
+  node ai/evals/auto.js check || exit 1
+fi

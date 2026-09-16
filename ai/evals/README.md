@@ -29,3 +29,20 @@ What the ledger means (`<results dir>/results.jsonl`, `errors.jsonl`, `runs/<run
 
 Every ledger row keeps the run dir, so a surprising number can be traced to the
 artifacts without re-running.
+
+## On autopilot: `auto.js`
+
+`run.js` stays manual on purpose (it spends money and edits files in place).
+`auto.js` schedules it without changing that contract — see `ai/README.md` § 6.7.
+
+```bash
+node ai/evals/auto.js check                                  # free: fence check + selftest + oracle/null of every case
+node ai/evals/auto.js live --tasks coding [--agents claude,codex] [--cases a,b] [--cap 10] [--dry-run]
+node ai/evals/auto.js schedule install --at 02:30 --tasks coding   # nightly launchd job (check, then live)
+node ai/evals/auto.js schedule status | run-now | uninstall
+node ai/evals/auto.js report                                 # results/nightly/latest.md
+```
+
+The live exam runs in its own worktree off iCloud (`~/.ai-evals/<repo>/worktree`),
+with the gitignored kit copied in and `results/` linked back here, so the
+ledger stays in one place. Reports: `results/nightly/`.

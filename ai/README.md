@@ -1,6 +1,6 @@
 # AI tasks in this repo — complete architecture reference
 
-Version 2.0 · 2026-09-15 · agent-neutral · this copy is the public kit (client-specific tasks removed)
+Version 2.0 · 2026-09-16 · agent-neutral · this copy is the public kit (client-specific tasks removed)
 
 Every piece of work in this repo that uses an LLM or an agent — a Claude Code
 skill, a headless `claude -p` job, a Claude API feature, a bot, another
@@ -82,6 +82,17 @@ node ai/evals/run.js coding run --all --agent codex --reps 3
 node ai/evals/run.js coding summary      # one row per agent × case, with the noise floor
 ```
 
+**Exam — on autopilot** (`ai/evals/auto.js`; section 6.7)
+
+```bash
+node ai/evals/auto.js check                       # free, ~1 s: fence --check + --selftest, oracle + null of every case (put it in pre-push)
+node ai/evals/auto.js live --tasks coding         # the live exam in its own checkout off iCloud (~/.ai-evals/<repo>/worktree), cost cap $10, report + notification
+node ai/evals/auto.js live --dry-run              # build the checkout, print the exact commands, spend nothing
+node ai/evals/auto.js schedule install --at 02:30 --tasks coding   # nightly launchd job = check, then live; re-run after a node/claude upgrade
+node ai/evals/auto.js schedule status | run-now | uninstall
+node ai/evals/auto.js report                      # the latest report (ai/evals/results/nightly/latest.md)
+```
+
 **Delivery workflow (Claude Code)**
 
 \`\`\`bash
@@ -123,6 +134,9 @@ ai/                             ← AGENT-NEUTRAL HOME (nothing here is Claude-s
 ├── README.md                   ← this reference
 ├── guard.yaml                  ← THE RULES, in plain words: secret files, guarded files, destructive shell, outward writes, leaks, budget (section 4)
 ├── agents.yaml                 ← how to run each agent headlessly for evals: claude · codex (section 13)
+├── workflows/feature.yaml      ← THE WORKFLOW: stages, dependencies, roles → executor (claude subagent · codex · a future agent) + fallbacks (section 14)
+├── workflow/router.js          ← provider-independent role router: `list · show · resolve · exec · check` — joins workflows/*.yaml with agents.yaml
+├── mcp/codex-delegate.mjs      ← MCP server "codex-delegate": Claude hands a role to Codex by artifact paths and gets compact status back
 ├── guard/
 │   ├── engine.js               ← the ENGINE that reads guard.yaml + every task's guard.yaml on each tool call. `--check` · `--explain` · `--selftest`
 │   ├── git-pre-commit.js       ← git-level fence for EVERYONE: refuses staged credential files / token-shaped content
@@ -142,7 +156,9 @@ ai/                             ← AGENT-NEUTRAL HOME (nothing here is Claude-s
 └── evals/                      ← THE EXAM ENGINE, task- and agent-independent (section 6)
     ├── run.js                  ← node ai/evals/run.js <task> list|plan|run|grade|summary  [--agent claude|codex]
     ├── grade.js                ← end-state grader: recall, phantoms, verdict, cost; oracle/null self-checks
+    ├── auto.js                 ← the exam on autopilot: check (free) · live (own checkout off iCloud, cost cap, report, notification) · schedule (launchd nightly)
     ├── README.md
+    └── results/nightly/        ← auto.js reports: <stamp>.md + latest.md, <stamp>.log, history.log, launchd.log
 
 AGENTS.md                       ← the instructions EVERY agent reads (Codex natively; Claude Code through .claude/rules/ai-tasks.md)
 .mcp.json                       ← MCP servers (jira); the token is ${JIRA_API_TOKEN} from .claude/settings.local.json env, so the file is shareable
@@ -509,6 +525,30 @@ counts of incomplete and error rows, then the **noise floor**
 `±100/√n points` for n graded trials (4 → ±50, 25 → ±20, 100 → ±10).
 Differences smaller than the floor are not real; add reps or cases instead.
 
+### 6.7 The exam on autopilot: `evals/auto.js`
+
+`run.js` is deliberately manual: a live trial spends money and rewrites files in
+place, so it refuses a dirty tree and a nested Claude session. `auto.js` puts a
+schedule around it without changing that contract:
+
+| Command | What it does | Cost |
+|---|---|---|
+| `auto.js check` | `engine --check` + `--selftest`, then the oracle and null self-check of **every case of every task**. Exit 2 on any failure. | $0, ~1 s |
+| `auto.js nightly [options]` | `check`, then `live` — `live` is skipped (and reported) when `check` fails. | |
+| `auto.js schedule install --at HH:MM [--weekday 0-6] [--label X] [live options]` | Writes `~/Library/LaunchAgents/<label>.plist` (default label `com.ai-evals.<repo>`; absolute node / claude / codex paths captured at install time) and loads it. A job missed while the Mac sleeps runs at wake; one missed while it is powered off is skipped. `status`, `run-now`, `uninstall`, `report` do what they say. | |
+
+Defaults: `--tasks coding` (the feature task costs ~$10 per case — add it as a
+weekly job: `schedule install --label com.ai-evals.<repo>.weekly --weekday 0 --at 03:00 --tasks feature --cap 30`),
+`--agents` = every agent in `agents.yaml` that is on PATH, `--reps 1`.
+
+Suggested free gate for humans and agents alike (`.husky/pre-push`, user-only file):
+
+```sh
+if [ -f ai/evals/auto.js ]; then
+  node ai/evals/auto.js check || exit 1
+fi
+```
+
 ## 7. Anatomy of a task folder and how to add one
 
 ```
@@ -667,6 +707,40 @@ keyword to an artifact (`any_of: [[06-plan.md, biometric]]`).
 it follows the same 13 steps by hand from `AGENTS.md` and keeps the same
 artifacts, and the plan gate applies to it through the same task rule (the
 fence reads `ai/runs/_active`, not the agent's name).
+
+**Provider-independent routing (2026-09-16).** The
+workflow itself now lives in `ai/workflows/feature.yaml`: stages with their
+dependencies, and roles (`architect`, `security`, `qa-plan`, `performance`,
+`android`, `ios`, `implementation`, `qa-execute`, `code-review`,
+`security-review`, `performance-review`, `fixes`) each naming an executor and
+fallbacks. `ai/workflow/router.js` joins that with `ai/agents.yaml`:
+
+```bash
+node ai/workflow/router.js check                                   # validate the workflow file(s)
+node ai/workflow/router.js show feature                            # stages, roles, executors
+node ai/workflow/router.js resolve feature implementation --json   # which executor runs this role now (falls back to what is on PATH)
+node ai/workflow/router.js exec feature <role> --agent codex --prompt-file <ctx.md> --output-file <out.md>
+```
+
+Analysis and review roles stay Claude subagents; `implementation` and `fixes`
+default to Codex with Claude as fallback. Claude hands a Codex role over
+through the `codex-delegate` MCP server (`ai/mcp/codex-delegate.mjs`): it
+passes only artifact paths under `ai/runs/<id>/`, the server runs the router
+locally, Codex writes its full result to the output artifact, and only compact
+status comes back — large prompts and results never enter Claude's context.
+To enable it, add to `.mcp.json` (user's file):
+
+```json
+"codex-delegate": { "command": "node", "args": ["ai/mcp/codex-delegate.mjs"] }
+```
+
+Two fence rules came with it: `ai/workflow/*` and `ai/workflows/*` are
+guarded (user-only), `hook-bypass` denies `--no-verify` / `HUSKY=0` /
+`core.hooksPath=/dev/null`, and the feature guard denies any shell command
+that writes `plan.approved` or `ai/runs/_active` directly — only
+`runs.js approve` (which asks) can open the gate. Artifact names follow the subagent (`05-analysis/<subagent>.md`,
+`09-reviews/<subagent>.md`); the kit also ships `backend` and `frontend` roles
+for server and web work.
 
 ## 9. Operations
 
