@@ -470,8 +470,8 @@ Requirements:
 - Claude Code and/or Codex CLI for live agent execution
 
 ```bash
-git clone https://github.com/mohamedma872/ai-guardrails-evals
-cd ai-guardrails-evals
+git clone https://github.com/mohamedma872/ai-agent-workflow-kit
+cd ai-agent-workflow-kit
 npm install
 ```
 
