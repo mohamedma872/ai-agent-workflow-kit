@@ -5,7 +5,8 @@
 - Added Context7 to the project MCP example and a narrow `docs-researcher` Claude subagent for current, version-specific external documentation.
 - Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs.md` artifact instead of relying on model memory.
 - Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.
-- Added role-scoped MCP metadata to the feature workflow and `ai/mcp/README.md` with least-privilege guidance for GitHub, Sentry, Playwright, Appium and Maestro.
+- Added role-scoped MCP metadata to the feature workflow and `ai/mcp/README.md` with least-privilege guidance for GitHub, Sentry, Playwright and Appium.
+- Standardized native mobile QA on Appium MCP and added a reusable `mobile-device-qc` skill for AC-driven Android/iOS validation with device evidence.
 
 ## 0.3.0 — 2026-09-16
 
