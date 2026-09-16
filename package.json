@@ -1,12 +1,12 @@
 {
-  "name": "ai-guardrails-evals",
+  "name": "ai-agent-workflow-kit",
   "version": "0.3.1",
   "description": "Provider-independent agentic workflows with shared guardrails, MCP delegation, and end-state evals for Claude Code, Codex, and future coding agents.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mohamedma872/ai-guardrails-evals"
+    "url": "https://github.com/mohamedma872/ai-agent-workflow-kit"
   },
   "scripts": {
     "guard:check": "node ai/guard/engine.js --check",
