@@ -1,0 +1,161 @@
+version: 1
+name: feature
+description: Provider-independent agentic delivery workflow for feature work.
+
+# The workflow owns the process. Executors are selected from ai/agents.yaml.
+# A role may prefer one executor and list fallbacks. Adding another provider
+# later only requires an entry in ai/agents.yaml plus a role mapping here.
+
+orchestrator:
+  executor: claude
+  purpose: Own workflow state, synthesize specialist findings, enforce the plan gate, and verify completion.
+
+roles:
+  architect:
+    executor: claude
+    purpose: Inspect architecture, integration points, reuse opportunities, boundaries, and trade-offs.
+    read_only: true
+    artifact: 05-analysis/architect.md
+
+  security:
+    executor: claude
+    purpose: Threat-model auth, session, storage, PII, permissions, deep links, WebViews, native dependencies, and external effects.
+    read_only: true
+    artifact: 05-analysis/security.md
+
+  qa-plan:
+    executor: claude
+    purpose: Derive test cases from acceptance criteria, including negative cases and regression coverage.
+    read_only: true
+    artifact: 05-analysis/qa.md
+
+  performance:
+    executor: claude
+    purpose: Review rendering, startup, networking, caching, memory, concurrency, and build/runtime performance risks.
+    read_only: true
+    artifact: 05-analysis/performance.md
+
+  android:
+    executor: claude
+    purpose: Review Android-specific behavior, lifecycle, permissions, native modules, performance, and Play policy impact.
+    read_only: true
+    artifact: 05-analysis/android.md
+
+  ios:
+    executor: claude
+    purpose: Review iOS-specific behavior, lifecycle, permissions, native modules, performance, and App Store impact.
+    read_only: true
+    artifact: 05-analysis/ios.md
+
+  backend:
+    executor: claude
+    purpose: Review server, API contracts, persistence, queues, migrations, concurrency, reliability, and observability.
+    read_only: true
+    artifact: 05-analysis/backend.md
+
+  frontend:
+    executor: claude
+    purpose: Review web UI architecture, routing, accessibility, forms, state, data fetching, and browser behavior.
+    read_only: true
+    artifact: 05-analysis/frontend.md
+
+  implementation:
+    executor: codex
+    fallback: [claude]
+    purpose: Implement only the approved plan, keep changes minimal, and add/update tests required by the plan.
+    read_only: false
+    artifact: 07-implementation.md
+
+  qa-execute:
+    executor: claude
+    purpose: Run the verification commands and report exact pass/fail evidence without changing product behavior to make tests pass.
+    read_only: true
+    artifact: 08-build-test.md
+
+  code-review:
+    executor: claude
+    purpose: Independently review the diff for correctness, maintainability, regressions, and plan/acceptance-criteria compliance.
+    read_only: true
+    artifact: 09-reviews/code-review.md
+
+  security-review:
+    executor: claude
+    purpose: Independently review the final diff for security regressions, credential handling, authorization, data exposure, and unsafe external effects.
+    read_only: true
+    artifact: 09-reviews/security.md
+
+  performance-review:
+    executor: claude
+    purpose: Independently review the final diff for measurable or likely performance regressions.
+    read_only: true
+    artifact: 09-reviews/performance.md
+
+  fixes:
+    executor: codex
+    fallback: [claude]
+    purpose: Fix only validated review findings, preserve the approved scope, and update tests when needed.
+    read_only: false
+    artifact: 10-fixes.md
+
+stages:
+  - id: request
+    owner: orchestrator
+    artifact: 00-request.md
+
+  - id: requirements
+    owner: orchestrator
+    needs: [request]
+    artifact: 01-requirements.md
+
+  - id: acceptance-criteria
+    owner: orchestrator
+    needs: [requirements]
+    artifact: 02-acceptance-criteria.md
+
+  - id: definition-of-done
+    owner: orchestrator
+    needs: [acceptance-criteria]
+    artifact: 03-definition-of-done.md
+
+  - id: inspection
+    owner: orchestrator
+    needs: [definition-of-done]
+    artifact: 04-inspection.md
+
+  - id: analysis
+    strategy: parallel
+    needs: [inspection]
+    roles: [architect, qa-plan, security, performance, android, ios, backend, frontend]
+    selective: true
+
+  - id: plan
+    owner: orchestrator
+    needs: [analysis]
+    artifact: 06-plan.md
+
+  - id: approval
+    type: human_gate
+    needs: [plan]
+    marker: plan.approved
+
+  - id: implementation
+    role: implementation
+    needs: [approval]
+
+  - id: build-test
+    role: qa-execute
+    needs: [implementation]
+
+  - id: reviews
+    strategy: parallel
+    needs: [build-test]
+    roles: [code-review, security-review, performance-review]
+
+  - id: fixes
+    role: fixes
+    needs: [reviews]
+
+  - id: verification
+    owner: orchestrator
+    needs: [fixes]
+    artifact: 11-verification.md
