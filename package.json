@@ -1,7 +1,7 @@
 {
   "name": "ai-guardrails-evals",
-  "version": "0.2.0",
-  "description": "Guardrails + evals + an agentic delivery workflow for any coding agent (Claude Code, Codex): rules in YAML, one hook engine, git-level fence, end-state graded evals, enforced plan gate.",
+  "version": "0.3.0",
+  "description": "Provider-independent agentic workflows with shared guardrails and end-state evals for Claude Code, Codex, and future coding agents.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
   "repository": {
@@ -12,6 +12,8 @@
     "guard:check": "node ai/guard/engine.js --check",
     "guard:explain": "node ai/guard/engine.js --explain",
     "guard:selftest": "node ai/guard/engine.js --selftest",
+    "workflow:check": "node ai/workflow/router.js check",
+    "workflow:show": "node ai/workflow/router.js show feature",
     "eval": "node ai/evals/run.js",
     "prepare": "husky"
   },
