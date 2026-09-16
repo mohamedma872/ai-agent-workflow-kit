@@ -39,7 +39,7 @@ roles:
     purpose: Threat-model auth, session, storage, PII, permissions, deep links, WebViews, native dependencies, and external effects.
     read_only: true
     artifact: 05-analysis/security.md
-    optional_mcps: [context7, sentry]
+    optional_mcps: [context7]
 
   qa-plan:
     executor: claude
@@ -55,7 +55,7 @@ roles:
     purpose: Review rendering, startup, networking, caching, memory, concurrency, and build/runtime performance risks.
     read_only: true
     artifact: 05-analysis/performance.md
-    optional_mcps: [context7, sentry]
+    optional_mcps: [context7]
 
   android:
     executor: claude
@@ -79,7 +79,7 @@ roles:
     purpose: Review server, API contracts, persistence, queues, migrations, concurrency, reliability, and observability.
     read_only: true
     artifact: 05-analysis/backend.md
-    optional_mcps: [context7, sentry]
+    optional_mcps: [context7]
 
   frontend:
     executor: claude
@@ -119,7 +119,7 @@ roles:
     purpose: Independently review the final diff for security regressions, credential handling, authorization, data exposure, and unsafe external effects.
     read_only: true
     artifact: 09-reviews/security.md
-    optional_mcps: [context7, sentry, github]
+    optional_mcps: [context7, github]
 
   performance-review:
     executor: claude
@@ -127,7 +127,6 @@ roles:
     purpose: Independently review the final diff for measurable or likely performance regressions.
     read_only: true
     artifact: 09-reviews/performance.md
-    optional_mcps: [sentry]
 
   fixes:
     executor: codex
