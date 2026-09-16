@@ -9,18 +9,31 @@ description: Provider-independent agentic delivery workflow for feature work.
 # execute the same role through ai/workflow/router.js.
 # Artifact names follow the subagent names (05-analysis/<subagent>.md, 09-reviews/<subagent>.md),
 # the convention ai/tasks/feature/cases.yaml and ai/README.md § 14 already use.
+# mcps/optional_mcps are least-privilege capability hints; do not load every
+# MCP into every role just because the project has it configured.
 
 orchestrator:
   executor: claude
   purpose: Own workflow state, synthesize specialist findings, enforce the plan gate, and verify completion.
+  mcps: [atlassian, codex-delegate]
+  optional_mcps: [github]
 
 roles:
+  docs:
+    executor: claude
+    claude_subagent: docs-researcher
+    purpose: Resolve current, version-specific external library/framework documentation before decisions depend on an API, SDK, migration, configuration, or deprecation.
+    read_only: true
+    artifact: 05-analysis/docs-researcher.md
+    mcps: [context7]
+
   architect:
     executor: claude
     claude_subagent: mobile-architect
     purpose: Inspect architecture, integration points, reuse opportunities, boundaries, and trade-offs.
     read_only: true
     artifact: 05-analysis/mobile-architect.md
+    optional_mcps: [context7]
 
   security:
     executor: claude
@@ -28,6 +41,7 @@ roles:
     purpose: Threat-model auth, session, storage, PII, permissions, deep links, WebViews, native dependencies, and external effects.
     read_only: true
     artifact: 05-analysis/security-reviewer.md
+    optional_mcps: [context7]
 
   qa-plan:
     executor: claude
@@ -35,6 +49,7 @@ roles:
     purpose: Derive test cases from acceptance criteria, including negative cases and regression coverage.
     read_only: true
     artifact: 05-analysis/qa-engineer.md
+    optional_mcps: [atlassian]
 
   performance:
     executor: claude
@@ -42,6 +57,7 @@ roles:
     purpose: Review rendering, startup, networking, caching, memory, concurrency, and build/runtime performance risks.
     read_only: true
     artifact: 05-analysis/performance-reviewer.md
+    optional_mcps: [context7]
 
   android:
     executor: claude
@@ -49,6 +65,7 @@ roles:
     purpose: Review Android-specific behavior, lifecycle, permissions, native modules, performance, and Play policy impact.
     read_only: true
     artifact: 05-analysis/android-expert.md
+    optional_mcps: [context7, appium]
 
   ios:
     executor: claude
@@ -56,6 +73,7 @@ roles:
     purpose: Review iOS-specific behavior, lifecycle, permissions, native modules, performance, and App Store impact.
     read_only: true
     artifact: 05-analysis/ios-expert.md
+    optional_mcps: [context7, appium]
 
   backend:
     executor: claude
@@ -63,6 +81,7 @@ roles:
     purpose: Review server, API contracts, persistence, queues, migrations, concurrency, reliability, and observability.
     read_only: true
     artifact: 05-analysis/backend-expert.md
+    optional_mcps: [context7]
 
   frontend:
     executor: claude
@@ -70,6 +89,7 @@ roles:
     purpose: Review web UI architecture, routing, accessibility, forms, state, data fetching, and browser behavior.
     read_only: true
     artifact: 05-analysis/frontend-expert.md
+    optional_mcps: [context7, playwright]
 
   implementation:
     executor: codex
@@ -77,6 +97,7 @@ roles:
     purpose: Implement only the approved plan, keep changes minimal, and add/update tests required by the plan.
     read_only: false
     artifact: 07-implementation.md
+    optional_mcps: [context7]
 
   qa-execute:
     executor: claude
@@ -84,6 +105,7 @@ roles:
     purpose: Run the verification commands and report exact pass/fail evidence without changing product behavior to make tests pass.
     read_only: true
     artifact: 08-build-test.md
+    optional_mcps: [playwright, appium]
 
   code-review:
     executor: claude
@@ -91,6 +113,7 @@ roles:
     purpose: Independently review the diff for correctness, maintainability, regressions, and plan/acceptance-criteria compliance.
     read_only: true
     artifact: 09-reviews/code-reviewer.md
+    optional_mcps: [context7, github]
 
   security-review:
     executor: claude
@@ -98,6 +121,7 @@ roles:
     purpose: Independently review the final diff for security regressions, credential handling, authorization, data exposure, and unsafe external effects.
     read_only: true
     artifact: 09-reviews/security-reviewer.md
+    optional_mcps: [context7, github]
 
   performance-review:
     executor: claude
@@ -112,6 +136,7 @@ roles:
     purpose: Fix only validated review findings, preserve the approved scope, and update tests when needed.
     read_only: false
     artifact: 10-fixes.md
+    optional_mcps: [context7]
 
 stages:
   - id: request
@@ -141,7 +166,7 @@ stages:
   - id: analysis
     strategy: parallel
     needs: [inspection]
-    roles: [architect, qa-plan, security, performance, android, ios, backend, frontend]
+    roles: [docs, architect, qa-plan, security, performance, android, ios, backend, frontend]
     selective: true
 
   - id: plan

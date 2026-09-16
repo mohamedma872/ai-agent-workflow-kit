@@ -4,14 +4,13 @@
       "command": "node",
       "args": ["ai/mcp/codex-delegate.mjs"]
     },
-    "jira": {
+    "context7": {
       "command": "npx",
-      "args": ["-y", "mcp-jira-cloud@latest"],
-      "env": {
-        "JIRA_BASE_URL": "https://example.atlassian.net",
-        "JIRA_EMAIL": "you@example.com",
-        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
-      }
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "atlassian": {
+      "type": "http",
+      "url": "https://mcp.atlassian.com/v1/mcp"
     }
   }
 }

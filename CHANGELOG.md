@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added Context7 to the project MCP example and a narrow `docs-researcher` Claude subagent for current, version-specific external documentation.
+- Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs-researcher.md` artifact instead of relying on model memory.
+- Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.
+- Added role-scoped MCP metadata to the feature workflow and `ai/mcp/README.md` with least-privilege guidance for GitHub, Playwright and Appium.
+- Standardized native mobile QA on Appium MCP and added a reusable `mobile-device-qc` skill for AC-driven Android/iOS validation with device evidence.
+
 ## 0.3.1 — 2026-09-16
 
 - The exam on autopilot: `ai/evals/auto.js` — `check` (free: guard check + self-test + oracle/null of every case), `live` (the live exam in its own git worktree, cost and time caps, report + notification), `nightly` (check then live), `schedule install|status|run-now|uninstall` (a macOS launchd job), `report`. `npm run exam:check` in CI and the suggested `.husky/pre-push` gate.
