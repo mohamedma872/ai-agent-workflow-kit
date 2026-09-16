@@ -1,6 +1,6 @@
 {
   "name": "ai-guardrails-evals",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Provider-independent agentic workflows with shared guardrails, MCP delegation, and end-state evals for Claude Code, Codex, and future coding agents.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
@@ -16,7 +16,11 @@
     "workflow:show": "node ai/workflow/router.js show feature",
     "mcp:codex": "node ai/mcp/codex-delegate.mjs",
     "eval": "node ai/evals/run.js",
-    "prepare": "husky"
+    "prepare": "husky",
+    "exam:check": "node ai/evals/auto.js check",
+    "exam:live": "node ai/evals/auto.js live",
+    "exam:nightly": "node ai/evals/auto.js nightly",
+    "exam:schedule": "node ai/evals/auto.js schedule"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

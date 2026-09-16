@@ -16,7 +16,7 @@ Use this skill when a coding decision depends on documentation outside the repos
 3. The researcher must use Context7, prefer the exact library ID when known, and include the detected version in the query.
 4. Compare the retrieved documentation with local source/types/tests when they disagree. Local code proves what this repository currently does; current docs prove what the external API currently specifies.
 5. Return only the decision-relevant facts. Never paste a large documentation page into the orchestration context.
-6. In a `/feature` run, save the report to `ai/runs/<id>/05-analysis/docs.md` and reference that artifact from the plan and any Codex implementation/fixes context.
+6. In a `/feature` run, save the report to `ai/runs/<id>/05-analysis/docs-researcher.md` and reference that artifact from the plan and any Codex implementation/fixes context.
 
 ## Output
 
