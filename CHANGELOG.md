@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added first-class Flutter support with a dedicated `flutter-expert` specialist, Flutter workflow routing, Dart/Flutter-aware QA guidance, and CI coverage for the Flutter role.
+- Flutter mobile/UI features now use the same final headless Appium screenshot-evidence gate through their Android/iOS build, with semantics/accessibility-based locator guidance.
 - Added live agentic workflow progress rendering from the existing `ai/runs/<id>/state.json` source of truth: terminal dashboard, watch mode, JSON/Markdown output, VS Code tasks, and an optional single auto-updating GitHub PR progress comment.
 - Added per-role progress tracking for parallel analysis/review agents so the dashboard can show which specialists are running, done, blocked, failed, or skipped.
 - Added selected-role registration and automatic reconciliation for parallel `analysis` / `reviews` phases so completed specialists cannot leave a stale parent phase stuck `in_progress`.
@@ -14,7 +16,7 @@
 - Added reusable `current-docs` skill/rule so version-sensitive planning and implementation produce a focused `05-analysis/docs-researcher.md` artifact instead of relying on model memory.
 - Replaced the example third-party Jira MCP with official Atlassian Rovo MCP v2 for Jira/Confluence context.
 - Added role-scoped MCP metadata to the feature workflow and `ai/mcp/README.md` with least-privilege guidance for GitHub, Playwright and Appium.
-- Standardized native mobile QA on Appium MCP and added a reusable `mobile-device-qc` skill for AC-driven Android/iOS validation with device evidence.
+- Standardized mobile QA on Appium MCP and added a reusable `mobile-device-qc` skill for AC-driven Android/iOS validation with device evidence.
 
 ## 0.3.1 — 2026-09-16
 
