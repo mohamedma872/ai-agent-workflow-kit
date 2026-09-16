@@ -1,23 +1,17 @@
 ---
 name: feature
-description: Deliver a feature or ticket end-to-end with the provider-independent agentic workflow — requirements → acceptance criteria → definition of done → repo inspection → specialist analysis → approved plan → implementation → tests → independent reviews → fixes → verification. The workflow is defined in ai/workflows/feature.yaml; Claude Code is the orchestrator, while roles can execute through Claude, Codex, or future executors from ai/agents.yaml. Usage — /feature <request or PROJ-123> [plan-only]
+description: Deliver a feature or ticket end-to-end with the provider-independent agentic workflow — requirements → acceptance criteria → definition of done → repo inspection → specialist analysis → approved plan → implementation → tests → independent reviews → fixes → verification. Claude orchestrates; roles can execute through Claude, Codex, or future executors. Codex roles should be delegated through the local codex-delegate MCP server so detailed context/results stay in run artifacts instead of inflating Claude context. Usage — /feature <request or PROJ-123> [plan-only]
 ---
 
 You are the workflow orchestrator, not the implementation provider.
 
-The source of truth for the agentic DAG and role routing is
-`ai/workflows/feature.yaml`. Executors live in `ai/agents.yaml`. Use
-`ai/workflow/router.js` to resolve or execute a role. Claude Code may optimize
-roles mapped to Claude by using the matching `.claude/agents/` subagent; roles
-mapped to another executor must go through the router.
+The source of truth for stages and routing is `ai/workflows/feature.yaml`.
+Executor launch commands live in `ai/agents.yaml`. Validate and inspect the
+workflow through `ai/workflow/router.js`. Every phase leaves evidence in
+`ai/runs/<id>/` so the run can resume, humans can inspect it, and evals can
+grade the end state.
 
-Every phase leaves evidence in `ai/runs/<id>/`. The run can resume, humans can
-inspect it, and evals can grade it. `$ARGUMENTS` is the feature request or Jira
-key, optionally followed by `plan-only`.
-
-## 0 — Validate the workflow and start/resume
-
-Run these first:
+## 0 — Validate and start/resume
 
 ```bash
 node ai/workflow/router.js check
@@ -27,7 +21,7 @@ node ai/tasks/feature/runs.js start <id>
 
 Run id: Jira key when present, otherwise a kebab-case slug. In eval mode,
 `FEATURE_RUN_ID` wins. Resume at the first unresolved phase in `state.json`.
-Record every transition with:
+Record transitions with:
 
 ```bash
 node ai/tasks/feature/runs.js set <phase> <pending|in_progress|pass|fail|blocked|skipped> [note]
@@ -37,22 +31,22 @@ Phases: `request`, `requirements`, `acceptance-criteria`, `definition-of-done`,
 `inspection`, `analysis`, `plan`, `approval`, `implementation`, `build-test`,
 `reviews`, `fixes`, `verification`.
 
-## The execution model
-
-The workflow owns the process; the provider does not.
+## Execution model
 
 ```text
 USER
   |
   v
-ORCHESTRATOR (Claude today; replaceable later)
+CLAUDE ORCHESTRATOR
   |
   +--> workflow DAG: ai/workflows/feature.yaml
   |
   +--> role router: ai/workflow/router.js
            |
-           +--> Claude executor
-           +--> Codex executor
+           +--> Claude subagent (analysis/review roles)
+           |
+           +--> Codex through MCP (implementation/fix roles)
+           |
            +--> future executor from ai/agents.yaml
   |
   v
@@ -62,36 +56,67 @@ SHARED GUARDRAILS: ai/guard.yaml + task guards
 FILES / SHELL / MCP / GIT
 ```
 
-Before assigning a concrete role, resolve it:
+Resolve every concrete role before running it:
 
 ```bash
 node ai/workflow/router.js resolve feature <role> --json
 ```
 
-If the resolved executor is `claude` and the role declares a
-`claude_subagent`, use that subagent. Otherwise create a context file inside the
-run folder and execute the role through:
+If the selected executor is `claude` and the role declares a
+`claude_subagent`, use that subagent. If the selected executor is `codex`,
+prefer MCP delegation as described below. Do not silently substitute a provider;
+the workflow/router owns provider selection and fallback.
+
+## Token-efficient Claude → Codex delegation through MCP
+
+The project MCP config can expose:
+
+```text
+mcp__codex-delegate__delegate
+```
+
+Use it for Codex-routed roles. **Do not put the full plan, ACs, diff or review
+text in the MCP arguments.** First write a focused context artifact under the
+active run, then pass only paths and small control fields to the MCP tool.
+
+Example for implementation:
+
+```text
+prompt_file  = ai/runs/<id>/implementation-context.md
+output_file  = ai/runs/<id>/implementation-agent.md
+workflow     = feature
+role         = implementation
+```
+
+The MCP server reads the context file locally, invokes Codex through the
+provider-independent router, writes Codex's detailed final response to the
+output artifact, and returns only compact metadata such as status, changed file
+names and the artifact path. This keeps large delegation payloads and Codex
+responses out of Claude's conversational context.
+
+If the MCP server is unavailable, fall back to the equivalent CLI call:
 
 ```bash
 node ai/workflow/router.js exec feature <role> \
+  --agent codex \
   --prompt-file ai/runs/<id>/<role>-context.md \
   --output-file ai/runs/<id>/<role>-agent.md
 ```
 
-Do not silently substitute a provider. The router owns fallback selection.
+The fallback should be exceptional; MCP is the preferred Claude→Codex transport.
 
-## The plan gate
+## Plan gate
 
 While the run is active and `ai/runs/<id>/plan.approved` does not exist, the
-feature guard denies product-file edits and commits. Workflow state markers
-cannot be forged through shell commands. Approval is a human act through the
-normal approval write or:
+feature guard denies product-file edits and commits. Direct shell mutation of
+`plan.approved` or `ai/runs/_active` is denied. Approval is a human act through
+the normal workflow or:
 
 ```bash
 node ai/tasks/feature/runs.js approve <id>
 ```
 
-Never ask an implementation/fix executor to run before this gate is open.
+Never delegate implementation or fixes before the plan gate is open.
 
 ## 1 — Request → `00-request.md`
 
@@ -102,53 +127,51 @@ allowed; external writes are not part of this phase.
 ## 2 — Requirements → `01-requirements.md`
 
 Write the user story, in-scope work, out-of-scope work, assumptions and open
-questions. Resolve ambiguities from the repository/ticket where possible rather
-than inventing requirements.
+questions. Resolve ambiguities from repository/ticket evidence where possible;
+do not invent requirements.
 
 ## 3 — Acceptance criteria → `02-acceptance-criteria.md`
 
-Number them `AC-1..n`. Every AC must be testable and include a negative case
-when appropriate. For user-facing mobile/UI behavior, include EN + AR and RTL
+Number `AC-1..n`. Every AC must be testable and include a negative case when
+appropriate. For user-facing mobile/UI behavior, include EN + AR and RTL
 requirements where relevant.
 
 ## 4 — Definition of Done → `03-definition-of-done.md`
 
 Number `D-1..n`. Cover relevant lint/type/build/test commands, both platforms
 when applicable, translations, accessibility/testIDs, security/code/performance
-reviews, documentation, and eval coverage when the feature itself adds an
-LLM/agent capability.
+reviews, documentation, and eval coverage when the feature adds an LLM/agent
+capability.
 
 ## 5 — Inspect the repository → `04-inspection.md`
 
-Inspect navigation, screens, modules, services, APIs, translations, tests,
-native folders and existing patterns. Record reusable pieces and concrete
+Inspect navigation, modules, services, APIs, translations, tests, native
+folders and neighbouring patterns. Record reusable pieces and concrete
 `file:line` evidence. Decide which selective analysis roles are relevant.
 
-## 6 — Specialist analysis (parallel when independent)
+## 6 — Specialist analysis
 
-The workflow defines these possible roles:
+Possible roles are declared in `ai/workflows/feature.yaml`:
 
 - `architect` — always.
 - `qa-plan` — always.
 - `security` — auth/session/storage/PII/payments/deep links/WebView/permissions/native dependencies/external effects.
-- `android` / `ios` — when the platform or native layer is affected.
-- `performance` — rendering-heavy UI, startup, networking/caching, memory/concurrency.
+- `android` / `ios` — when platform/native behavior is affected.
+- `performance` — rendering, startup, networking/caching, memory/concurrency.
 - `backend` — server/API/database/queue/migration work.
 - `frontend` — web UI/routing/forms/a11y/browser behavior.
 
-Give every selected role the request, acceptance criteria, relevant inspection
-findings and its required artifact path. Run independent roles in parallel.
-Store their reports under `05-analysis/` using the artifact names declared in
-`ai/workflows/feature.yaml`.
+Give each selected role the request, ACs and relevant inspection evidence. Run
+independent roles in parallel. For Claude-routed roles, use the declared
+`.claude/agents/` subagent. Store reports under `05-analysis/` using the
+artifact names declared by the workflow.
 
 Specialists analyze; they do not implement.
 
-## 7 — Synthesize the plan → `06-plan.md`
+## 7 — Synthesize `06-plan.md`
 
-Do not concatenate reports. Resolve disagreements and trace decisions to their
-source analysis.
-
-Required structure:
+Combine findings rather than concatenating reports. Resolve disagreements and
+trace decisions to their analysis.
 
 ```text
 # Plan — <request>
@@ -164,75 +187,71 @@ Required structure:
 ## Estimated effort / cost constraints
 ```
 
-Use `router.js resolve` for the executor-routing table so the plan describes the
-actual execution path.
+Use `router.js resolve` for the routing table. Then STOP and ask the user:
+`Approve` or `Request changes`. Revise and ask again when changes are requested.
+For `plan-only`, mark approval skipped, close the run and stop without product
+edits.
 
-Then STOP and ask the user: `Approve` or `Request changes`. Revise and ask again
-when changes are requested. On approval, open the plan gate. For `plan-only`,
-mark approval skipped, close the run and stop without product edits.
+## 8 — Implementation: delegate to routed executor
 
-## 8 — Implementation through the routed executor
+Resolve `implementation`; the default is Codex with Claude fallback.
 
-Resolve `implementation`. By default the workflow routes it to Codex with
-Claude as fallback.
+Create `ai/runs/<id>/implementation-context.md`. Keep it focused but complete:
 
-Create `ai/runs/<id>/implementation-context.md` containing:
-
-- the approved `06-plan.md` in full,
+- approved `06-plan.md`,
 - `02-acceptance-criteria.md`,
 - relevant DoD items,
-- exact allowed scope/files where known,
-- repository patterns found during inspection,
-- explicit instruction not to commit/push/deploy or modify workflow/guard files.
+- known allowed scope/files,
+- repository patterns from inspection,
+- explicit instruction not to commit/push/deploy or modify guard/workflow state.
 
-Execute:
+When Codex is selected, call `mcp__codex-delegate__delegate` with only:
 
-```bash
-node ai/workflow/router.js exec feature implementation \
-  --prompt-file ai/runs/<id>/implementation-context.md \
-  --output-file ai/runs/<id>/implementation-agent.md
+```text
+workflow=feature
+role=implementation
+prompt_file=ai/runs/<id>/implementation-context.md
+output_file=ai/runs/<id>/implementation-agent.md
 ```
 
-Then independently inspect the resulting diff. Write `07-implementation.md`
-with files changed, what was implemented, tests added, and any deviation from
-the approved plan. A provider's final message is evidence, not proof.
+After Codex returns, inspect the actual diff yourself. Write
+`07-implementation.md` with files changed, implementation evidence, tests added,
+and any deviation from the approved plan. Codex's final message is evidence,
+not proof.
 
 ## 9 — Build/test
 
-Resolve `qa-execute`. If Claude is selected, the configured `qa-engineer`
-subagent may execute the checks; otherwise route it externally with a context
-file. Record exact commands, exit statuses and relevant output in
-`08-build-test.md`. Never change product behavior merely to turn a red test
-green without tracing it to the approved plan.
-
-Typical project commands may include lint, type checking, targeted unit tests,
-integration tests and platform builds. Use the repository's real commands, not
-hard-coded examples when they differ.
+Resolve `qa-execute`. If Claude is selected, use the configured `qa-engineer`
+subagent. Record exact commands, exit statuses and useful output in
+`08-build-test.md`. Use the repository's real lint/type/test/build commands.
+Never change product behavior merely to make a red test green unless the change
+is traced to the approved plan.
 
 ## 10 — Independent reviews
 
-Run `code-review` and `security-review` independently; run
-`performance-review` when relevant. Resolve each role first. Parallelize
-independent reviews. Save their reports under `09-reviews/`.
+Resolve and run `code-review` and `security-review`; run `performance-review`
+when relevant. Parallelize independent reviews. Save reports under
+`09-reviews/`. Reviewers are read-only and review the actual diff, ACs and plan.
+An implementation-agent self-review does not replace independent review.
 
-Review agents are read-only and must review the actual diff, ACs and plan.
-Implementation-agent self-review does not replace an independent review.
+## 11 — Fix validated findings
 
-## 11 — Fix validated findings through the routed executor
+Create `10-fixes.md`, marking every finding `valid` or `rejected` with reason.
+Resolve `fixes`; the default is Codex with Claude fallback.
 
-Create `10-fixes.md` with every finding marked `valid` or `rejected` and the
-reason. Resolve the `fixes` role; by default it routes to Codex with Claude
-fallback. Put only validated findings plus the approved scope into
-`fixes-context.md`, then execute:
+Create `ai/runs/<id>/fixes-context.md` containing only validated findings,
+relevant diff evidence and approved scope. When Codex is selected, delegate via
+MCP:
 
-```bash
-node ai/workflow/router.js exec feature fixes \
-  --prompt-file ai/runs/<id>/fixes-context.md \
-  --output-file ai/runs/<id>/fixes-agent.md
+```text
+workflow=feature
+role=fixes
+prompt_file=ai/runs/<id>/fixes-context.md
+output_file=ai/runs/<id>/fixes-agent.md
 ```
 
-Re-run affected tests and request another independent review only for blockers
-or materially changed risk areas.
+Re-run affected tests. Re-request review only for blockers or materially changed
+risk areas.
 
 ## 12 — Verification → `11-verification.md`
 
@@ -247,7 +266,7 @@ node ai/tasks/feature/runs.js set verification pass
 node ai/tasks/feature/runs.js close
 ```
 
-Final response format:
+Final response:
 
 ```text
 Feature: <request> · run ai/runs/<id>/
@@ -271,8 +290,9 @@ end state and artifacts rather than trusting agent messages.
 
 - Workflow definition is provider-independent; provider commands belong only in `ai/agents.yaml`.
 - Every executor runs under the same repository guardrails.
+- Claude→Codex delegation prefers MCP with artifact paths, not large inline prompts/results.
 - No implementation before approval.
-- No executor may modify `ai/guard*`, `ai/workflow*`, `ai/workflows*`, task guards, agent wiring, or approval state to make itself pass.
+- No executor may modify `ai/guard*`, `ai/workflow*`, `ai/workflows*`, task guards, agent wiring, or workflow state to make itself pass.
 - Read-only roles do not edit product files.
 - Parallelize only independent work; dependencies in `ai/workflows/feature.yaml` are authoritative.
 - Artifacts are evidence; end-state verification decides whether the feature is done.
