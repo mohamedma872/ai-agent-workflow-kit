@@ -63,7 +63,7 @@ roles:
     purpose: Review Android-specific behavior, lifecycle, permissions, native modules, performance, and Play policy impact.
     read_only: true
     artifact: 05-analysis/android.md
-    optional_mcps: [context7, appium, maestro]
+    optional_mcps: [context7, appium]
 
   ios:
     executor: claude
@@ -71,7 +71,7 @@ roles:
     purpose: Review iOS-specific behavior, lifecycle, permissions, native modules, performance, and App Store impact.
     read_only: true
     artifact: 05-analysis/ios.md
-    optional_mcps: [context7, appium, maestro]
+    optional_mcps: [context7, appium]
 
   backend:
     executor: claude
@@ -103,7 +103,7 @@ roles:
     purpose: Run the verification commands and report exact pass/fail evidence without changing product behavior to make tests pass.
     read_only: true
     artifact: 08-build-test.md
-    optional_mcps: [playwright, appium, maestro]
+    optional_mcps: [playwright, appium]
 
   code-review:
     executor: claude
