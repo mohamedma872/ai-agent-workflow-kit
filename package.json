@@ -19,6 +19,8 @@
     "workflow:progress:json": "node ai/workflow/progress.js --json",
     "workflow:progress:github": "node ai/workflow/github-progress.js",
     "workflow:progress:github:watch": "node ai/workflow/github-progress.js --watch",
+    "workflow:mobile-evidence": "node ai/workflow/feature-runner.js verification",
+    "workflow:mobile-evidence:dry": "node ai/workflow/feature-runner.js verification --dry-run",
     "mcp:codex": "node ai/mcp/codex-delegate.mjs",
     "eval": "node ai/evals/run.js",
     "prepare": "husky",
