@@ -1,7 +1,7 @@
 ---
 name: docs-researcher
 description: Resolve current, version-specific library and framework documentation with Context7. Use before planning or implementing when behavior depends on an external SDK/API, package version, migration, configuration, deprecation, platform policy, or unfamiliar library. Read-only and context-efficient.
-tools: Read, Grep, Glob, mcp__context7
+tools: Read, Grep, Glob, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: inherit
 ---
 
