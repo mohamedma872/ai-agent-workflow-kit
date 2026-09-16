@@ -5,6 +5,8 @@ description: Provider-independent agentic delivery workflow for feature work.
 # The workflow owns the process. Executors are selected from ai/agents.yaml.
 # A role may prefer one executor and list fallbacks. Adding another provider
 # later only requires an entry in ai/agents.yaml plus a role mapping here.
+# claude_subagent is an optimization for Claude Code; other orchestrators can
+# execute the same role through ai/workflow/router.js.
 
 orchestrator:
   executor: claude
@@ -13,48 +15,56 @@ orchestrator:
 roles:
   architect:
     executor: claude
+    claude_subagent: mobile-architect
     purpose: Inspect architecture, integration points, reuse opportunities, boundaries, and trade-offs.
     read_only: true
     artifact: 05-analysis/architect.md
 
   security:
     executor: claude
+    claude_subagent: security-reviewer
     purpose: Threat-model auth, session, storage, PII, permissions, deep links, WebViews, native dependencies, and external effects.
     read_only: true
     artifact: 05-analysis/security.md
 
   qa-plan:
     executor: claude
+    claude_subagent: qa-engineer
     purpose: Derive test cases from acceptance criteria, including negative cases and regression coverage.
     read_only: true
     artifact: 05-analysis/qa.md
 
   performance:
     executor: claude
+    claude_subagent: performance-reviewer
     purpose: Review rendering, startup, networking, caching, memory, concurrency, and build/runtime performance risks.
     read_only: true
     artifact: 05-analysis/performance.md
 
   android:
     executor: claude
+    claude_subagent: android-expert
     purpose: Review Android-specific behavior, lifecycle, permissions, native modules, performance, and Play policy impact.
     read_only: true
     artifact: 05-analysis/android.md
 
   ios:
     executor: claude
+    claude_subagent: ios-expert
     purpose: Review iOS-specific behavior, lifecycle, permissions, native modules, performance, and App Store impact.
     read_only: true
     artifact: 05-analysis/ios.md
 
   backend:
     executor: claude
+    claude_subagent: backend-expert
     purpose: Review server, API contracts, persistence, queues, migrations, concurrency, reliability, and observability.
     read_only: true
     artifact: 05-analysis/backend.md
 
   frontend:
     executor: claude
+    claude_subagent: frontend-expert
     purpose: Review web UI architecture, routing, accessibility, forms, state, data fetching, and browser behavior.
     read_only: true
     artifact: 05-analysis/frontend.md
@@ -68,24 +78,28 @@ roles:
 
   qa-execute:
     executor: claude
+    claude_subagent: qa-engineer
     purpose: Run the verification commands and report exact pass/fail evidence without changing product behavior to make tests pass.
     read_only: true
     artifact: 08-build-test.md
 
   code-review:
     executor: claude
+    claude_subagent: code-reviewer
     purpose: Independently review the diff for correctness, maintainability, regressions, and plan/acceptance-criteria compliance.
     read_only: true
     artifact: 09-reviews/code-review.md
 
   security-review:
     executor: claude
+    claude_subagent: security-reviewer
     purpose: Independently review the final diff for security regressions, credential handling, authorization, data exposure, and unsafe external effects.
     read_only: true
     artifact: 09-reviews/security.md
 
   performance-review:
     executor: claude
+    claude_subagent: performance-reviewer
     purpose: Independently review the final diff for measurable or likely performance regressions.
     read_only: true
     artifact: 09-reviews/performance.md
