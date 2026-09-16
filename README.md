@@ -117,6 +117,7 @@ flowchart TD
     C --> D[Definition of Done]
     D --> E[Repository Inspection]
 
+    E --> F0[Current Docs / Context7]
     E --> F1[Architecture]
     E --> F2[QA Plan]
     E --> F3[Security]
@@ -124,7 +125,8 @@ flowchart TD
     E --> F5[Android / iOS]
     E --> F6[Backend / Frontend]
 
-    F1 --> G[Plan Synthesis]
+    F0 --> G[Plan Synthesis]
+    F1 --> G
     F2 --> G
     F3 --> G
     F4 --> G
@@ -136,10 +138,11 @@ flowchart TD
     H -->|Approve| I[Implementation]
 
     I --> J[Build + Tests]
+    J --> J2[Appium Device QC<br/>when native ACs require it]
 
-    J --> K1[Code Review]
-    J --> K2[Security Review]
-    J --> K3[Performance Review]
+    J2 --> K1[Code Review]
+    J2 --> K2[Security Review]
+    J2 --> K3[Performance Review]
 
     K1 --> L[Validated Fixes]
     K2 --> L
@@ -166,6 +169,7 @@ ai/runs/PROJ-123/
 ├── 03-definition-of-done.md
 ├── 04-inspection.md
 ├── 05-analysis/
+│   ├── docs.md
 │   ├── architect.md
 │   ├── security.md
 │   ├── qa.md
@@ -176,6 +180,8 @@ ai/runs/PROJ-123/
 ├── implementation-agent.md
 ├── 07-implementation.md
 ├── 08-build-test.md
+├── device/
+│   └── screenshots-and-evidence
 ├── 09-reviews/
 │   ├── code-review.md
 │   ├── security.md
@@ -191,6 +197,33 @@ That folder is the workflow memory, audit trail and verification evidence.
 
 ---
 
+# Current documentation with Context7
+
+When behavior depends on an external library/framework API, migration, deprecation, configuration, or SDK version, the workflow can delegate a narrow lookup to `docs-researcher`.
+
+```text
+Repository version files
+        |
+        v
+ docs-researcher
+        |
+        v
+    Context7
+        |
+        v
+05-analysis/docs.md
+        |
+        +--> plan
+        +--> Codex implementation context
+        +--> reviews
+```
+
+The goal is not to paste documentation into the orchestrator context. The docs subagent returns only version-specific facts that affect the task.
+
+Use the reusable `current-docs` skill when a specialist needs this procedure outside `/feature`.
+
+---
+
 # Claude orchestrates — Codex implements through MCP
 
 The default routing intentionally separates planning/review from implementation.
@@ -198,7 +231,7 @@ The default routing intentionally separates planning/review from implementation.
 | Role | Default executor | Fallback |
 |---|---|---|
 | Orchestrator | Claude | — |
-| Architecture / security / QA analysis | Claude | — |
+| Documentation / architecture / security / QA analysis | Claude | — |
 | Android / iOS / backend / frontend analysis | Claude | — |
 | Implementation | **Codex** | Claude |
 | Code / security / performance review | Claude | — |
@@ -249,30 +282,34 @@ The MCP tool returns only compact metadata such as:
 
 The full Codex response stays on disk. Claude reads only what it needs to verify the result.
 
-### MCP tool
+---
 
-The local server is:
+# Mobile QA with Appium MCP
 
-```text
-ai/mcp/codex-delegate.mjs
+Appium is the native mobile automation path for Android/iOS workflow checks.
+
+```mermaid
+flowchart LR
+    AC[Device-level ACs] --> QA[QA Agent]
+    QA --> A[Appium MCP]
+    A --> D[Android / iOS device or simulator]
+    D --> E[Evidence files]
+    E --> V[AC verification]
 ```
 
-It exposes:
+The workflow keeps Appium role-scoped rather than loading it into every subagent. Android, iOS and `qa-execute` can request it when device evidence is needed.
+
+Use the reusable skill:
 
 ```text
-mcp__codex-delegate__delegate
+.claude/skills/mobile-device-qc/SKILL.md
 ```
 
-The tool accepts a workflow role and two run-artifact paths:
+The procedure creates/attaches an isolated Appium session, executes AC-driven flows, saves screenshots/page-source/recording evidence under `ai/runs/<id>/`, and closes the session afterward.
 
-```text
-workflow=feature
-role=implementation
-prompt_file=ai/runs/PROJ-123/implementation-context.md
-output_file=ai/runs/PROJ-123/implementation-agent.md
-```
+Prefer `NO_UI=true` for agentic Appium runs so heavy Appium UI payloads stay out of model context. The current official Appium MCP server requires Node 22+, so it is kept as an optional role-scoped server while the core repository remains Node 20+.
 
-For safety, the MCP server only accepts prompt/output files under `ai/runs/`.
+See `ai/mcp/README.md` for the Appium configuration and recommended tool usage.
 
 ---
 
@@ -290,18 +327,6 @@ Resolve an executor:
 
 ```bash
 node ai/workflow/router.js resolve feature implementation --json
-```
-
-Example result:
-
-```json
-{
-  "workflow": "feature",
-  "role": "implementation",
-  "executor": "codex",
-  "candidates": ["codex", "claude"],
-  "read_only": false
-}
 ```
 
 Execute directly when MCP is not available:
@@ -353,36 +378,7 @@ Claude and Codex use the same repository policy:
 ai/guard.yaml
 ```
 
-```mermaid
-flowchart TD
-    A[Any agent action] --> G{Guard Engine}
-
-    G --> S{Secret path / value?}
-    S -->|Yes| DENY[DENY]
-    S -->|No| P{Protected guard/workflow file?}
-
-    P -->|Write| ASK[ASK / DENY]
-    P -->|Safe| D{Destructive operation?}
-
-    D -->|Dangerous| ASK
-    D -->|Safe| X{External effect?}
-
-    X -->|Write / publish / deploy| ASK
-    X -->|Read only| ALLOW[ALLOW]
-```
-
-The default fence covers:
-
-- `.env`, private keys, keystores, service-account files and MCP credentials,
-- token-shaped data written into files, commits or outbound tool payloads,
-- force-pushes,
-- agent attempts to bypass hooks with `--no-verify`, `HUSKY=0`, or disabled hook paths,
-- recursive destructive deletes outside build/cache folders,
-- `sudo`, `curl | sh`, destructive database/container/device operations,
-- publishing, deployment and infrastructure-changing commands,
-- writes to configured external MCP services,
-- edits to guard files, workflow definitions, routing, hooks and agent wiring,
-- forged workflow approval state.
+The default fence covers secrets, protected workflow/guard files, destructive commands, Git-hook bypass attempts, publishing/deploy actions, configured external MCP writes, and forged workflow approval state.
 
 Codex has no interactive `ask` channel in the configured headless mode, so an `ask` guard decision becomes a denial for Codex.
 
@@ -392,32 +388,7 @@ Codex has no interactive `ask` channel in the configured headless mode, so an `a
 
 # End-state evals: grade reality, not claims
 
-The eval system does not trust an agent's final message.
-
-```mermaid
-flowchart LR
-    C[cases.yaml] --> M[Optional mutation<br/>re-seed known bug]
-    M --> A[Run selected agent]
-    A --> S[Capture end state]
-    S --> G[Deterministic grader]
-    G --> R[Results ledger]
-
-    S --> F[Changed files]
-    S --> D[Diff]
-    S --> T[Test / verify commands]
-    S --> O[Agent final output]
-```
-
-The grader can check:
-
-- which files changed,
-- whether changes stayed inside allowed files,
-- required diff/output signatures,
-- forbidden patterns,
-- required artifacts,
-- verification commands,
-- completion status,
-- cost and duration where the provider exposes them.
+The eval system does not trust an agent's final message. It captures changed files, diff, verification commands, artifacts and the final answer, then grades the end state.
 
 Run the same cases against different executors:
 
@@ -433,7 +404,7 @@ The best eval cases are real bugs/features from your history with known correct 
 
 # Quick start
 
-Requirements:
+Requirements for the core framework:
 
 - Node.js **20+**
 - Git
@@ -443,57 +414,19 @@ Requirements:
 git clone https://github.com/mohamedma872/ai-guardrails-evals
 cd ai-guardrails-evals
 npm install
+cp .mcp.json.example .mcp.json
 ```
 
-Validate everything that does not require a live model:
+Validate core configuration:
 
 ```bash
 npm run guard:check
 npm run guard:selftest
 npm run workflow:check
 npm run workflow:show
-node ai/evals/run.js
 ```
 
-Inspect guardrails:
-
-```bash
-npm run guard:explain
-```
-
-Dry-run an eval:
-
-```bash
-node ai/evals/run.js coding run --case answer-only --agent claude --dry-run
-node ai/evals/run.js coding run --case answer-only --agent codex --dry-run
-```
-
----
-
-# Enable Claude → Codex MCP delegation
-
-Copy the example MCP configuration:
-
-```bash
-cp .mcp.json.example .mcp.json
-```
-
-The important project-local entry is:
-
-```json
-{
-  "mcpServers": {
-    "codex-delegate": {
-      "command": "node",
-      "args": ["ai/mcp/codex-delegate.mjs"]
-    }
-  }
-}
-```
-
-`npm install` provides the MCP server SDK. The local server uses stdio; Claude launches it as an MCP server and can call `codex-delegate/delegate` when `/feature` routes a role to Codex.
-
-Do **not** put real secrets into `.mcp.json`; it is intentionally treated as a secret file by the guard and ignored by Git.
+For Appium device QC, configure the official `appium-mcp` in a Node 22+ MCP environment as described in `ai/mcp/README.md`.
 
 ---
 
@@ -503,189 +436,45 @@ Do **not** put real secrets into `.mcp.json`; it is intentionally treated as a s
 .
 ├── README.md
 ├── AGENTS.md
-├── CLAUDE.md
 ├── ai/
-│   ├── guard.yaml                 # shared safety policy
-│   ├── agents.yaml                # executor launch definitions
-│   │
-│   ├── workflow/
-│   │   └── router.js              # role → executor router
-│   │
-│   ├── workflows/
-│   │   └── feature.yaml           # provider-independent workflow DAG
-│   │
+│   ├── guard.yaml
+│   ├── agents.yaml
+│   ├── workflow/router.js
+│   ├── workflows/feature.yaml
 │   ├── mcp/
-│   │   └── codex-delegate.mjs     # Claude → Codex artifact-based delegation
-│   │
-│   ├── guard/
-│   │   ├── engine.js
-│   │   ├── git-pre-commit.js
-│   │   ├── git-pre-push.js
-│   │   └── rules.js
-│   │
+│   │   ├── codex-delegate.mjs
+│   │   └── README.md
 │   ├── tasks/
-│   │   ├── _template/
-│   │   ├── coding/
-│   │   └── feature/
-│   │       ├── guard.js           # plan gate
-│   │       └── runs.js            # resumable workflow state
-│   │
 │   ├── evals/
-│   │   ├── run.js
-│   │   └── grade.js
-│   │
-│   └── runs/                      # ignored runtime workflow evidence
-│
+│   └── runs/
 ├── .claude/
-│   ├── agents/                    # Claude specialist implementations
-│   ├── skills/feature/SKILL.md    # Claude orchestrator instructions
-│   └── settings.json              # Claude hook wiring
-│
+│   ├── agents/
+│   │   └── docs-researcher.md
+│   ├── skills/
+│   │   ├── current-docs/SKILL.md
+│   │   ├── mobile-device-qc/SKILL.md
+│   │   └── feature/SKILL.md
+│   └── rules/
 ├── .codex/
-│   └── hooks.json                 # Codex guard wiring
-│
 ├── .husky/
-│   ├── pre-commit
-│   └── pre-push
-│
-└── .mcp.json.example              # local MCP configuration example
-```
-
----
-
-# Change workflow routing
-
-Want Claude to implement instead of Codex?
-
-```yaml
-# ai/workflows/feature.yaml
-roles:
-  implementation:
-    executor: claude
-```
-
-Want Codex for a different role?
-
-```yaml
-roles:
-  backend:
-    executor: codex
-    fallback: [claude]
-```
-
-Validate after editing:
-
-```bash
-npm run workflow:check
-```
-
----
-
-# Add another coding agent
-
-The workflow should not change just because the provider changes.
-
-Add an executor to `ai/agents.yaml`:
-
-```yaml
-my-agent:
-  label: My Coding Agent
-  command: [my-agent, run, "{prompt}"]
-  result:
-    file: "{last_message_file}"
-```
-
-Then route a role to it:
-
-```yaml
-roles:
-  implementation:
-    executor: my-agent
-    fallback: [codex, claude]
-```
-
-The new agent should also have equivalent guardrail wiring before being trusted for live mutation.
-
----
-
-# Create your own eval task
-
-Copy the template:
-
-```bash
-cp -R ai/tasks/_template ai/tasks/my-task
-```
-
-A task normally contains:
-
-```text
-TASK.md
-cases.yaml
-adapter.js
-guard.yaml
-guard.js          # only when stateful/custom checks are needed
-```
-
-Example coding case:
-
-```yaml
-- name: add-changelog-entry
-  ask: Add "Added: agentic workflow" under Unreleased in CHANGELOG.md.
-  may_change: [CHANGELOG.md]
-  diff_must_contain: ["agentic workflow"]
-  check:
-    - node ai/guard/engine.js --check
-  why: known expected repository change
-```
-
-Self-check a case before trusting it:
-
-```bash
-node ai/evals/grade.js my-task add-changelog-entry --oracle --no-write
-node ai/evals/grade.js my-task add-changelog-entry --null --no-write
+└── .mcp.json.example
 ```
 
 ---
 
 # Design principles
 
-### 1. Workflow owns sequencing
+1. Workflow owns sequencing.
+2. Roles are not providers.
+3. Delegate large cross-agent context through artifacts.
+4. Guardrails live outside prompts.
+5. Human approval is protected workflow state.
+6. Reviews should be independent.
+7. Current external APIs should be checked against current docs, not model memory.
+8. Native mobile acceptance criteria should produce Appium device evidence when practical.
+9. Verify end state rather than trusting polished agent responses.
 
-The agent does not decide that testing or review can be skipped.
-
-### 2. Roles are not providers
-
-`implementation` is a role. Codex is one possible executor for that role.
-
-### 3. Delegate through artifacts
-
-Large cross-agent context belongs in files under `ai/runs/`; MCP calls should pass references, not duplicate full documents.
-
-### 4. Guardrails live outside prompts
-
-A prompt saying "do not read `.env`" is weaker than a hook that blocks the read.
-
-### 5. Human approval is state
-
-The approval gate is represented by a protected workflow marker, not an agent's interpretation of a sentence.
-
-### 6. Reviews should be independent
-
-The implementation agent's self-review is not the independent review.
-
-### 7. Verify end state
-
-A polished final response is not proof of correctness.
-
----
-
-# Current maturity
-
-This repository is designed as a transparent developer workflow and evaluation kit. It is deliberately small enough to inspect.
-
-Important next hardening areas for production/security-sensitive environments include stronger process/network isolation, CI/server-side enforcement, hidden holdout eval datasets, broader adversarial guard regression tests, and fail-closed execution modes.
-
-See `ai/README.md` for the deeper reference on rule formats, task adapters, grading and operations.
+See `ai/README.md` for the deeper guard/eval reference and `ai/mcp/README.md` for MCP role guidance.
 
 ---
 
