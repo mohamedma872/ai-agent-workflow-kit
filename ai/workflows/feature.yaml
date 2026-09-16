@@ -75,6 +75,14 @@ roles:
     artifact: 05-analysis/ios-expert.md
     optional_mcps: [context7, appium]
 
+  flutter:
+    executor: claude
+    claude_subagent: flutter-expert
+    purpose: Review Flutter/Dart architecture, widgets, state and navigation, pub dependencies, localization, platform channels/plugins, flavors, testing, performance, and Android/iOS integration impact.
+    read_only: true
+    artifact: 05-analysis/flutter-expert.md
+    optional_mcps: [context7, appium]
+
   backend:
     executor: claude
     claude_subagent: backend-expert
@@ -141,7 +149,7 @@ roles:
   mobile-evidence:
     executor: claude
     claude_subagent: qa-engineer
-    purpose: After implementation, reviews, and fixes are complete, run the finished mobile/UI feature with Appium in headless evidence mode and capture final screenshots mapped to acceptance criteria.
+    purpose: After implementation, reviews, and fixes are complete, run the finished native, React Native, or Flutter mobile/UI feature with Appium in headless evidence mode and capture final screenshots mapped to acceptance criteria.
     read_only: true
     artifact: device/mobile-device-qc.md
     optional_mcps: [appium]
@@ -174,7 +182,7 @@ stages:
   - id: analysis
     strategy: parallel
     needs: [inspection]
-    roles: [docs, architect, qa-plan, security, performance, android, ios, backend, frontend]
+    roles: [docs, architect, qa-plan, security, performance, android, ios, flutter, backend, frontend]
     selective: true
 
   - id: plan
