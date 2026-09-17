@@ -7,6 +7,22 @@ Use Appium MCP for mobile validation when a `/feature` run has mobile or user-vi
 
 For a completed mobile/UI feature, screenshot evidence is **required before final verification can pass**.
 
+## Execution entry point
+
+Do not rely on the orchestrator to remember to invoke Appium manually. The feature workflow executes this skill through:
+
+```bash
+npm run workflow:mobile-evidence
+```
+
+or:
+
+```bash
+node ai/tasks/feature/mobile-evidence.js run <id>
+```
+
+The runner records the attempt, invokes the routed `mobile-evidence` role, and validates that the evidence was freshly produced by that attempt.
+
 ## Evidence location
 
 Always finish with final device evidence under the active run:
@@ -15,17 +31,19 @@ Always finish with final device evidence under the active run:
 ai/runs/<id>/device/
 ├── mobile-device-qc.md
 └── screenshots/
-    ├── 01-launch.png
-    ├── 02-ac-1-success.png
-    ├── 03-ac-2-error-state.png
+    ├── android-01-launch.png
+    ├── android-02-ac-1-success.png
+    ├── ios-01-launch.png
+    ├── ios-02-ac-1-success.png
     └── ...
 ```
 
-Use stable, ordered names. Prefer one screenshot for each important user-visible acceptance criterion and one screenshot for each important failure/negative state that is part of the approved QA plan.
+Screenshot filenames must begin with the target platform (`android-` or `ios-`) so the runner can prove that required platform evidence exists. Prefer one screenshot for each important user-visible acceptance criterion and each important failure/negative state from the approved QA plan.
 
 ## Preconditions
 
 - An active feature run exists under `ai/runs/<id>/`.
+- Implementation and build/test passed; reviews passed/skipped; fixes passed/skipped.
 - The app build under test is available/installed or its Appium capabilities identify the app.
 - Appium MCP is configured in a Node 22+ MCP environment.
 - Android: SDK/ADB available and `ANDROID_HOME` configured.
@@ -37,7 +55,7 @@ Use stable, ordered names. Prefer one screenshot for each important user-visible
 node ai/tasks/feature/runs.js evidence required "mobile/UI feature"
 ```
 
-Prefer `NO_UI=true` in the Appium MCP server. When the local platform supports it, launch the emulator/simulator without a visible window as well. The point of headless evidence mode is that the agent drives the device without requiring an interactive UI while screenshots are still written to files.
+Prefer `NO_UI=true` in the Appium MCP server. When the local platform supports it, launch the emulator/simulator without a visible window as well. Headless evidence mode means the agent drives the device without requiring an interactive UI while screenshots are still written to files.
 
 ## Flutter-specific behavior
 
@@ -52,53 +70,70 @@ Appium still creates an **Android or iOS session** for a Flutter app. Do not lab
 
 1. Read only the relevant acceptance criteria, DoD, QA plan, build/test artifact, review findings, and final fixes.
 2. Treat the post-fix app state as the build under test. Do not capture final evidence from a pre-fix build.
-3. Convert the device-relevant ACs into a short ordered checklist. Do not invent extra product behavior.
-4. Create or attach an Appium session with `appium_session_management`.
+3. Use the target platforms supplied by `mobile-evidence.js`. Do not silently skip one of them.
+4. Convert the device-relevant ACs into a short ordered checklist. Do not invent extra product behavior.
+5. Create or attach an Appium session with `appium_session_management` for each target platform.
    - Use Android or iOS explicitly, including for Flutter apps.
    - Prefer embedded local drivers for local emulator/simulator runs.
    - Use `remoteServerUrl` only when the project intentionally uses an existing Appium server/device farm.
-5. Establish the initial app state. Record framework if known (native / React Native / Flutter), platform, device/session id, app/build identifier if available, locale, orientation, flavor/scheme when relevant, and starting screen.
-6. Execute each AC deterministically:
+6. Establish the initial app state. Record framework if known, platform, device/session id, app/build identifier if available, locale, orientation, flavor/scheme when relevant, and starting screen.
+7. Execute each AC deterministically:
    - prefer accessibility ID / resource ID / platform-native selectors;
    - for Flutter, prefer semantics/accessibility identifiers exposed to the platform;
    - use `appium_find_element` before XPath;
    - use `appium_gesture` for interaction and scrolling;
    - use `appium_context` when a WebView/native transition is part of the flow;
    - do not use vision/AI element lookup unless stable locators are unavailable.
-7. Capture screenshots with `appium_screenshot` after each important successful checkpoint and before leaving each important negative/error state.
-8. Make sure the final image files end up under:
+8. Capture screenshots with `appium_screenshot` after each important successful checkpoint and before leaving each important negative/error state.
+9. Make sure the final image files end up under:
 
 ```text
 ai/runs/<id>/device/screenshots/
 ```
 
-If Appium MCP writes screenshots to its configured `SCREENSHOTS_DIR` (for example `ai/runs/device-artifacts`), use the returned screenshot file path and copy/move the final evidence file into the active run folder above with a stable ordered filename. Only copy files produced by this current device session. Do not scan or publish unrelated run artifacts.
+Name them with the platform prefix, for example:
+
+```text
+android-01-launch.png
+android-02-ac-1-success.png
+ios-01-launch.png
+ios-02-ac-1-success.png
+```
+
+If Appium MCP writes screenshots to its configured `SCREENSHOTS_DIR`, use the returned screenshot file path and copy/move only files produced by the current session into the active run folder. Do not scan or reuse unrelated run artifacts.
 
 Do not inline screenshot base64 into prompts, artifacts, or the final answer.
-9. Run both positive and relevant negative paths from the QA plan (offline, permission denial, cancelled prompt, invalid input, RTL, etc.) when applicable.
-10. On a failure, capture evidence before changing state. Do not modify product code from this skill.
-11. Delete/detach the Appium session at the end, even after a failure.
-12. Write `ai/runs/<id>/device/mobile-device-qc.md` with objective results and screenshot paths.
+10. Run both positive and relevant negative paths from the QA plan when applicable.
+11. On a failure, capture evidence before changing state. Do not modify product code from this skill.
+12. Delete/detach every Appium session at the end, even after a failure.
+13. Write `ai/runs/<id>/device/mobile-device-qc.md` with objective results and screenshot paths.
 
 ## Required manifest format
+
+For one platform, one section is enough. For multiple required platforms, include one section per platform.
 
 ```text
 # Mobile device QC — <request>
 Framework: Native | React Native | Flutter | other
-Platform: Android | iOS
+Mode: headless evidence
+
+## Android
 Device: <name/id>
 App/build: <identifier if known>
-Flavor/scheme: <if relevant>
 Session: <id>
-Mode: headless evidence
 
 | AC | result | screenshot | notes |
 |---|---|---|---|
-| AC-1 | PASS/FAIL | ai/runs/<id>/device/screenshots/02-ac-1-success.png | ... |
+| AC-1 | PASS/FAIL | ai/runs/<id>/device/screenshots/android-02-ac-1-success.png | ... |
 
-## Screenshots
-- ai/runs/<id>/device/screenshots/01-launch.png — initial feature state
-- ai/runs/<id>/device/screenshots/02-ac-1-success.png — AC-1 success
+## iOS
+Device: <name/id>
+App/build: <identifier if known>
+Session: <id>
+
+| AC | result | screenshot | notes |
+|---|---|---|---|
+| AC-1 | PASS/FAIL | ai/runs/<id>/device/screenshots/ios-02-ac-1-success.png | ... |
 
 ## Failures
 <exact observed behavior + reproducible steps + evidence path, or none>
@@ -112,13 +147,15 @@ PASS | FAIL | BLOCKED
 A mobile/UI `/feature` run cannot be marked `verification = pass` unless:
 
 - screenshot evidence was classified as `required`;
-- at least one screenshot exists under `device/screenshots/`;
-- `device/mobile-device-qc.md` exists and maps evidence to acceptance criteria;
+- `workflow:mobile-evidence` completed successfully;
+- `ai/runs/<id>/device/mobile-device-qc.md` was freshly created/updated by that attempt;
+- at least one fresh platform-prefixed screenshot exists under `ai/runs/<id>/device/screenshots/` for every required platform;
+- the manifest documents every required platform and ends with `## Verdict` = `PASS`;
 - required device ACs are not `BLOCKED` or `pending-device`.
 
 This rule applies equally to native, React Native, and Flutter user-facing mobile features.
 
-If Appium, the emulator/simulator, the build, credentials, or required test data are unavailable, mark final verification `blocked`/`pending-device`; do not pretend screenshots were produced.
+If Appium, the emulator/simulator, the build, credentials, or required test data are unavailable, mark final verification blocked/pending-device; do not pretend screenshots were produced.
 
 For backend-only, infrastructure-only, documentation-only, or other genuinely non-UI work, explicitly classify screenshots as not required with a reason:
 
