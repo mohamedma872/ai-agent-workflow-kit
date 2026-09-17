@@ -11,6 +11,13 @@ enforces them). Architecture for guardrails, evals and AI tasks: `ai/README.md`.
   → fixes → verification). The plan gate is enforced: no product edits before
   the plan is approved. Artifacts land in `ai/runs/<id>/`. Add `plan-only` to
   stop at the plan.
+- **Mobile verification execution**: after fixes and before final verification,
+  `/feature` must run `npm run workflow:mobile-evidence` (or
+  `node ai/tasks/feature/mobile-evidence.js run <id>`). For mobile/UI runs this
+  command executes the routed `mobile-evidence` role and Appium; do not replace
+  it with a manual statement that device QC is required. Final verification
+  requires `ai/runs/<id>/device/mobile-device-qc.md` and fresh
+  `ai/runs/<id>/device/screenshots/*.png` produced by that attempt.
 - **New or changed AI capability**: `/ai-task new <name>` — guardrails + evals
   are part of done.
 - **Specialists** (`.claude/agents/`): mobile-architect, android-expert,
