@@ -585,6 +585,172 @@ The runtime handles the detailed refactor gates automatically. Low-level command
 
 ---
 
+## Whole-app refactor with architecture decision + C4
+
+A whole-app refactor adds an architecture decision phase before implementation. The agent explores alternatives and explains the evidence/trade-offs; **the human chooses the target architecture**.
+
+### 1. Start the whole-app refactor
+
+```bash
+npm run refactor:app -- APP-RF-001 \
+  --request "Refactor the entire application without changing behavior" \
+  --scope mobile
+```
+
+The runtime automatically produces:
+
+```text
+04-behavior-baseline.md
+04-refactor-invariants.md
+05-architecture-assessment.md
+05-architecture-options.md
+```
+
+The architecture assessment covers the information needed for a defensible decision:
+
+```text
+current architecture and dependencies
+business/product drivers
+hard technical constraints
+quality attributes and priorities
+team structure and ownership
+delivery/release constraints
+operations and observability
+security and compliance
+data ownership and integrations
+performance/scalability
+testing and quality strategy
+migration constraints and rollback
+cost/complexity constraints
+risks, unknowns and assumptions
+weighted decision criteria
+```
+
+Each proposed option includes:
+
+```text
+architecture style and boundaries
+benefits
+trade-offs
+risks
+migration effort/complexity
+reversibility and rollback
+team impact
+delivery/operations impact
+security impact
+performance impact
+testability impact
+scores against the same decision criteria
+C4 preview
+agent recommendation + caveats
+```
+
+The recommendation is advisory only. Execution stops at the architecture human gate.
+
+### 2. Choose the architecture
+
+Review:
+
+```text
+ai/runs/APP-RF-001/05-architecture-assessment.md
+ai/runs/APP-RF-001/05-architecture-options.md
+```
+
+Then explicitly select an option:
+
+```bash
+npm run refactor:architecture -- APP-RF-001 A
+```
+
+That records the human decision and continues automatically to generate:
+
+```text
+05-architecture-selection.md
+05-target-architecture.md
+05-c4-model.md
+05-architecture-migration.md
+06-plan.md
+```
+
+The workflow then stops again at the normal implementation-plan approval gate.
+
+### C4 integration
+
+The selected architecture is modeled using the C4 model:
+
+```text
+System Context     required
+Container          required
+Component          generated for important/high-risk containers
+Dynamic            generated when interaction sequencing matters
+Deployment         generated when runtime/deployment topology matters
+Code-level         optional/on-demand
+```
+
+The C4 artifact also contains version-controlled **Structurizr DSL**, so the architecture model can live with the code and be reviewed in Git.
+
+The target architecture contract separately defines machine-checkable rules such as:
+
+```text
+allowed dependencies
+forbidden dependencies
+module responsibilities
+data ownership
+state/navigation rules
+integration contracts
+security controls
+observability requirements
+testing strategy
+performance budgets
+migration guardrails
+architecture fitness functions
+```
+
+### 3. Approve the migration plan
+
+Review the generated target architecture, C4 model, migration waves, and `06-plan.md`.
+
+Then:
+
+```bash
+npm run refactor:approve -- APP-RF-001
+```
+
+Implementation continues through each refactor increment/wave, build and tests, independent reviewers, fixes, an **architecture compliance review**, behavior-equivalence verification, and final verification.
+
+### 4. Read the final report
+
+```bash
+npm run refactor:report -- APP-RF-001
+```
+
+The final report includes both:
+
+```text
+Behavior verification
+  baseline coverage
+  unexpected behavior changes
+  contract/invariant diff
+  unverified scenarios
+
+Architecture verification
+  human-selected option
+  agent recommendation vs human choice
+  target architecture contract
+  C4 container count
+  migration wave count
+  architecture compliance status/findings
+  architecture fitness functions
+```
+
+Optional progress:
+
+```bash
+npm run refactor:status -- APP-RF-001
+```
+
+---
+
 ## Start a feature
 
 The doctor and isolated worktree are automatic.
