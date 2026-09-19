@@ -687,7 +687,25 @@ Deployment         generated when runtime/deployment topology matters
 Code-level         optional/on-demand
 ```
 
-The C4 artifact also contains version-controlled **Structurizr DSL**, so the architecture model can live with the code and be reviewed in Git.
+The C4 artifact also contains version-controlled **Structurizr DSL**. After the architecture package is generated, the runtime promotes the selected architecture into the refactor worktree:
+
+```text
+docs/architecture/
+├── README.md
+├── target-architecture.md
+├── target-architecture.json
+├── c4-model.md
+├── c4-model.json
+├── workspace.dsl
+├── migration-plan.md
+├── migration-plan.json
+└── decisions/APP-RF-001/
+    ├── assessment.md
+    ├── options.md
+    └── selection.md
+```
+
+This makes the architecture model part of the Git diff and review process rather than leaving it only in the ignored `ai/runs/` directory.
 
 The target architecture contract separately defines machine-checkable rules such as:
 
