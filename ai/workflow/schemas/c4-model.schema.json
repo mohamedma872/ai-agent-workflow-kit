@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/c4-model-v1.json",
+  "title": "C4 Architecture Model",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "systemContext",
+    "containers",
+    "components",
+    "structurizrDsl"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "systemContext": {
+      "type": "object",
+      "required": [
+        "system",
+        "people",
+        "externalSystems",
+        "relationships"
+      ],
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "externalSystems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "containers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "responsibility",
+          "technology"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "responsibility": {
+            "type": "string"
+          },
+          "technology": {
+            "type": "string"
+          },
+          "relationships": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "container",
+          "components"
+        ],
+        "properties": {
+          "container": {
+            "type": "string"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "dynamicViews": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deploymentViews": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "structurizrDsl": {
+      "type": "string",
+      "minLength": 20
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
