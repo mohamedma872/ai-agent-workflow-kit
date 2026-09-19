@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/ai/guard/engine.js\"",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/ai/guard/runner.js\"",
             "timeout": 20
           }
         ]

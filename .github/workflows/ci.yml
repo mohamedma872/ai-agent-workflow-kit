@@ -14,52 +14,143 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - run: npm ci
 
       - name: Syntax
         run: |
           node --check ai/workflow/router.js
+          node --check ai/workflow/subagent-contracts.js
+          node --check ai/workflow/subagent-context.js
+          node --check ai/workflow/subagent-context-selftest.js
+          node --check ai/workflow/subagent-selector.js
+          node --check ai/workflow/finding-synthesis.js
+          node --check ai/workflow/conflict-tracker.js
+          node --check ai/workflow/conflicts.js
+          node --check ai/guard/subagent-capabilities.js
+          node --check ai/workflow/doctor.js
+          node --check ai/workflow/engine.js
+          node --check ai/workflow/refactor-mode.js
+          node --check ai/workflow/refactor-coverage.js
+          node --check ai/workflow/refactor-checkpoints.js
+          node --check ai/workflow/refactor-verification-matrix.js
+          node --check ai/workflow/refactor-contract-diff.js
+          node --check ai/workflow/refactor-telemetry.js
+          node --check ai/workflow/refactor-report.js
+          node --check ai/workflow/conditions.js
+          node --check ai/workflow/artifacts.js
+          node --check ai/workflow/execution-policy.js
+          node --check ai/workflow/attempts.js
+          node --check ai/workflow/worktree.js
           node --check ai/workflow/progress.js
           node --check ai/workflow/progress-selftest.js
           node --check ai/workflow/github-progress.js
+          node --check ai/workflow/github-verification.js
+          node --check ai/workflow/github-enforcement.js
+          node --check ai/workflow/version.js
+          node --check ai/workflow/release.js
+          node --check ai/evals/runtime-hardening-check.js
+          node --check ai/evals/refactor-safety-check.js
+          node --check ai/evals/subagent-metrics.js
+          node --check ai/evals/subagents/check.js
+          node --check ai/workflow/subagent-telemetry.js
+          node --check ai/workflow/subagent-report.js
+          node --check ai/tasks/subagent/adapter.js
           node --check ai/mcp/codex-delegate.mjs
+          node --check ai/guard/runner.js
           node --check ai/tasks/feature/guard.js
+          node --check ai/tasks/feature/guard-selftest.js
           node --check ai/tasks/feature/runs.js
           node --check ai/tasks/feature/mobile-evidence.js
+          node --check ai/tasks/feature/evidence-attestation.js
+          node --check ai/tasks/feature/evidence-attestation-selftest.js
           node --check ai/evals/auto.js
+
+      - name: Runtime version and release metadata
+        run: |
+          npm run workflow:version:check
+          npm run workflow:release:check
+          npm run --silent workflow:release -- notes > /tmp/runtime-release-notes.md
+          test -s /tmp/runtime-release-notes.md
 
       - name: Guard configuration
         run: npm run guard:check
-
       - name: Guard behavior
-        run: npm run guard:selftest
+        run: |
+          npm run guard:selftest
+          node ai/guard/runner.js --selftest
+          node ai/tasks/feature/guard-selftest.js
 
       - name: Workflow configuration
-        run: npm run workflow:check
-
-      - name: Workflow progress smoke test
         run: |
+          npm run workflow:check
+          npm run workflow:artifacts:check
+          npm run workflow:subagents:check
+          node ai/workflow/subagent-contracts.js selftest
+          node ai/guard/subagent-capabilities.js --selftest
+          node ai/workflow/subagent-context-selftest.js
+          node ai/workflow/subagent-selector.js --selftest
+          node ai/workflow/finding-synthesis.js --selftest
+          node ai/workflow/conflict-tracker.js --selftest
+          node ai/workflow/conflicts.js --selftest
+          node ai/workflow/artifacts.js selftest
+          node ai/workflow/execution-policy.js --selftest
+          node ai/workflow/attempts.js --selftest
+          node ai/workflow/worktree.js selftest
+          node ai/workflow/engine.js selftest
+          node ai/workflow/refactor-mode.js --selftest
+          node ai/workflow/refactor-coverage.js --selftest
+          node ai/workflow/refactor-checkpoints.js --selftest
+          node ai/workflow/refactor-verification-matrix.js --selftest
+          node ai/workflow/refactor-contract-diff.js --selftest
+          node ai/workflow/refactor-telemetry.js --selftest
           node ai/tasks/feature/runs.js selftest
+          node ai/workflow/github-verification.js selftest
+          node ai/workflow/github-enforcement.js selftest
+          npm run workflow:enforcement:explain
+
+      - name: Workflow doctor behavior
+        run: |
+          node ai/workflow/doctor.js --selftest
+          npm run workflow:doctor:json -- --scope auto > /tmp/workflow-doctor.json || true
+          node ai/workflow/doctor.js --json --scope mobile > /tmp/workflow-doctor-mobile.json || true
+
+      - name: Workflow progress and evidence smoke test
+        run: |
           node ai/tasks/feature/mobile-evidence.js selftest
+          node ai/tasks/feature/evidence-attestation-selftest.js
           node ai/workflow/progress-selftest.js
           node ai/workflow/progress.js --demo
           node ai/workflow/progress.js --demo --json > /dev/null
           node ai/workflow/progress.js --demo --markdown > /dev/null
           node ai/workflow/github-progress.js --demo --dry-run > /dev/null
 
-      - name: Exam health (oracle + null self-check of every case)
-        run: npm run exam:check
+      - name: Exam health (oracle + null + runtime hardening)
+        run: |
+          npm run exam:check
+          npm run exam:subagents:check
+          npm run exam:subagents:selftest
 
       - name: Workflow routing smoke test
         run: |
           node ai/workflow/router.js show feature
+          node ai/workflow/router.js resolve feature orchestration --json
           node ai/workflow/router.js resolve feature flutter --json
+          node ai/workflow/router.js resolve feature react-native --json
+          node ai/workflow/router.js resolve feature api-contract --json
+          node ai/workflow/router.js resolve feature dependency-migration --json
+          node ai/workflow/router.js resolve feature react-native-review --json
+          node ai/workflow/router.js resolve feature android-review --json
+          node ai/workflow/router.js resolve feature ios-review --json
+          node ai/workflow/router.js resolve feature flutter-review --json
+          node ai/workflow/router.js resolve feature frontend-review --json
+          node ai/workflow/router.js resolve feature backend-review --json
+          node ai/workflow/router.js resolve feature api-contract-review --json
+          node ai/workflow/router.js resolve feature behavior-regression-review --json
+          node ai/workflow/router.js resolve feature behavior-equivalence --json
           node ai/workflow/router.js resolve feature implementation --json
           node ai/workflow/router.js resolve feature fixes --json
           node ai/workflow/router.js resolve feature mobile-evidence --json
