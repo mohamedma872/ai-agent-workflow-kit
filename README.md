@@ -513,8 +513,8 @@ These tests reject a refactor that produces cleaner code while changing observab
 ## Quick start
 
 ```bash
-git clone https://github.com/mohamedma872/ai-agent-workflow-runtime
-cd ai-agent-workflow-runtime
+git clone https://github.com/mohamedma872/ai-agent-workflow-kit
+cd ai-agent-workflow-kit
 npm ci
 cp .mcp.json.example .mcp.json
 ```
@@ -533,6 +533,152 @@ npm run workflow:artifacts:check
 npm run workflow:subagents:check
 npm run exam:check
 npm run exam:subagents:check
+```
+
+---
+
+## Run a behavior-preserving refactor
+
+Use refactor mode when you want to restructure, simplify, migrate, or clean up code **without changing externally observable behavior**.
+
+For day-to-day use, you only need this sequence:
+
+### 1. Start the refactor run
+
+Use an explicit run id and force refactor mode:
+
+```bash
+npm run workflow:start -- RF-001 \
+  --request "Refactor login validation without changing behavior" \
+  --mode refactor \
+  --scope mobile
+```
+
+The runtime can detect common refactor wording automatically, but `--mode refactor` is recommended when behavior preservation is a hard requirement.
+
+Starting the run creates isolated workflow state and a product worktree under:
+
+```text
+ai/runs/RF-001/
+.ai-worktrees/RF-001/
+```
+
+### 2. Run the pre-implementation workflow
+
+```bash
+npm run workflow:run -- RF-001
+```
+
+The engine automatically runs the eligible refactor stages in order:
+
+```text
+request / requirements
+→ acceptance criteria + DoD
+→ inspection
+→ behavior baseline
+→ preservation invariants
+→ characterization coverage gate
+→ specialist analysis
+→ implementation plan
+→ STOP for human approval
+```
+
+Check progress at any time:
+
+```bash
+npm run workflow:progress -- --run RF-001
+```
+
+Before approval, review at least:
+
+```text
+ai/runs/RF-001/04-behavior-baseline.md
+ai/runs/RF-001/04-refactor-invariants.md
+ai/runs/RF-001/06-plan.md
+```
+
+### 3. Approve the plan
+
+The runtime deliberately cannot approve its own implementation plan.
+
+```bash
+node ai/tasks/feature/runs.js approve RF-001
+```
+
+Do this only after the behavior baseline, invariants, test coverage, and ordered `refactorIncrements` look correct.
+
+### 4. Resume and execute the refactor
+
+```bash
+npm run workflow:resume -- RF-001
+```
+
+The runtime then continues through:
+
+```text
+implementation
+→ incremental checkpoint verification
+→ build + tests
+→ independent reviewers
+→ validated fixes
+→ behavior-equivalence verification
+→ final verification
+```
+
+For refactor runs, the implementation agent is instructed to complete one `refactorIncrement` at a time and record diff/test evidence before continuing.
+
+You normally do **not** need to record checkpoints manually. For recovery or manual execution, the command is:
+
+```bash
+npm run workflow:refactor:checkpoint -- \
+  RF-001 R1 \
+  --diff "git diff -- src/auth" \
+  --test "npm test -- auth"
+```
+
+### 5. Inspect the final result
+
+```bash
+npm run workflow:progress -- --run RF-001
+npm run workflow:refactor:report -- RF-001
+```
+
+For machine-readable output:
+
+```bash
+npm run workflow:refactor:report -- RF-001 --json
+```
+
+Important final artifacts include:
+
+```text
+10-behavior-equivalence.md
+10-behavior-equivalence.json
+11-verification.md
+engine/refactor-contract-diff.json
+engine/refactor-verification-matrix.json
+engine/refactor-telemetry.json
+```
+
+A refactor is not considered fully verified when unexpected behavior changes exist or required scenarios remain unverified.
+
+### Minimal command sequence
+
+```bash
+npm run workflow:start -- RF-001 \
+  --request "Refactor login validation without changing behavior" \
+  --mode refactor \
+  --scope mobile
+
+npm run workflow:run -- RF-001
+
+# Review baseline, invariants and 06-plan.md
+node ai/tasks/feature/runs.js approve RF-001
+
+npm run workflow:resume -- RF-001
+
+npm run workflow:progress -- --run RF-001
+npm run workflow:refactor:report -- RF-001
 ```
 
 ---
