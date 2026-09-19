@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/architecture-assessment-v1.json",
+  "title": "Whole-App Architecture Assessment",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "currentArchitecture",
+    "businessDrivers",
+    "constraints",
+    "qualityAttributes",
+    "teamAndOwnership",
+    "deliveryAndOperations",
+    "securityAndCompliance",
+    "dataAndIntegrations",
+    "testingAndQuality",
+    "migrationConstraints",
+    "risks",
+    "unknowns",
+    "decisionCriteria"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currentArchitecture": {
+      "type": "string",
+      "minLength": 10
+    },
+    "businessDrivers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "qualityAttributes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "priority",
+          "rationale"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "currentEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "teamAndOwnership": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deliveryAndOperations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "securityAndCompliance": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dataAndIntegrations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testingAndQuality": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "migrationConstraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "costConstraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "decisionCriteria": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "weight",
+          "rationale"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -81,6 +81,16 @@ function semanticProblems(name, data) {
     const unapproved=(data.intentionalExceptions||[]).filter(x=>x.approved!==true);
     if(unapproved.length) errors.push(`$.intentionalExceptions: ${unapproved.length} exception(s) are not approved`);
   }
+  if (name === 'architecture-options') {
+    const ids = new Set((data.options || []).map(x => x.id));
+    if (!ids.has(data.recommendation?.optionId)) errors.push('$.recommendation.optionId: must reference one of the proposed options');
+    const criteria = new Set((data.options?.[0]?.criterionScores || []).map(x => x.criterionId));
+    for (const option of data.options || []) {
+      const optionCriteria = new Set((option.criterionScores || []).map(x => x.criterionId));
+      if (criteria.size && optionCriteria.size !== criteria.size) errors.push(`$.options[${option.id}].criterionScores: all options must score the same criteria`);
+    }
+  }
+  if (name === 'c4-model' && !/workspace\s*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace');
   if (name === 'subagent-findings') {
     const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
     for (const f of data.findings || []) {
@@ -124,6 +134,106 @@ function sidecarForMarkdown(file) {
 }
 
 function renderMarkdown(name, data) {
+  const pushList = (lines, title, items) => {
+    lines.push('', `## ${title}`, '');
+    if (!(items || []).length) lines.push('- None');
+    else for (const item of items || []) lines.push('- ' + item);
+  };
+  if (name === 'architecture-assessment') {
+    const lines=['# Architecture assessment','',data.currentArchitecture,''];
+    pushList(lines,'Business drivers',data.businessDrivers);
+    pushList(lines,'Constraints',data.constraints);
+    lines.push('','## Quality attributes','', '| attribute | priority | rationale |', '|---|---|---|');
+    for(const q of data.qualityAttributes||[]) lines.push(`| ${q.name} | ${q.priority} | ${String(q.rationale||'').replace(/\|/g,'\\|')} |`);
+    pushList(lines,'Team and ownership',data.teamAndOwnership);
+    pushList(lines,'Delivery and operations',data.deliveryAndOperations);
+    pushList(lines,'Security and compliance',data.securityAndCompliance);
+    pushList(lines,'Data and integrations',data.dataAndIntegrations);
+    pushList(lines,'Testing and quality',data.testingAndQuality);
+    pushList(lines,'Migration constraints',data.migrationConstraints);
+    pushList(lines,'Cost constraints',data.costConstraints);
+    pushList(lines,'Risks',data.risks);
+    pushList(lines,'Unknowns and assumptions',data.unknowns);
+    lines.push('','## Decision criteria','', '| id | criterion | weight | rationale |','|---|---|---:|---|');
+    for(const x of data.decisionCriteria||[]) lines.push(`| ${x.id} | ${x.name} | ${x.weight} | ${String(x.rationale||'').replace(/\|/g,'\\|')} |`);
+    return lines.join('\n').trim()+'\n';
+  }
+  if (name === 'architecture-options') {
+    const lines=['# Architecture options and trade-offs',''];
+    for(const option of data.options||[]){
+      lines.push(`## ${option.id} — ${option.name}`,'',`Style: **${option.style}**`,'',option.summary||'');
+      pushList(lines,'Benefits',option.benefits);
+      pushList(lines,'Trade-offs',option.tradeoffs);
+      pushList(lines,'Risks',option.risks);
+      lines.push('','### Migration','',`- Effort: ${option.migration?.effort}`,`- Complexity: ${option.migration?.complexity}`,`- Reversibility: ${option.migration?.reversibility}`,`- Rollback: ${option.migration?.rollback}`);
+      pushList(lines,'Team impact',option.teamImpact);
+      pushList(lines,'Delivery impact',option.deliveryImpact);
+      pushList(lines,'Operations impact',option.operationsImpact);
+      pushList(lines,'Security impact',option.securityImpact);
+      pushList(lines,'Performance impact',option.performanceImpact);
+      pushList(lines,'Testability impact',option.testabilityImpact);
+      lines.push('','### Decision scores','', '| criterion | score / 5 | evidence |','|---|---:|---|');
+      for(const s of option.criterionScores||[]) lines.push(`| ${s.criterionId} | ${s.score} | ${String(s.evidence||'').replace(/\|/g,'\\|')} |`);
+      lines.push('','### C4 preview','');
+      pushList(lines,'System context',option.c4Preview?.systemContext);
+      pushList(lines,'Containers',option.c4Preview?.containers);
+      pushList(lines,'Components',option.c4Preview?.components);
+      pushList(lines,'Dynamic flows',option.c4Preview?.dynamicFlows);
+      pushList(lines,'Deployment',option.c4Preview?.deployment);
+    }
+    lines.push('','## Agent recommendation','',`Recommended option: **${data.recommendation?.optionId||''}**`,'',data.recommendation?.rationale||'');
+    pushList(lines,'Recommendation caveats',data.recommendation?.caveats);
+    pushList(lines,'Human decision notes',data.decisionNotes);
+    lines.push('','> The recommendation is advisory. The workflow cannot continue until a human explicitly selects an architecture.');
+    return lines.join('\n').trim()+'\n';
+  }
+  if (name === 'target-architecture') {
+    const lines=['# Target architecture contract','',`Selected option: **${data.selectedOptionId}**`,'',data.decisionSummary||''];
+    pushList(lines,'Architecture principles',data.principles);
+    pushList(lines,'Boundaries',data.boundaries);
+    lines.push('','## Dependency rules','','### Allowed',''); for(const x of data.dependencyRules?.allowed||[]) lines.push('- '+x);
+    lines.push('','### Forbidden',''); for(const x of data.dependencyRules?.forbidden||[]) lines.push('- '+x);
+    lines.push('','## Modules','', '| module | responsibility | dependencies |','|---|---|---|');
+    for(const m of data.modules||[]) lines.push(`| ${m.name} | ${String(m.responsibility||'').replace(/\|/g,'\\|')} | ${(m.dependsOn||[]).join(', ')} |`);
+    pushList(lines,'Data ownership',data.dataOwnership);
+    pushList(lines,'State management',data.stateManagement);
+    pushList(lines,'Navigation',data.navigation);
+    pushList(lines,'Integration contracts',data.integrationContracts);
+    pushList(lines,'Security controls',data.securityControls);
+    pushList(lines,'Observability',data.observability);
+    pushList(lines,'Testing strategy',data.testingStrategy);
+    pushList(lines,'Performance budgets',data.performanceBudgets);
+    pushList(lines,'Migration guardrails',data.migrationGuardrails);
+    lines.push('','## Architecture fitness functions','', '| id | rule | verification |','|---|---|---|');
+    for(const x of data.fitnessFunctions||[]) lines.push(`| ${x.id} | ${String(x.rule||'').replace(/\|/g,'\\|')} | ${String(x.verification||'').replace(/\|/g,'\\|')} |`);
+    return lines.join('\n').trim()+'\n';
+  }
+  if (name === 'c4-model') {
+    const lines=['# C4 architecture model','',`System: **${data.systemContext?.system||''}**`];
+    pushList(lines,'People',data.systemContext?.people);
+    pushList(lines,'External systems',data.systemContext?.externalSystems);
+    pushList(lines,'System relationships',data.systemContext?.relationships);
+    lines.push('','## Containers','', '| container | responsibility | technology |','|---|---|---|');
+    for(const x of data.containers||[]) lines.push(`| ${x.name} | ${String(x.responsibility||'').replace(/\|/g,'\\|')} | ${x.technology||''} |`);
+    lines.push('','## Components','');
+    for(const group of data.components||[]){lines.push(`### ${group.container}`,'');for(const x of group.components||[])lines.push('- '+x);}
+    pushList(lines,'Dynamic views',data.dynamicViews);
+    pushList(lines,'Deployment views',data.deploymentViews);
+    lines.push('','## Structurizr DSL','','```structurizr',data.structurizrDsl||'','```');
+    pushList(lines,'Assumptions',data.assumptions);
+    return lines.join('\n').trim()+'\n';
+  }
+  if (name === 'architecture-migration') {
+    const lines=['# Architecture migration waves',''];
+    lines.push('## Domains','', '| id | domain | risk | depends on |','|---|---|---|---|');
+    for(const x of data.domains||[]) lines.push(`| ${x.id} | ${x.name} | ${x.risk} | ${(x.dependsOn||[]).join(', ')} |`);
+    lines.push('','## Waves','');
+    for(const w of data.waves||[]){lines.push(`### ${w.id}`,'',w.goal||'', '',`Domains: ${(w.domains||[]).join(', ')}`,'',`Verification: ${(w.verification||[]).join('; ')}`,'',`Rollback point: ${w.rollbackPoint||'n/a'}`,'');}
+    pushList(lines,'Integration checkpoints',data.integrationCheckpoints);
+    pushList(lines,'Rollback strategy',data.rollbackStrategy);
+    pushList(lines,'Completion criteria',data.completionCriteria);
+    return lines.join('\n').trim()+'\n';
+  }
   if (name === 'behavior-baseline') {
     const lines=['# Behavior baseline','', '## Observable behaviors',''];
     for(const b of data.observableBehaviors||[]) lines.push(`- **${b.id}** [${b.criticality}] ${b.description} — coverage: ${b.coverage.status}${(b.coverage.evidence||[]).length ? ' ('+b.coverage.evidence.join(', ')+')':''}`);

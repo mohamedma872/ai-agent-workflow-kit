@@ -39,6 +39,54 @@ roles:
     artifact_schema: subagent-findings
     optional_mcps: [context7]
 
+  architecture-assessment:
+    executor: claude
+    purpose: Build an evidence-backed current-state architecture assessment for a whole-app refactor, covering business drivers, constraints, quality attributes, team ownership, delivery/operations, security/compliance, data/integrations, testing, migration constraints, risks, unknowns, and weighted decision criteria.
+    read_only: true
+    artifact: 05-architecture-assessment.md
+    artifact_schema: architecture-assessment
+    optional_mcps: [context7, github]
+
+  architecture-options:
+    executor: claude
+    purpose: Propose 2-4 viable target architectures from repository evidence and the architecture assessment. Explain trade-offs, migration/reversibility, team/operations/security/performance/testability impact, score every option against the same decision criteria, provide C4 previews, and make an advisory recommendation without selecting on behalf of the human.
+    read_only: true
+    artifact: 05-architecture-options.md
+    artifact_schema: architecture-options
+    optional_mcps: [context7, github]
+
+  target-architecture:
+    executor: claude
+    purpose: Convert the human-selected architecture option into a concrete architecture contract with boundaries, dependency rules, module responsibilities, data ownership, integration contracts, security/observability/testing requirements, performance budgets, migration guardrails, and executable architecture fitness functions.
+    read_only: true
+    artifact: 05-target-architecture.md
+    artifact_schema: target-architecture
+    optional_mcps: [context7, github]
+
+  c4-model:
+    executor: claude
+    purpose: Model the selected target architecture with C4. Always produce System Context and Container views; add Component views for important/high-risk containers and Dynamic/Deployment views when useful. Include version-controlled Structurizr DSL as the source model; do not invent code-level detail unsupported by repository evidence.
+    read_only: true
+    artifact: 05-c4-model.md
+    artifact_schema: c4-model
+    optional_mcps: [context7, github]
+
+  architecture-migration:
+    executor: claude
+    purpose: Decompose the selected architecture into risk-aware domains and dependency-ordered migration waves with integration checkpoints, rollback points, behavior coverage, and whole-app completion criteria.
+    read_only: true
+    artifact: 05-architecture-migration.md
+    artifact_schema: architecture-migration
+    optional_mcps: [context7, github]
+
+  architecture-compliance-review:
+    executor: claude
+    purpose: Independently compare the final implementation against the human-selected target architecture, dependency rules, C4 model, migration guardrails, and architecture fitness functions. Report violations as review findings; do not approve architecture by assumption.
+    read_only: true
+    artifact: 09-reviews/architecture-compliance-reviewer.md
+    artifact_schema: review
+    optional_mcps: [context7, github]
+
   security:
     executor: claude
     claude_subagent: security-analyst
@@ -329,8 +377,39 @@ stages:
     artifact: 04-refactor-invariants.md
     artifact_schema: refactor-invariants
 
-  - id: refactor-coverage
+  - id: architecture-assessment
+    role: architecture-assessment
     needs: [refactor-invariants]
+    when: whole_app_refactor
+
+  - id: architecture-options
+    role: architecture-options
+    needs: [architecture-assessment]
+    when: whole_app_refactor
+
+  - id: architecture-selection
+    type: human_gate
+    needs: [architecture-options]
+    when: whole_app_refactor
+    marker: architecture.selected
+
+  - id: target-architecture
+    role: target-architecture
+    needs: [architecture-selection]
+    when: whole_app_refactor
+
+  - id: c4-model
+    role: c4-model
+    needs: [target-architecture]
+    when: whole_app_refactor
+
+  - id: architecture-migration
+    role: architecture-migration
+    needs: [c4-model]
+    when: whole_app_refactor
+
+  - id: refactor-coverage
+    needs: [architecture-migration]
     when: behavior_preserving_refactor
 
   - id: analysis
@@ -368,9 +447,14 @@ stages:
     role: fixes
     needs: [reviews]
 
+  - id: architecture-compliance
+    role: architecture-compliance-review
+    needs: [fixes]
+    when: whole_app_refactor
+
   - id: behavior-equivalence
     role: behavior-equivalence
-    needs: [fixes]
+    needs: [architecture-compliance]
     when: behavior_preserving_refactor
 
   - id: verification

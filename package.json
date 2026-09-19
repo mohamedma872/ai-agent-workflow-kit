@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-workflow-runtime",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Deterministic agentic engineering runtime with guarded stage progression, evidence, evals, and Claude/Codex execution.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
@@ -67,7 +67,9 @@
     "refactor": "node ai/workflow/refactor-cli.js run",
     "refactor:approve": "node ai/workflow/refactor-cli.js approve",
     "refactor:status": "node ai/workflow/refactor-cli.js status",
-    "refactor:report": "node ai/workflow/refactor-report.js"
+    "refactor:report": "node ai/workflow/refactor-report.js",
+    "refactor:app": "node ai/workflow/refactor-cli.js app",
+    "refactor:architecture": "node ai/workflow/refactor-cli.js architecture"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

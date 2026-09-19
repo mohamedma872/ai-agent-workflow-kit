@@ -26,6 +26,43 @@ roles:
     outputs: [findings]
     tools: [repository_read]
     mcps_optional: [context7]
+
+  architecture-assessment:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence, dependency_versions]
+    outputs: [architecture_assessment]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  architecture-options:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence, dependency_versions]
+    outputs: [architecture_options]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  target-architecture:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence, dependency_versions]
+    outputs: [target_architecture]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  c4-model:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence, dependency_versions]
+    outputs: [c4_model]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  architecture-migration:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence]
+    outputs: [architecture_migration]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  architecture-compliance-review:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence, changed_files, build_test, fixes]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
   security:
     mode: read_only
     inputs: [request, acceptance_criteria, inspection]

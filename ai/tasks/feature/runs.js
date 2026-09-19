@@ -31,7 +31,7 @@ const ICONS = { pass: '✓', fail: '✗', blocked: '⛔', skipped: '~', in_progr
 
 const [cmd, ...rest] = process.argv.slice(2);
 const usage = () => {
-  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | approve [id] | close [id] | set/set-role (admin only) | selftest');
+  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | architecture-select <id> <option-id> [note] | approve [id] | close [id] | set/set-role (admin only) | selftest');
   process.exit(1);
 };
 
@@ -154,6 +154,10 @@ function reconcileState(id, state) {
   if (approvalMarker && phaseStatus(state, 'approval') !== 'pass') {
     changed = setDerivedPhase(state, 'approval', 'pass', 'plan.approved marker is authoritative') || changed;
   }
+  const architectureMarker = id && fs.existsSync(path.join(RUNS, id, 'architecture.selected'));
+  if (architectureMarker && phaseStatus(state, 'architecture-selection') !== 'pass') {
+    changed = setDerivedPhase(state, 'architecture-selection', 'pass', 'architecture.selected marker is authoritative') || changed;
+  }
   for (const group of ROLE_GROUPS) {
     const hasExplicitSelection = Array.isArray(state.selectedRoles?.[group]) && state.selectedRoles[group].length > 0;
     const tracked = Object.values(state.roles?.[group] || {});
@@ -246,6 +250,7 @@ function transitionProblem(state, phase, action, reason) {
   const s = stage(phase);
   const current = phaseStatus(state, phase);
   if (phase === 'approval') return 'approval is a human gate; use runs.js approve <id>';
+  if (phase === 'architecture-selection') return 'architecture-selection is a human gate; use runs.js architecture-select <id> <option-id>';
   if (action === 'begin') {
     const deps = dependencyProblems(phase, state);
     if (deps.length) return `dependencies are incomplete: ${deps.join(', ')}`;
@@ -496,6 +501,44 @@ try {
       if (changed) atomicSave(id, state);
       console.log(`${id}: ${changed ? 'state reconciled' : 'state already consistent'}`);
       render(id, state);
+      break;
+    }
+    case 'architecture-select': {
+      const id = resolveId(rest[0]);
+      const optionId = rest[1];
+      const note = rest.slice(2).join(' ');
+      if (!safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('unknown run');
+      if (!optionId || !/^[A-Za-z0-9._-]{1,80}$/.test(optionId)) throw new Error('architecture-select requires a valid option id');
+      const optionsFile = path.join(RUNS, id, '05-architecture-options.json');
+      if (!fs.existsSync(optionsFile)) throw new Error(`ai/runs/${id}/05-architecture-options.json is missing`);
+      const artifactProblem = phaseArtifactProblem(id, 'architecture-options');
+      if (artifactProblem) throw new Error(`cannot select architecture: ${artifactProblem}`);
+      const options = JSON.parse(fs.readFileSync(optionsFile, 'utf8'));
+      const selected = (options.options || []).find(x => x.id === optionId);
+      if (!selected) throw new Error(`unknown architecture option "${optionId}" — choose one of: ${(options.options || []).map(x => x.id).join(', ')}`);
+      const state = ensureShape(load(id), id);
+      reconcileState(id, state);
+      if (phaseStatus(state, 'architecture-options') !== 'pass') throw new Error(`architecture-options is ${phaseStatus(state, 'architecture-options')} — complete option analysis first`);
+      const selectedAt = now();
+      const decision = {
+        schemaVersion: 1,
+        runId: id,
+        selectedOptionId: selected.id,
+        selectedOptionName: selected.name,
+        selectedAt,
+        selectedBy: 'human',
+        note: note || null,
+      };
+      fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.json'), JSON.stringify(decision, null, 2) + '\n');
+      fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.md'),
+        `# Human architecture decision\n\nSelected option: **${selected.id} — ${selected.name}**\n\nSelected at: ${selectedAt}\n\n${note ? `Human note: ${note}\n\n` : ''}The agent recommendation was advisory; this file records the explicit human decision.\n`);
+      fs.writeFileSync(path.join(RUNS, id, 'architecture.selected'), `selected: ${selected.id}\nat: ${selectedAt}\n`);
+      const from = phaseStatus(state, 'architecture-selection');
+      state.phases['architecture-selection'] = { status: 'pass', updatedAt: selectedAt, note: `human selected ${selected.id}` };
+      state.architectureDecision = decision;
+      record(state, { kind: 'phase', phase: 'architecture-selection', action: 'select', from, to: 'pass', executor: 'human', reason: `selected architecture ${selected.id}` });
+      atomicSave(id, state);
+      console.log(`${id}: architecture selected → ${selected.id} — ${selected.name}`);
       break;
     }
     case 'approve': {
