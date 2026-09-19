@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/target-architecture-v1.json",
+  "title": "Selected Target Architecture Contract",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "selectedOptionId",
+    "decisionSummary",
+    "principles",
+    "boundaries",
+    "dependencyRules",
+    "dataOwnership",
+    "integrationContracts",
+    "securityControls",
+    "observability",
+    "testingStrategy",
+    "performanceBudgets",
+    "migrationGuardrails",
+    "fitnessFunctions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selectedOptionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionSummary": {
+      "type": "string"
+    },
+    "principles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependencyRules": {
+      "type": "object",
+      "required": [
+        "allowed",
+        "forbidden"
+      ],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "responsibility"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "responsibility": {
+            "type": "string"
+          },
+          "dependsOn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "dataOwnership": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stateManagement": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "navigation": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "integrationContracts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "securityControls": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "observability": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testingStrategy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "performanceBudgets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "migrationGuardrails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fitnessFunctions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "rule",
+          "verification"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
