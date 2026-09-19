@@ -1,6 +1,7 @@
 node_modules/
 ai/evals/results/
 ai/runs/
+.ai-worktrees/
 .claude/settings.local.json
 CLAUDE.local.md
 .mcp.json
