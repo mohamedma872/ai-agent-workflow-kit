@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/subagent-finding-v1.json",
+  "title": "Subagent Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "severity", "uncertainty", "confidence", "evidence", "recommendation"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{1,80}$"},
+    "title": {"type": "string", "minLength": 3},
+    "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+    "uncertainty": {"enum": ["confirmed", "likely", "possible", "unknown"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "detail"],
+        "properties": {
+          "source": {"type": "string", "minLength": 1},
+          "line": {"type": ["integer", "null"], "minimum": 1},
+          "detail": {"type": "string", "minLength": 3}
+        }
+      }
+    },
+    "recommendation": {"type": "string", "minLength": 3},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "conflictsWith": {"type": "array", "items": {"type": "string"}}
+  }
+}

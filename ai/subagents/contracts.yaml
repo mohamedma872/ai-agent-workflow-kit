@@ -1,0 +1,185 @@
+version: 1
+defaults:
+  state_mutation: forbidden
+  evidence_required: true
+  uncertainty: [confirmed, likely, possible, unknown]
+  confidence:
+    min: 0
+    max: 1
+
+roles:
+  orchestration:
+    mode: read_only
+    inputs: [run_artifacts, repository_evidence]
+    outputs: [stage_artifact]
+    tools: [repository_read]
+    mcps_optional: [atlassian, context7, github]
+  docs:
+    mode: read_only
+    inputs: [request, dependency_versions]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_required: [context7]
+  architect:
+    mode: read_only
+    inputs: [request, acceptance_criteria, inspection]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7]
+  security:
+    mode: read_only
+    inputs: [request, acceptance_criteria, inspection]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7]
+  qa-plan:
+    mode: read_only
+    inputs: [acceptance_criteria, definition_of_done, inspection]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [atlassian]
+  performance:
+    mode: read_only
+    inputs: [request, acceptance_criteria, inspection]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7]
+  android:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, appium]
+  ios:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, appium]
+  flutter:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, appium]
+  backend:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7]
+  frontend:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, playwright]
+  implementation:
+    mode: workspace_write
+    inputs: [approved_plan, acceptance_criteria, definition_of_done]
+    outputs: [implementation]
+    tools: [repository_read, product_write]
+    mcps_optional: [context7]
+  qa-execute:
+    mode: read_only
+    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix]
+    outputs: [build_test]
+    tools: [repository_read, test_execute]
+    mcps_optional: [playwright, appium]
+  code-review:
+    mode: read_only
+    inputs: [acceptance_criteria, approved_plan, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  security-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+  performance-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  fixes:
+    mode: workspace_write
+    inputs: [validated_review_findings, approved_plan, changed_files]
+    outputs: [fixes]
+    tools: [repository_read, product_write]
+    mcps_optional: [context7]
+  mobile-evidence:
+    mode: read_only
+    inputs: [acceptance_criteria, definition_of_done, build_test, fixes]
+    outputs: [device_evidence]
+    tools: [repository_read, device_execute]
+    mcps_optional: [appium]
+
+  react-native:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files, dependency_versions]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, appium]
+  api-contract:
+    mode: read_only
+    inputs: [acceptance_criteria, inspection, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7]
+  dependency-migration:
+    mode: read_only
+    inputs: [request, inspection, dependency_versions, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_required: [context7]
+  react-native-review:
+    mode: read_only
+    inputs: [acceptance_criteria, approved_plan, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  android-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  ios-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  flutter-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  frontend-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  backend-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+  api-contract-review:
+    mode: read_only
+    inputs: [acceptance_criteria, changed_files, build_test]
+    outputs: [findings]
+    tools: [repository_read]
+
+  behavior-regression-review:
+    mode: read_only
+    inputs: [behavior_baseline, refactor_invariants, approved_plan, changed_files, build_test, validated_review_findings]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
+
+  behavior-equivalence:
+    mode: read_only
+    inputs: [behavior_baseline, refactor_invariants, approved_plan, build_test, validated_review_findings, fixes, changed_files, refactor_verification_matrix]
+    outputs: [behavior_equivalence]
+    tools: [repository_read]
+    mcps_optional: [context7, github]
