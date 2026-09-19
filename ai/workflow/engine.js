@@ -222,7 +222,7 @@ function promoteArchitectureAsCode(id) {
     '- `c4-model.md` / `c4-model.json` — C4 model',
     '- `workspace.dsl` — Structurizr DSL source model',
     '- `migration-plan.md` — dependency/risk-aware migration waves',
-    `- `decisions/${id}/` — assessment, alternatives/trade-offs, and human decision evidence`,
+    `- decisions/${id}/ — assessment, alternatives/trade-offs, and human decision evidence`,
     '',
     'The generated model is part of the implementation diff and should be reviewed/updated when architecture changes.',
     '',
