@@ -7,12 +7,13 @@ const yaml = require('js-yaml');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS = path.join(ROOT, 'ai', 'workflows');
-const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature']);
+const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
 
 function validateWorkflowConditions(name, workflow) {
   const problems = [];
   const roles = workflow.roles || {};
   for (const stage of workflow.stages || []) {
+    if (stage.when && !SUPPORTED_CONDITIONS.has(stage.when)) problems.push(`${name}/${stage.id}: unsupported when condition "${stage.when}"`);
     if (stage.conditional_role) {
       if (!roles[stage.conditional_role]) problems.push(`${name}/${stage.id}: unknown conditional_role "${stage.conditional_role}"`);
       if (!stage.condition) problems.push(`${name}/${stage.id}: conditional_role requires condition`);
