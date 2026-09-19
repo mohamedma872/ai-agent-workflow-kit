@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://ai-agent-workflow-runtime.local/schemas/refactor-invariants-v1.json",
+  "title":"Refactor Preservation Invariants",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","runId","mustPreserve","intentionalExceptions"],
+  "properties":{
+    "schemaVersion":{"const":1},"runId":{"type":"string","minLength":1},
+    "mustPreserve":{"type":"object","additionalProperties":false,"required":["publicApi","apiContracts","navigation","storageFormat","storageKeys","analyticsEvents","errorSemantics","backwardCompatibility","concurrencyBehavior","lifecycleBehavior"],
+      "properties":{"publicApi":{"type":"boolean"},"apiContracts":{"type":"boolean"},"navigation":{"type":"boolean"},"storageFormat":{"type":"boolean"},"storageKeys":{"type":"boolean"},"analyticsEvents":{"type":"boolean"},"errorSemantics":{"type":"boolean"},"backwardCompatibility":{"type":"boolean"},"concurrencyBehavior":{"type":"boolean"},"lifecycleBehavior":{"type":"boolean"}}},
+    "intentionalExceptions":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["invariant","reason","approved"],"properties":{"invariant":{"type":"string"},"reason":{"type":"string","minLength":3},"approved":{"type":"boolean"}}}}
+  }
+}

@@ -1,588 +1,1007 @@
-# AI Agent Workflow Kit
+# AI Agent Workflow Runtime
 
-A practical workflow for using **Claude Code + Codex** on real software tasks without letting agents jump straight into code.
+**Runtime version: 1.1.0**
 
-The basic idea:
+A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
+
+It separates four responsibilities:
 
 ```text
-You ask for a feature
-        ↓
-Claude understands and plans it
-        ↓
-Specialist agents analyze it
-        ↓
-You approve the plan
-        ↓
-Codex implements it
-        ↓
-Tests + reviews verify it
-        ↓
-Final Appium evidence for mobile/UI
-        ↓
-Claude gives you the final result
+Workflow engine  = decides what can run next
+Guardrails       = decide what agents are allowed to do
+Evals            = decide whether the result is actually good
+Human            = approves plans and release-sensitive decisions
 ```
 
-At the same time, **guardrails** protect the repository and **evals** check whether the agents actually did the job correctly.
+> Agents perform engineering work. The runtime owns progression, permissions, evidence, and completion.
 
 ---
 
-## What this project gives you
+## What this runtime provides
 
-| Capability | What it means |
-|---|---|
-| **Agentic workflow** | Requirements → analysis → plan → approval → implementation → tests → reviews → verification. |
-| **Live progress** | Watch the active workflow in the terminal, VS Code, JSON, or an updating GitHub PR comment. |
-| **Claude + Codex delegation** | Claude coordinates the work. Codex handles implementation and fixes by default. |
-| **Guardrails** | Agents are blocked from dangerous actions such as reading secrets, force-pushing, bypassing hooks, or editing protected workflow files. |
-| **Current documentation** | Context7 gives agents current library/framework documentation instead of relying only on model memory. |
-| **Mobile QA evidence** | Mobile/UI features finish with headless Appium validation and screenshots stored with the run evidence. |
-| **Evals** | Tasks are graded from the final repository state, not from what the agent claims it did. |
+- deterministic DAG-driven feature workflows
+- first-class behavior-preserving refactor mode with behavioral-equivalence gates
+- explicit human approval before product implementation
+- isolated git worktrees per feature run
+- controlled state transitions and resumable execution
+- retry, timeout, and fallback policies
+- least-privilege specialist subagents
+- structured evidence-backed findings
+- intelligent specialist selection
+- deterministic finding synthesis and conflict tracking
+- independent post-implementation stack reviewers
+- structured JSON workflow gates
+- Appium-based Android/iOS evidence tied to the exact tested build
+- commit-bound GitHub verification status
+- runtime hardening and per-agent eval suites
+- subagent precision/recall, false-positive, latency, retry, cost, and finding telemetry
+- runtime versioning and release tooling
 
 ---
 
-# The main workflow
-
-Use:
-
-```text
-/feature <your request>
-```
-
-Example:
-
-```text
-/feature Add biometric login with password fallback
-```
-
-The workflow follows this path:
+## End-to-end flow
 
 ```mermaid
 flowchart TD
-    A[Your request] --> B[Requirements]
-    B --> C[Acceptance criteria]
-    C --> D[Repository inspection]
-    D --> E[Specialist analysis]
-    E --> F[Implementation plan]
-    F --> G{You approve?}
-    G -->|No| F
-    G -->|Yes| H[Codex implementation]
-    H --> I[Build and tests]
-    I --> J[Independent reviews]
-    J --> K[Fixes if needed]
-    K --> M{Mobile/UI feature?}
-    M -->|Yes| N[Headless Appium + screenshots]
-    M -->|No| O[Evidence not required + reason]
-    N --> L[Final verification]
-    O --> L
+    A[Feature request] --> D[Workflow doctor]
+    D -->|missing prerequisite| X[BLOCKED]
+    D -->|ready| W[Per-run git worktree]
+
+    W --> R[Requirements]
+    R --> AC[Acceptance criteria + DoD]
+    AC --> S[Intelligent specialist selection]
+
+    S --> AN[Parallel specialist analysis]
+    AN --> SY[Finding synthesis + deduplication]
+    SY --> C{Unresolved conflicts?}
+    C -->|yes| HR[Human/owner conflict resolution]
+    HR --> P
+    C -->|no| P[Structured implementation plan]
+
+    P --> H{Human approval}
+    H -->|approved| I[Implementation]
+    I --> T[Build + tests]
+
+    T --> RS[Dynamic independent reviewers]
+    RS --> F[Validated fixes]
+
+    F --> M{Mobile/UI evidence required?}
+    M -->|yes| AP[Appium Android / iOS]
+    AP --> E[Exact-build evidence attestation]
+    M -->|no| FV[Final verification]
+    E --> FV
+
+    FV --> G[Commit-bound GitHub verification]
 ```
 
-The important part is the **human approval gate**:
+The workflow definition lives in:
 
-> No product-code implementation should start until you approve the plan.
+```text
+ai/workflows/feature.yaml
+```
+
+The engine, not the model, determines eligible stages.
 
 ---
 
-# Live workflow progress
+## Subagent architecture
 
-The workflow stores progress in:
+Subagents are not unrestricted prompts. Every role has a machine-readable contract.
 
-```text
-ai/runs/<run-id>/state.json
-```
-
-That file remains the single source of truth. The progress layer only **renders** it; it does not create a separate workflow state.
-
-## How the visualization works
-
-```mermaid
-flowchart LR
-    A[Claude /feature workflow] --> S[state.json]
-
-    S --> T[Live terminal dashboard]
-    S --> V[VS Code task]
-    S --> J[JSON / Markdown snapshot]
-    S --> G[GitHub PR progress comment]
-
-    subgraph Local[Local only]
-      S
-      T
-      V
-      J
-    end
-
-    G --> P[One PR comment<br/>updated as status changes]
-```
-
-`ai/runs/` stays gitignored. Prompts, detailed agent output, test evidence, screenshots, and local artifacts are **not published to GitHub** by the progress feature.
-
-Only a safe status summary can be sent to the PR.
-
-## Terminal dashboard
-
-Run once:
-
-```bash
-npm run workflow:progress
-```
-
-Watch it live:
-
-```bash
-npm run workflow:progress:watch
-```
-
-Example:
+A contract defines:
 
 ```text
-╭────────────────────────────────────────────────────────────╮
-│  FEATURE: PAYMENTS-123                        46%           │
-╰────────────────────────────────────────────────────────────╯
-   █████████████░░░░░░░░░░░░░░░  46%
-
- ✅ Request                  pass
- ✅ Requirements             pass
- ✅ Acceptance Criteria      pass
- ✅ Definition of Done       pass
- ✅ Repository Inspection    pass
- 🔄 Specialist Analysis      in_progress
-      ✅ docs                pass · claude
-      ✅ architect           pass · claude
-      ✅ qa-plan             pass · claude
-      🔄 security            in_progress · claude
-      ✅ performance         pass · claude
-      ⏳ android             pending · claude
-      ⏭ ios                 skipped · claude
- ⏳ Implementation Plan      pending
- 🔒 Human Approval           pending
- ⏳ Implementation           pending
- ⏳ Build + Tests            pending
- ⏳ Independent Reviews      pending
- ⏳ Validated Fixes          pending
- ⏳ Final Verification       pending
-
- Current: Specialist Analysis → security
- Plan gate: 🔒 waiting for human approval
+inputs
+outputs
+read/write mode
+allowed tools
+required MCPs
+optional MCPs
+evidence requirements
+state-mutation restrictions
 ```
 
-The dashboard understands both **phase status** and individual parallel **role status**, so `analysis` and `reviews` do not appear as one opaque step.
-
-## Automatic state reconciliation
-
-Parallel phases are closed from the selected role states instead of relying on the orchestrator to remember a second manual update.
-
-Before launching parallel analysis or reviews, the workflow registers the exact roles selected for that run:
-
-```bash
-node ai/tasks/feature/runs.js select-roles analysis architect qa-plan security
-node ai/tasks/feature/runs.js select-roles reviews code-review security-review performance-review
-```
-
-Each role then reports its own status with `set-role`. When all selected roles reach terminal states, the parent phase is derived automatically:
+Contracts live in:
 
 ```text
-architect ✅
-qa-plan   ✅
-security  ✅
-     ↓
-Specialist Analysis ✅ pass
+ai/subagents/contracts.yaml
 ```
 
-The same behavior applies to independent reviews.
-
-Human approval also reconciles the plan consistently: approving a valid plan records both `plan = pass` and `approval = pass`.
-
-For older runs created before selected-role tracking, repair safe derived state with:
-
-```bash
-node ai/tasks/feature/runs.js reconcile
-```
-
-The renderer is defensive too. If an old `state.json` still contains contradictory values such as:
+Example behavior:
 
 ```text
-Specialist Analysis   in_progress
-  architect           pass
-  security            pass
-  qa-plan             pass
-Implementation Plan   in_progress
-Human Approval        pass
+Security reviewer
+  ✓ repository read
+  ✓ declared documentation MCPs
+  ✗ product write
+  ✗ undeclared MCPs
+  ✗ nested agents
+  ✗ workflow-state mutation
+
+Implementation
+  ✓ repository read
+  ✓ product write
+  ✓ declared documentation MCPs
+  ✗ arbitrary workflow-state changes
+
+Mobile evidence
+  ✓ repository read
+  ✓ declared device/Appium execution
+  ✗ product modification
 ```
 
-it will no longer report `Current: Specialist Analysis`. It uses the effective dependency state, prefers the furthest downstream active stage, and displays a warning showing which stored values were stale.
+Required MCP capabilities are checked before a role is launched. A sample MCP configuration file does not count as an active capability.
 
-## VS Code / editor view
+### Specialist roles
 
-This repo includes `.vscode/tasks.json`.
+The runtime supports pre-implementation analysis specialists including:
 
-Open the repository root in VS Code, then:
-
-```text
-Cmd/Ctrl + Shift + P
-→ Tasks: Run Task
-→ AI Workflow: Live Progress
-```
-
-This opens a **dedicated terminal panel that stays running and refreshes** while `state.json` changes.
-
-> **Important:** `AI: Workflow show` is not the live dashboard. It prints the workflow definition once and exits. `AI: Feature workflow status` also prints only a one-time snapshot. For continuous updates, use `AI Workflow: Live Progress`.
-
-The included tasks are:
-
-| VS Code task | What it does |
+| Role | Focus |
 |---|---|
-| `AI: Guard check` | Runs the guard configuration check once. |
-| `AI: Workflow show` | Prints the workflow definition once. This is **not** live progress. |
-| `AI: Feature workflow status` | Prints the current run state once. |
-| `AI Workflow: Live Progress` | Runs `npm run workflow:progress:watch` and continuously refreshes the local dashboard. |
-| `AI Workflow: Progress Snapshot` | Prints one formatted progress dashboard snapshot. |
-| `AI Workflow: Live GitHub PR Progress` | Keeps one GitHub PR progress comment synchronized while the workflow runs. |
-| `AI Workflow: Update GitHub PR Progress Once` | Updates the PR progress comment once and exits. |
-| `AI: Verify repo` | Runs guard, workflow, and exam validation checks. |
+| Architecture | boundaries, dependencies, modularity, cross-stack impact |
+| Security | threat model, trust boundaries, auth, secrets, storage, transport |
+| QA plan | acceptance coverage, negative paths, edge cases |
+| Performance | likely hot paths, budgets, measurement plan |
+| React Native | Hermes, New Architecture, Fabric, TurboModules, Metro, navigation, native integration |
+| Android | lifecycle, permissions, manifest, background work, Gradle/native integration |
+| iOS | lifecycle, entitlements, privacy permissions, concurrency, signing/native integration |
+| Flutter | widgets/state, plugins, platform channels, flavors, Android/iOS integration |
+| Frontend | routing, accessibility, state/data flow, browser behavior |
+| Backend | APIs, persistence, queues, transactions, concurrency, reliability |
+| API contract | OpenAPI/GraphQL, nullability, compatibility, errors, pagination, auth, idempotency |
+| Dependency migration | framework/SDK upgrade impact, breaking changes, validation, rollback |
+| Docs | current framework/library documentation where version-sensitive facts matter |
 
-If the task does not appear, confirm VS Code is opened at the project root and that this file exists:
+Security and performance analysis are intentionally separate from their final review roles.
 
-```bash
-ls .vscode/tasks.json
-```
+### Independent post-implementation reviewers
 
-You can always bypass VS Code Tasks and start the watcher directly:
-
-```bash
-npm run workflow:progress:watch
-```
-
-The terminal should remain open. If it exits immediately, check that there is an active run:
-
-```bash
-node ai/tasks/feature/runs.js status
-```
-
-and verify the active run marker/state exists under `ai/runs/`.
-
-This task setup also works in editors that understand VS Code-compatible task definitions.
-
-## JSON output
-
-For another UI, script, extension, or dashboard:
-
-```bash
-npm run workflow:progress:json
-```
-
-This produces machine-readable workflow state without exposing the full run artifacts.
-
-## GitHub PR progress
-
-You can surface the same workflow directly on the feature PR.
-
-One update:
-
-```bash
-npm run workflow:progress:github
-```
-
-Keep the PR comment synchronized while the workflow runs:
-
-```bash
-npm run workflow:progress:github:watch
-```
-
-The command maintains **one comment** and edits it when progress changes instead of adding a new comment every time.
-
-## Progress states
+After build/test, the runtime can dynamically add stack-specific reviewers based on the actual changed files:
 
 ```text
-✅ pass
-🔄 in_progress
-⏳ pending
-🔒 human approval pending
-⛔ blocked
-❌ fail
-⏭ skipped
+React Native reviewer
+Android reviewer
+iOS reviewer
+Flutter reviewer
+Frontend reviewer
+Backend reviewer
+API-contract reviewer
+```
+
+Baseline code, security, and performance review still run as configured.
+
+This prevents a pre-implementation specialist from simply validating its own earlier recommendation.
+
+---
+
+## Intelligent specialist selection
+
+The runtime selects relevant specialists from:
+
+```text
+repository stack
+requested scope
+feature/request wording
+changed files
+risk/domain signals
+```
+
+Examples:
+
+```text
+React Native project
+  → React Native specialist
+  → Android/iOS specialists as applicable
+
+GraphQL/OpenAPI/schema change
+  → API contract specialist
+
+Framework or SDK upgrade
+  → dependency migration specialist
+
+Android source changed
+  → Android final reviewer
+
+Flutter/Dart source changed
+  → Flutter final reviewer
+```
+
+Selection decisions and reasons are persisted under the run's engine artifacts rather than existing only in model prose.
+
+---
+
+## Evidence-backed findings
+
+Analysis and review findings are structured artifacts.
+
+A finding includes:
+
+```json
+{
+  "id": "SEC-001",
+  "title": "Token stored in insecure persistence",
+  "severity": "high",
+  "uncertainty": "confirmed",
+  "confidence": 0.95,
+  "evidence": [
+    {
+      "source": "src/auth/session.ts",
+      "line": 118,
+      "detail": "access token is written to unencrypted storage"
+    }
+  ],
+  "recommendation": "Store the token in the platform secure-storage implementation.",
+  "tags": ["auth", "storage"]
+}
+```
+
+Confidence is constrained to `0..1`.
+
+Unsupported findings fail validation. Review artifacts also require evidence, recommendation, uncertainty, confidence, and resolution state.
+
+Key schemas include:
+
+```text
+ai/workflow/schemas/subagent-findings.schema.json
+ai/workflow/schemas/review.schema.json
+ai/workflow/schemas/subagent-conflicts.schema.json
+ai/workflow/schemas/subagent-telemetry.schema.json
 ```
 
 ---
 
-# Who does what?
+## Finding synthesis and conflicts
 
-| Role | Responsibility |
-|---|---|
-| **Claude** | Orchestrates the workflow, requirements, analysis, planning, reviews, final device evidence, and verification. |
-| **Codex** | Implements the approved plan and fixes validated review findings by default. |
-| **Specialists** | Focused architecture, security, QA, performance, Android, iOS, backend, frontend, and code-review analysis. |
-| **Human** | Approves the implementation plan before product code can be changed. |
+Parallel specialist output is synthesized deterministically.
 
-Claude does not need to do all coding itself. Implementation and fixes can be delegated through the local `codex-delegate` MCP server.
+The synthesis layer:
 
-Large context stays in:
+- groups duplicate findings by evidence/root cause
+- preserves contributing-agent provenance
+- reconciles severity deterministically
+- keeps supporting evidence
+- does not create unsupported findings
 
-```text
-ai/runs/<run-id>/
-```
-
-instead of being copied repeatedly between agents.
-
----
-
-# Current documentation with Context7
-
-For version-sensitive questions, the workflow can use **Context7** so agents do not depend only on model memory.
+When specialists explicitly disagree, the runtime creates a conflict record:
 
 ```text
-Repository dependency/version
-        ↓
-Docs researcher
-        ↓
-Context7
-        ↓
-Short current-doc decision
-        ↓
-Plan / implementation / review
+CONFLICT-001
+topic: storage
+findings: [SEC-003, ARCH-007]
+status: unresolved
 ```
 
-Useful for framework upgrades, deprecated APIs, SDK setup, migrations, build settings, and changing APIs.
+Unresolved conflicts block the plan stage.
 
----
-
-# Final mobile evidence with Appium
-
-For mobile/UI features, Appium is not only an optional test tool. The finished post-fix feature must produce screenshot evidence before final verification can pass.
-
-During repository inspection, classify the feature:
+Resolve a conflict explicitly:
 
 ```bash
-# Mobile or device-visible UI feature
-node ai/tasks/feature/runs.js evidence required "mobile/UI feature"
-
-# Non-mobile/non-UI work
-node ai/tasks/feature/runs.js evidence not-required "backend-only change"
+npm run workflow:conflict:resolve -- \
+  HM-003 \
+  CONFLICT-001 \
+  --decision "Use platform secure storage" \
+  --rationale "Required for credential material" \
+  --owner "Mohamed"
 ```
 
-For required mobile evidence, the final Appium run happens **after implementation, reviews, and fixes**.
+A resolution records:
 
 ```text
-Finished feature
+decision
+rationale
+owner
+resolvedAt
+```
+
+---
+
+## Behavior-preserving refactoring
+
+Refactor mode treats **behavioral equivalence**, not cleaner code, as the success criterion.
+
+The engine detects common refactoring intent automatically, or you can force it explicitly:
+
+```bash
+npm run workflow:start -- RF-001 \
+  --request "Refactor login validation without changing behavior" \
+  --mode refactor \
+  --scope mobile
+```
+
+The refactor-only flow is:
+
+```text
+impact/inspection
       ↓
-Headless Appium
+behavior baseline
       ↓
-Run device acceptance criteria
+preservation invariants
       ↓
-Capture screenshots
+characterization coverage gate
       ↓
-ai/runs/<id>/device/
+specialist analysis
       ↓
-Final verification
+incremental refactor plan
+      ↓
+human approval
+      ↓
+one verified increment at a time
+      ↓
+scope-aware build/test matrix
+      ↓
+independent behavior regression review
+      ↓
+validated fixes
+      ↓
+behavior-equivalence gate
+      ↓
+final verification
 ```
 
-Evidence is stored locally as:
+### Behavior baseline
+
+Before implementation, the runtime freezes observable behavior such as:
 
 ```text
-ai/runs/<id>/device/
-├── mobile-device-qc.md
-└── screenshots/
-    ├── 01-launch.png
-    ├── 02-ac-1-success.png
-    ├── 03-ac-2-error-state.png
-    └── ...
+public APIs
+state transitions
+side effects
+API calls/contracts
+storage keys/formats
+navigation/deep links
+analytics events
+error semantics
+concurrency/ordering
+lifecycle/background behavior
+known unverified areas
 ```
 
-Use Appium MCP with `NO_UI=true`. When the project/platform supports it, run the emulator/simulator without a visible window too. The agent still captures screenshots with Appium and saves them to files.
+Each critical/high behavior must be covered by characterization/golden-master evidence or have an explicit risk waiver.
 
-The manifest maps screenshots back to acceptance criteria:
+Record a waiver:
+
+```bash
+npm run workflow:refactor:coverage -- \
+  waive RF-001 B-003 \
+  --reason "Requires unavailable legacy hardware" \
+  --owner "Mohamed"
+```
+
+### Preservation invariants
+
+Refactor runs explicitly declare which contracts must not change:
 
 ```text
-| AC | result | screenshot |
-|---|---|---|
-| AC-1 | PASS | device/screenshots/02-ac-1-success.png |
-| AC-2 | PASS | device/screenshots/03-ac-2-error-state.png |
+public API
+API contracts
+navigation
+storage format
+storage keys
+analytics events
+error semantics
+backward compatibility
+concurrency behavior
+lifecycle behavior
 ```
 
-For a normal mobile/UI run, `verification = pass` is rejected when:
+Intentional exceptions must be declared and approved; otherwise a detected contract change blocks equivalence verification.
 
-- evidence is still `unclassified`;
-- screenshots are required but the screenshot folder is empty; or
-- `device/mobile-device-qc.md` is missing.
+### Incremental refactor checkpoints
 
-If Appium/device/build access is unavailable, the workflow must report `blocked` / `pending-device` instead of pretending the feature is verified.
+A refactor plan must contain ordered `refactorIncrements`.
 
-The detailed reusable procedure is:
+After each increment, implementation records diff and test evidence before continuing:
+
+```bash
+npm run workflow:refactor:checkpoint -- \
+  RF-001 R1 \
+  --diff "git diff -- src/auth" \
+  --test "npm test -- auth"
+```
+
+The runtime will not mark implementation complete while a planned increment lacks verification evidence.
+
+### Scope-aware verification
+
+The runtime derives a verification matrix from the affected behavior and changed files.
+
+Examples:
 
 ```text
-.claude/skills/mobile-device-qc/SKILL.md
+pure logic
+  → characterization + unit
+
+repository/API/data layer
+  → unit + integration + API contract
+
+navigation/deep links
+  → navigation integration + E2E
+
+persistence
+  → migration/backward-compatibility tests
+
+mobile UI/state
+  → reducer/ViewModel/state tests + device/E2E as required
+
+native bridge/platform code
+  → native integration + device verification
 ```
+
+The matrix is persisted in:
+
+```text
+ai/runs/<run-id>/engine/refactor-verification-matrix.json
+```
+
+### Independent behavior regression review
+
+Refactor runs dynamically add a dedicated `behavior-regression-reviewer`.
+
+It focuses on runtime differences rather than style, including:
+
+```text
+removed conditions
+changed defaults/null handling
+ordering and async sequencing
+race conditions
+retries/backoff
+navigation
+state initialization/transitions
+API payload/schema changes
+storage keys/formats
+analytics
+lost side effects
+lifecycle/background behavior
+```
+
+### Behavior-equivalence gate
+
+After reviews and fixes, a dedicated verifier produces:
+
+```text
+10-behavior-equivalence.md
+10-behavior-equivalence.json
+```
+
+The gate records:
+
+```text
+verified behaviors
+intentional changes
+unexpected changes
+observed final contracts
+test layers/evidence
+unverified scenarios
+fullyVerified
+```
+
+Unexpected behavior changes fail the gate.
+
+If `unverifiedScenarios` is non-empty, the run may be honestly reported as **partially verified**, but it cannot claim `fullyVerified: true`.
+
+The runtime also writes:
+
+```text
+engine/refactor-contract-diff.json
+engine/refactor-telemetry.json
+```
+
+Generate a local report:
+
+```bash
+npm run workflow:refactor:report -- RF-001
+npm run workflow:refactor:report -- RF-001 --json
+```
+
+GitHub verification includes whether refactor behavior coverage is **full** or **partial**.
+
+### Refactor safety evals
+
+The hardening suite includes adversarial cases for:
+
+- login error/token semantics
+- storage key/format compatibility
+- async ordering/retries/idempotency
+- navigation/deep links
+- analytics preservation
+- null/default/error fallback behavior
+
+These tests reject a refactor that produces cleaner code while changing observable behavior.
 
 ---
 
-# What is MCP here?
-
-Think of MCP as a **bridge between an AI agent and another capability**.
-
-| MCP | Purpose |
-|---|---|
-| **codex-delegate** | Claude hands implementation/fix work to Codex |
-| **Context7** | Current framework/library documentation |
-| **Atlassian** | Jira and Confluence context |
-| **Appium** | Android/iOS device testing and final screenshot evidence |
-| **Playwright** | Optional browser testing |
-| **GitHub** | Optional PR/CI/repository context |
-
-Each role should only get the tools it needs.
-
-More detail: [`ai/mcp/README.md`](ai/mcp/README.md)
-
----
-
-# Guardrails
-
-The agents run behind the shared policy in:
-
-```text
-ai/guard.yaml
-```
-
-It protects against things such as:
-
-- reading secret files;
-- leaking credentials;
-- force-pushing;
-- bypassing Git hooks;
-- destructive shell commands;
-- unexpected publishing/deployment;
-- modifying guard/workflow files to make a task pass;
-- implementation before human approval.
-
-Inspect active rules with:
+## Quick start
 
 ```bash
-npm run guard:explain
-```
-
----
-
-# Evals
-
-Evals answer:
-
-> Did the agent actually solve the task?
-
-They check the real end state: files, diffs, tests, required artifacts, forbidden changes, and completion evidence.
-
-Fast/free health check:
-
-```bash
-npm run exam:check
-```
-
-Live comparison:
-
-```bash
-node ai/evals/auto.js live --tasks coding
-```
-
-More detail: [`ai/README.md`](ai/README.md)
-
----
-
-# Quick start
-
-```bash
-git clone https://github.com/mohamedma872/ai-agent-workflow-kit
-cd ai-agent-workflow-kit
-npm install
+git clone https://github.com/mohamedma872/ai-agent-workflow-runtime
+cd ai-agent-workflow-runtime
+npm ci
 cp .mcp.json.example .mcp.json
 ```
 
-Validate:
+Configure only the MCPs you actually use.
+
+Validate the runtime:
 
 ```bash
+npm run workflow:version
+npm run workflow:version:check
 npm run guard:check
 npm run guard:selftest
 npm run workflow:check
+npm run workflow:artifacts:check
+npm run workflow:subagents:check
+npm run exam:check
+npm run exam:subagents:check
+```
+
+---
+
+## Start a feature
+
+The doctor and isolated worktree are automatic.
+
+```bash
+npm run workflow:start -- HM-003 \
+  --request "Add Flutter biometric login with password fallback" \
+  --scope mobile
+```
+
+The runtime advances until it reaches:
+
+```text
+human approval
+blocked prerequisite
+policy failure
+execution failure
+unresolved specialist conflict
+final completion
+```
+
+Review the plan and approve explicitly:
+
+```bash
+node ai/tasks/feature/runs.js approve HM-003
+npm run workflow:resume -- HM-003
+```
+
+Useful commands:
+
+```bash
+npm run workflow:next -- HM-003
+npm run workflow:run-next -- HM-003
+npm run workflow:resume -- HM-003
+npm run workflow:worktree -- HM-003
+npm run workflow:cleanup -- HM-003
+npm run workflow:progress -- --run HM-003
+```
+
+`ai/runs/_active` is only an interactive convenience pointer. Runtime commands use explicit run identity.
+
+---
+
+## Workflow doctor
+
+The runtime checks prerequisites before execution and again on resume where needed.
+
+Scopes:
+
+```text
+--scope mobile
+--scope frontend
+--scope backend
+--scope all
+--scope auto
+```
+
+Examples:
+
+```bash
+npm run workflow:doctor -- --scope mobile
+npm run workflow:doctor:json -- --scope mobile
+```
+
+The doctor checks relevant runtime dependencies, configured agents/MCPs, project tooling, and device prerequisites.
+
+See [docs/workflow-doctor.md](docs/workflow-doctor.md).
+
+---
+
+## Run isolation
+
+Each feature run gets its own git worktree:
+
+```text
+.ai-worktrees/<run-id>/
+```
+
+and branch:
+
+```text
+ai/run/<run-id>
+```
+
+Runtime worktree metadata is recorded in:
+
+```text
+ai/runs/<run-id>/engine/worktree.json
+```
+
+The runtime records the base/current SHA and refuses unsafe cleanup when unpublished or uncommitted work exists.
+
+See [docs/run-isolation.md](docs/run-isolation.md).
+
+---
+
+## Structured workflow artifacts
+
+The runtime keeps human-readable Markdown and machine-readable JSON sidecars.
+
+Examples:
+
+```text
+02-acceptance-criteria.md
+02-acceptance-criteria.json
+
+05-analysis/*.md
+05-analysis/*.json
+
+06-plan.md
+06-plan.json
+
+08-build-test.md
+08-build-test.json
+
+09-reviews/*.md
+09-reviews/*.json
+
+11-verification.md
+11-verification.json
+```
+
+Missing, invalid, wrong-run, or semantically failing structured artifacts prevent stage completion.
+
+Review gates reject unresolved critical/high findings.
+
+See [docs/structured-artifacts.md](docs/structured-artifacts.md).
+
+---
+
+## Guardrails
+
+Guardrails enforce what agents may do.
+
+They cover:
+
+- secret-file protection
+- credential-leak prevention
+- runtime/guard self-protection
+- pre-approval product-write blocking
+- shell-write detection
+- destructive command checks
+- outward-effect checks
+- role-scoped MCP/tool permissions
+- fail-closed handling for protected/destructive guard failures
+
+A read-only specialist cannot become a writer merely because the model decides it wants to edit a file.
+
+Main files:
+
+```text
+ai/guard/engine.js
+ai/guard/runner.js
+ai/guard/subagent-capabilities.js
+ai/guard.yaml
+ai/tasks/feature/guard.js
+```
+
+---
+
+## Retry, timeout, and fallback
+
+Execution policy is declarative.
+
+Attempt history records:
+
+```text
+attempt id
+attempt number
+executor
+start/end time
+status
+exit classification
+reason
+```
+
+Failure classes include:
+
+```text
+success
+timeout
+transient
+unavailable
+deterministic
+policy
+```
+
+Only configured retryable classes retry.
+
+Completed stages are not rerun blindly when a feature resumes.
+
+---
+
+## Mobile verification
+
+Required mobile/UI evidence runs after implementation, build/test, review, and fixes.
+
+```text
+final post-fix build
+      ↓
+Appium session per required platform
+      ↓
+AC-driven device checks
+      ↓
+fresh screenshots + QC manifest
+      ↓
+runtime evidence attestation
+      ↓
+final verification
+```
+
+Evidence directory:
+
+```text
+ai/runs/<run-id>/device/
+├── mobile-device-qc.md
+├── appium-sessions.json
+├── evidence.json
+└── screenshots/
+```
+
+`evidence.json` binds evidence to:
+
+- current run and attempt
+- Git SHA
+- workspace fingerprint
+- real Appium session metadata
+- device identity
+- app package/bundle identity
+- exact APK/AAB/IPA/.app SHA-256 where applicable
+- build/version metadata
+- screenshot hashes
+- manifest hash
+
+Partial, stale, copied, wrong-platform, wrong-attempt, or wrong-build evidence cannot satisfy required mobile verification.
+
+---
+
+## GitHub verification
+
+After final verification:
+
+```bash
+npm run workflow:verify:github -- HM-003 \
+  --repo owner/repo \
+  --sha <expected-pr-head-sha>
+```
+
+Status context:
+
+```text
+agentic-workflow-verification
+```
+
+The published status uses an allowlisted summary and does not publish prompts, screenshots, diffs, review prose, logs, or secrets.
+
+Repository protection should require:
+
+```text
+validate
+agentic-workflow-verification
+```
+
+**Repository administration is separate from runtime correctness.** On some private GitHub repository/account configurations, required-status enforcement may need an eligible GitHub plan and repository-admin setup. Runtime issue #40 tracks proving that merge blocking is operational for this repository.
+
+See [docs/github-verification.md](docs/github-verification.md) and [docs/github-merge-enforcement.md](docs/github-merge-enforcement.md).
+
+---
+
+## Evals
+
+### Runtime health
+
+Fast deterministic/oracle/null checks:
+
+```bash
 npm run exam:check
 ```
 
-Inspect the workflow definition once:
+Runtime hardening cases cover areas such as:
+
+- state-forging attempts
+- guard weakening
+- stale/partial mobile evidence
+- retry/resume/fallback behavior
+- concurrent worktree isolation
+- stack-specific feature flows
+
+### Per-agent specialist evals
+
+Validate the specialist eval catalog and metrics plumbing:
 
 ```bash
-npm run workflow:show
+npm run exam:subagents:check
+npm run exam:subagents:selftest
 ```
 
-Start the live progress view:
+Run the real specialist agents:
 
 ```bash
-npm run workflow:progress:watch
+npm run exam:subagents:live
 ```
 
-Then use Claude Code:
+The live specialist suite includes seeded cases for:
 
 ```text
-/feature <request>
+Architecture
+Security
+QA
+Performance
+Android
+iOS
+Flutter
+React Native
+API Contract
+Dependency Migration
 ```
+
+These live trials require an authenticated local Claude CLI and intentionally are not run in normal CI because they consume model budget.
+
+### Specialist quality metrics
+
+The eval/reporting layer tracks:
+
+```text
+precision
+recall
+false-positive count/rate
+severity-weighted misses
+agent/runtime version
+duration
+attempts
+retries
+executor
+cost when available
+findings produced
+findings retained after synthesis
+findings not retained
+review findings
+resolved/unresolved review findings
+```
+
+Metrics can compare a current result set with a previous baseline and can enforce minimum precision/recall thresholds for scheduled eval runs.
+
+Generate a local report:
+
+```bash
+npm run workflow:subagents:report -- \
+  --state ai/runs/<RUN-ID>/state.json \
+  --results ai/evals/results/subagent/results.jsonl
+```
+
+The report supports Markdown by default and JSON with `--json`.
+
+Its operational comparison is advisory only. Quality/latency/cost statistics never override workflow gates or human decisions.
+
+See [docs/runtime-hardening-evals.md](docs/runtime-hardening-evals.md).
 
 ---
 
-# Important files
+## Versioning and releases
 
-| File | Why it matters |
+Authoritative runtime version:
+
+```text
+ai/runtime-version.json
+```
+
+Commands:
+
+```bash
+npm run workflow:version
+npm run workflow:version:json
+npm run workflow:version:check
+```
+
+Version layers are intentionally separate:
+
+```text
+runtimeVersion         1.1.0
+workflowFormatVersion  1
+artifactSchemaVersion  1
+```
+
+Release tooling:
+
+```bash
+npm run workflow:release:check
+npm run workflow:release -- notes
+npm run workflow:release -- tag --dry-run
+npm run workflow:release -- tag
+npm run workflow:release -- tag --push
+```
+
+A pushed `vX.Y.Z` tag can trigger the GitHub Release workflow.
+
+See [docs/releases.md](docs/releases.md) and [docs/migrations/1.1.0.md](docs/migrations/1.1.0.md).
+
+---
+
+## Important files
+
+| File | Purpose |
 |---|---|
-| `README.md` | High-level explanation and progress visualization |
-| `ai/workflows/feature.yaml` | Workflow stages and role routing |
-| `ai/workflow/progress.js` | Terminal / JSON / Markdown progress renderer and consistency detection |
-| `ai/workflow/progress-selftest.js` | Regression checks for stale/contradictory workflow states |
-| `ai/workflow/github-progress.js` | Safe single-comment GitHub PR progress publisher |
-| `ai/tasks/feature/runs.js` | Local phase/per-role state store, evidence gate, and automatic reconciliation |
-| `.vscode/tasks.json` | Editor tasks for checks, snapshots, and live progress |
-| `ai/agents.yaml` | Claude/Codex launch definitions |
-| `ai/guard.yaml` | Safety rules |
-| `.claude/skills/feature/SKILL.md` | Claude orchestration procedure |
-| `.claude/skills/mobile-device-qc/SKILL.md` | Final headless Appium screenshot procedure |
-| `ai/mcp/README.md` | MCP/tool setup |
-| `ai/README.md` | Advanced guardrail/eval reference |
+| `ai/workflows/feature.yaml` | Feature DAG, roles, stages, conditions, and execution policy references |
+| `ai/workflow/engine.js` | Deterministic workflow/stage runner |
+| `ai/workflow/router.js` | Resolves and executes configured roles |
+| `ai/workflow/subagent-selector.js` | Stack/risk/change-based specialist selection |
+| `ai/workflow/subagent-contracts.js` | Contract validation and required-MCP preflight |
+| `ai/workflow/subagent-context.js` | Minimal per-role context construction |
+| `ai/workflow/finding-synthesis.js` | Deterministic finding deduplication/provenance |
+| `ai/workflow/conflict-tracker.js` | Detects incompatible specialist recommendations |
+| `ai/workflow/conflicts.js` | Explicit conflict-resolution command |
+| `ai/workflow/subagent-telemetry.js` | Runtime specialist attempt telemetry |
+| `ai/workflow/subagent-report.js` | Local quality/telemetry report |
+| `ai/subagents/contracts.yaml` | Role inputs, outputs, permissions, and MCP declarations |
+| `ai/workflow/artifacts.js` | Structured artifact validation/rendering |
+| `ai/workflow/doctor.js` | Scope-aware prerequisite preflight |
+| `ai/workflow/worktree.js` | Per-run worktree lifecycle/isolation |
+| `ai/workflow/execution-policy.js` | Retry/timeout/fallback policy |
+| `ai/guard/engine.js` | Main guardrail policy engine |
+| `ai/guard/runner.js` | Fail-closed guard supervisor |
+| `ai/guard/subagent-capabilities.js` | Role-scoped capability enforcement |
+| `ai/tasks/feature/runs.js` | Controlled run state and approval/evidence gates |
+| `ai/tasks/feature/mobile-evidence.js` | Executable Appium evidence step |
+| `ai/tasks/feature/evidence-attestation.js` | Exact-build/device evidence attestation |
+| `ai/tasks/subagent/cases.yaml` | Isolated live specialist eval cases |
+| `ai/tasks/subagent/fixtures/` | Seeded specialist eval fixtures |
+| `ai/evals/subagent-metrics.js` | Precision/recall/false-positive/severity metrics |
+| `ai/evals/runtime-hardening-check.js` | Deterministic runtime-hardening regressions |
+| `ai/workflow/github-verification.js` | Commit-bound GitHub workflow status |
+| `ai/workflow/version.js` | Runtime/format version checks |
+| `ai/workflow/release.js` | Release metadata, notes, and tag helper |
 
 ---
 
-# Architecture
+## Core design rules
 
-```mermaid
-flowchart TB
-    U[User] --> C[Claude orchestrator]
-
-    C --> D[Context7 docs]
-    C --> S[Specialist agents]
-    C --> P[Plan]
-
-    S --> RS[Selected role states]
-    RS --> ST[state.json]
-
-    P --> H{Human approval}
-    H --> X[Codex implementation]
-
-    X --> T[Tests]
-    T --> R[Independent reviews]
-    R --> F[Codex fixes]
-
-    F --> M{Mobile/UI?}
-    M -->|Yes| A[Headless Appium]
-    A --> SS[Screenshots + device manifest]
-    SS --> V[Claude verification]
-    M -->|No| V
-
-    C --> ST
-    ST --> UI[Live progress views]
-
-    G[Guardrails] -. protect .-> C
-    G -. protect .-> X
-    G -. protect .-> F
+```text
+Model output is not workflow authority.
+Agent prose is not evidence.
+A reviewer cannot silently approve its own earlier analysis.
+Read-only agents do not get write access.
+Undeclared MCPs are not available to a role.
+Parallel findings are synthesized before planning.
+Explicit disagreements become explicit conflicts.
+Unresolved blocking conflicts stop progression.
+Mobile evidence must belong to the exact tested build.
+Final workflow success is bound to the exact commit SHA.
+Human approval remains a real gate.
 ```
 
 ---
 
-## Advanced details
+## Current repository status
 
-- [`ai/README.md`](ai/README.md) — guard engine, eval framework, exam automation and operations.
-- [`ai/mcp/README.md`](ai/mcp/README.md) — Context7, Atlassian, Codex delegation, GitHub, Playwright and Appium setup.
-- [`AGENTS.md`](AGENTS.md) — rules every coding agent must follow.
-- [`.claude/skills/feature/SKILL.md`](.claude/skills/feature/SKILL.md) — detailed `/feature` orchestration flow.
+The deterministic runtime, subagent-quality roadmap, and behavior-preserving refactor safety workflow are implemented and passing CI.
+
+One repository-administration item remains open:
+
+```text
+#40 — Make private-repo merge enforcement operational
+```
+
+That issue concerns GitHub repository protection/account capabilities, not the workflow engine, subagent runtime, guardrails, evals, or evidence implementation.
 
 ---
 

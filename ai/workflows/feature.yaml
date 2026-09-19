@@ -2,15 +2,11 @@ version: 1
 name: feature
 description: Provider-independent agentic delivery workflow for feature work.
 
-# The workflow owns the process. Executors are selected from ai/agents.yaml.
-# A role may prefer one executor and list fallbacks. Adding another provider
-# later only requires an entry in ai/agents.yaml plus a role mapping here.
-# claude_subagent is an optimization for Claude Code; other orchestrators can
-# execute the same role through ai/workflow/router.js.
-# Artifact names follow the subagent names (05-analysis/<subagent>.md, 09-reviews/<subagent>.md),
-# the convention ai/tasks/feature/cases.yaml and ai/README.md § 14 already use.
-# mcps/optional_mcps are least-privilege capability hints; do not load every
-# MCP into every role just because the project has it configured.
+execution_defaults:
+  timeout: 60m
+  max_attempts: 1
+  retry_on: []
+  backoff: 0s
 
 orchestrator:
   executor: claude
@@ -19,12 +15,19 @@ orchestrator:
   optional_mcps: [github]
 
 roles:
+  orchestration:
+    executor: claude
+    purpose: Produce exactly one orchestrator-owned workflow stage artifact from prior run artifacts and repository evidence. Do not advance workflow state; the deterministic engine owns transitions.
+    read_only: true
+    optional_mcps: [atlassian, context7, github]
+
   docs:
     executor: claude
     claude_subagent: docs-researcher
     purpose: Resolve current, version-specific external library/framework documentation before decisions depend on an API, SDK, migration, configuration, or deprecation.
     read_only: true
     artifact: 05-analysis/docs-researcher.md
+    artifact_schema: subagent-findings
     mcps: [context7]
 
   architect:
@@ -33,14 +36,16 @@ roles:
     purpose: Inspect architecture, integration points, reuse opportunities, boundaries, and trade-offs.
     read_only: true
     artifact: 05-analysis/mobile-architect.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7]
 
   security:
     executor: claude
-    claude_subagent: security-reviewer
+    claude_subagent: security-analyst
     purpose: Threat-model auth, session, storage, PII, permissions, deep links, WebViews, native dependencies, and external effects.
     read_only: true
     artifact: 05-analysis/security-reviewer.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7]
 
   qa-plan:
@@ -49,14 +54,16 @@ roles:
     purpose: Derive test cases from acceptance criteria, including negative cases and regression coverage.
     read_only: true
     artifact: 05-analysis/qa-engineer.md
+    artifact_schema: subagent-findings
     optional_mcps: [atlassian]
 
   performance:
     executor: claude
-    claude_subagent: performance-reviewer
+    claude_subagent: performance-analyst
     purpose: Review rendering, startup, networking, caching, memory, concurrency, and build/runtime performance risks.
     read_only: true
     artifact: 05-analysis/performance-reviewer.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7]
 
   android:
@@ -65,6 +72,7 @@ roles:
     purpose: Review Android-specific behavior, lifecycle, permissions, native modules, performance, and Play policy impact.
     read_only: true
     artifact: 05-analysis/android-expert.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7, appium]
 
   ios:
@@ -73,6 +81,7 @@ roles:
     purpose: Review iOS-specific behavior, lifecycle, permissions, native modules, performance, and App Store impact.
     read_only: true
     artifact: 05-analysis/ios-expert.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7, appium]
 
   flutter:
@@ -81,6 +90,7 @@ roles:
     purpose: Review Flutter/Dart architecture, widgets, state and navigation, pub dependencies, localization, platform channels/plugins, flavors, testing, performance, and Android/iOS integration impact.
     read_only: true
     artifact: 05-analysis/flutter-expert.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7, appium]
 
   backend:
@@ -89,6 +99,7 @@ roles:
     purpose: Review server, API contracts, persistence, queues, migrations, concurrency, reliability, and observability.
     read_only: true
     artifact: 05-analysis/backend-expert.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7]
 
   frontend:
@@ -97,11 +108,44 @@ roles:
     purpose: Review web UI architecture, routing, accessibility, forms, state, data fetching, and browser behavior.
     read_only: true
     artifact: 05-analysis/frontend-expert.md
+    artifact_schema: subagent-findings
     optional_mcps: [context7, playwright]
+
+  react-native:
+    executor: claude
+    claude_subagent: react-native-expert
+    purpose: Review React Native/Expo architecture, Hermes/New Architecture, native integration, navigation, rendering, startup, memory, dependencies and Android/iOS impact.
+    read_only: true
+    artifact: 05-analysis/react-native-expert.md
+    artifact_schema: subagent-findings
+    optional_mcps: [context7, appium]
+
+  api-contract:
+    executor: claude
+    claude_subagent: api-contract-reviewer
+    purpose: Review cross-stack API compatibility, schemas, nullability, errors, pagination, auth, idempotency, versioning and backward compatibility.
+    read_only: true
+    artifact: 05-analysis/api-contract-reviewer.md
+    artifact_schema: subagent-findings
+    optional_mcps: [context7]
+
+  dependency-migration:
+    executor: claude
+    claude_subagent: dependency-migration-agent
+    purpose: Analyze framework, SDK and dependency upgrades using repository versions and current documentation, including breaking changes, native/build impact, validation and rollback risk.
+    read_only: true
+    artifact: 05-analysis/dependency-migration-agent.md
+    artifact_schema: subagent-findings
+    mcps: [context7]
 
   implementation:
     executor: codex
     fallback: [claude]
+    execution:
+      timeout: 45m
+      max_attempts: 2
+      retry_on: [timeout, transient, unavailable]
+      backoff: 2s
     purpose: Implement only the approved plan, keep changes minimal, and add/update tests required by the plan.
     read_only: false
     artifact: 07-implementation.md
@@ -110,9 +154,15 @@ roles:
   qa-execute:
     executor: claude
     claude_subagent: qa-engineer
+    execution:
+      timeout: 30m
+      max_attempts: 2
+      retry_on: [timeout, transient]
+      backoff: 2s
     purpose: Run the verification commands and report exact pass/fail evidence without changing product behavior to make tests pass.
     read_only: true
     artifact: 08-build-test.md
+    artifact_schema: build-test
     optional_mcps: [playwright, appium]
 
   code-review:
@@ -121,6 +171,7 @@ roles:
     purpose: Independently review the diff for correctness, maintainability, regressions, and plan/acceptance-criteria compliance.
     read_only: true
     artifact: 09-reviews/code-reviewer.md
+    artifact_schema: review
     optional_mcps: [context7, github]
 
   security-review:
@@ -129,6 +180,7 @@ roles:
     purpose: Independently review the final diff for security regressions, credential handling, authorization, data exposure, and unsafe external effects.
     read_only: true
     artifact: 09-reviews/security-reviewer.md
+    artifact_schema: review
     optional_mcps: [context7, github]
 
   performance-review:
@@ -137,10 +189,88 @@ roles:
     purpose: Independently review the final diff for measurable or likely performance regressions.
     read_only: true
     artifact: 09-reviews/performance-reviewer.md
+    artifact_schema: review
+
+  react-native-review:
+    executor: claude
+    claude_subagent: react-native-reviewer
+    purpose: Independently review the final React Native/native diff and build evidence for stack-specific regressions.
+    read_only: true
+    artifact: 09-reviews/react-native-reviewer.md
+    artifact_schema: review
+
+  android-review:
+    executor: claude
+    claude_subagent: android-reviewer
+    purpose: Independently review the final Android diff and build evidence.
+    read_only: true
+    artifact: 09-reviews/android-reviewer.md
+    artifact_schema: review
+
+  ios-review:
+    executor: claude
+    claude_subagent: ios-reviewer
+    purpose: Independently review the final iOS diff and build evidence.
+    read_only: true
+    artifact: 09-reviews/ios-reviewer.md
+    artifact_schema: review
+
+  flutter-review:
+    executor: claude
+    claude_subagent: flutter-reviewer
+    purpose: Independently review the final Flutter diff and Android/iOS integration evidence.
+    read_only: true
+    artifact: 09-reviews/flutter-reviewer.md
+    artifact_schema: review
+
+  frontend-review:
+    executor: claude
+    claude_subagent: frontend-reviewer
+    purpose: Independently review the final frontend diff and browser/test evidence.
+    read_only: true
+    artifact: 09-reviews/frontend-reviewer.md
+    artifact_schema: review
+
+  backend-review:
+    executor: claude
+    claude_subagent: backend-reviewer
+    purpose: Independently review the final backend diff and test evidence.
+    read_only: true
+    artifact: 09-reviews/backend-reviewer.md
+    artifact_schema: review
+
+  api-contract-review:
+    executor: claude
+    claude_subagent: api-contract-post-reviewer
+    purpose: Independently review final cross-stack API/schema compatibility.
+    read_only: true
+    artifact: 09-reviews/api-contract-post-reviewer.md
+    artifact_schema: review
+
+  behavior-regression-review:
+    executor: claude
+    claude_subagent: behavior-regression-reviewer
+    purpose: Independently compare the original behavior baseline and preservation invariants with the final diff/test evidence, focusing only on externally observable behavior changes.
+    read_only: true
+    artifact: 09-reviews/behavior-regression-reviewer.md
+    artifact_schema: review
+
+  behavior-equivalence:
+    executor: claude
+    claude_subagent: behavior-equivalence-verifier
+    purpose: Produce the final structured behavior-equivalence verdict from the frozen baseline, invariants, final diff, tests, reviews, fixes and verification evidence.
+    read_only: true
+    artifact: 10-behavior-equivalence.md
+    artifact_schema: behavior-equivalence
 
   fixes:
     executor: codex
     fallback: [claude]
+    execution:
+      timeout: 45m
+      max_attempts: 2
+      retry_on: [timeout, transient, unavailable]
+      backoff: 2s
     purpose: Fix only validated review findings, preserve the approved scope, and update tests when needed.
     read_only: false
     artifact: 10-fixes.md
@@ -149,6 +279,11 @@ roles:
   mobile-evidence:
     executor: claude
     claude_subagent: qa-engineer
+    execution:
+      timeout: 30m
+      max_attempts: 2
+      retry_on: [timeout, transient]
+      backoff: 2s
     purpose: After implementation, reviews, and fixes are complete, run the finished native, React Native, or Flutter mobile/UI feature with Appium in headless evidence mode and capture final screenshots mapped to acceptance criteria.
     read_only: true
     artifact: device/mobile-device-qc.md
@@ -168,6 +303,7 @@ stages:
     owner: orchestrator
     needs: [requirements]
     artifact: 02-acceptance-criteria.md
+    artifact_schema: acceptance-criteria
 
   - id: definition-of-done
     owner: orchestrator
@@ -179,16 +315,35 @@ stages:
     needs: [definition-of-done]
     artifact: 04-inspection.md
 
+  - id: behavior-baseline
+    owner: orchestrator
+    needs: [inspection]
+    when: behavior_preserving_refactor
+    artifact: 04-behavior-baseline.md
+    artifact_schema: behavior-baseline
+
+  - id: refactor-invariants
+    owner: orchestrator
+    needs: [behavior-baseline]
+    when: behavior_preserving_refactor
+    artifact: 04-refactor-invariants.md
+    artifact_schema: refactor-invariants
+
+  - id: refactor-coverage
+    needs: [refactor-invariants]
+    when: behavior_preserving_refactor
+
   - id: analysis
     strategy: parallel
-    needs: [inspection]
-    roles: [docs, architect, qa-plan, security, performance, android, ios, flutter, backend, frontend]
+    needs: [refactor-coverage]
+    roles: [docs, architect, qa-plan, security, performance, react-native, android, ios, flutter, backend, frontend, api-contract, dependency-migration]
     selective: true
 
   - id: plan
     owner: orchestrator
     needs: [analysis]
     artifact: 06-plan.md
+    artifact_schema: plan
 
   - id: approval
     type: human_gate
@@ -207,14 +362,21 @@ stages:
     strategy: parallel
     needs: [build-test]
     roles: [code-review, security-review, performance-review]
+    selectable_roles: [react-native-review, android-review, ios-review, flutter-review, frontend-review, backend-review, api-contract-review, behavior-regression-review]
 
   - id: fixes
     role: fixes
     needs: [reviews]
 
+  - id: behavior-equivalence
+    role: behavior-equivalence
+    needs: [fixes]
+    when: behavior_preserving_refactor
+
   - id: verification
     owner: orchestrator
-    needs: [fixes]
+    needs: [behavior-equivalence]
     artifact: 11-verification.md
+    artifact_schema: verification
     conditional_role: mobile-evidence
     condition: mobile_or_ui_feature

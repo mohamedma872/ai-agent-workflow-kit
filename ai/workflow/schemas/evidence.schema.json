@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/evidence-v1.json",
+  "title": "Mobile Evidence Artifact",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "attemptId", "status", "gitSha", "workspaceFingerprint", "manifest", "platforms"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["pass", "fail", "blocked"] },
+    "gitSha": { "type": "string", "minLength": 7 },
+    "workspaceFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "manifest": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["platform", "sessionId", "sessionStartedAt", "sessionEndedAt", "deviceId", "appId", "appVersion", "buildNumber", "gitSha", "workspaceFingerprint", "buildArtifact", "screenshots"],
+        "properties": {
+          "platform": { "enum": ["android", "ios"] },
+          "sessionId": { "type": "string", "minLength": 4 },
+          "sessionStartedAt": { "type": "string", "minLength": 10 },
+          "sessionEndedAt": { "type": "string", "minLength": 10 },
+          "deviceId": { "type": "string", "minLength": 1 },
+          "appId": { "type": "string", "minLength": 1 },
+          "appVersion": { "type": "string", "minLength": 1 },
+          "buildNumber": { "type": "string", "minLength": 1 },
+          "flavor": { "type": ["string", "null"] },
+          "scheme": { "type": ["string", "null"] },
+          "environment": { "type": ["string", "null"] },
+          "gitSha": { "type": "string", "minLength": 7 },
+          "workspaceFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "buildArtifact": {
+            "type": "object",
+            "required": ["path", "sha256", "kind"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "kind": { "enum": ["file", "directory"] }
+            }
+          },
+          "screenshots": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,52 @@
+version: 1
+cases:
+  - id: security-exported-component
+    agent: security
+    stack: android
+    expected:
+      - finding: exported-component-without-permission
+        severity: high
+    forbidden:
+      - generic-best-practice-without-evidence
+  - id: android-runtime-permission
+    agent: android
+    stack: android
+    expected:
+      - finding: missing-runtime-permission-path
+        severity: high
+  - id: ios-universal-link
+    agent: ios
+    stack: ios
+    expected:
+      - finding: associated-domain-or-routing-gap
+        severity: medium
+  - id: flutter-platform-channel
+    agent: flutter
+    stack: flutter
+    expected:
+      - finding: platform-channel-contract-risk
+        severity: medium
+  - id: react-native-new-architecture
+    agent: react-native
+    stack: react-native
+    expected:
+      - finding: native-module-new-architecture-compatibility
+        severity: high
+  - id: api-breaking-nullability
+    agent: api-contract
+    stack: cross
+    expected:
+      - finding: breaking-nullability-change
+        severity: high
+  - id: migration-breaking-sdk
+    agent: dependency-migration
+    stack: cross
+    expected:
+      - finding: required-migration-step
+        severity: high
+  - id: performance-no-regression
+    agent: performance-review
+    stack: cross
+    expected: []
+    forbidden:
+      - invented-performance-regression

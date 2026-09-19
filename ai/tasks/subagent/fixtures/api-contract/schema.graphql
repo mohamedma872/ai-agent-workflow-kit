@@ -1,0 +1,1 @@
+type User { id: ID! displayName: String! } # previous mobile clients treat displayName as optional and omit it in cached payloads

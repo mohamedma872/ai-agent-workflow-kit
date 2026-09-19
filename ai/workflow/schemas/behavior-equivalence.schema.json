@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/behavior-equivalence-v1.json",
+  "title": "Behavior Equivalence Verification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "status",
+    "verifiedBehaviors",
+    "intentionalChanges",
+    "unexpectedChanges",
+    "contractChanges",
+    "testLayers",
+    "unverifiedScenarios",
+    "fullyVerified",
+    "observedFinalContracts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "verifiedBehaviors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "intentionalChanges": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unexpectedChanges": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contractChanges": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testLayers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "layer",
+          "status",
+          "evidence"
+        ],
+        "properties": {
+          "layer": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "not-run",
+              "blocked"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "unverifiedScenarios": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fullyVerified": {
+      "type": "boolean"
+    },
+    "observedFinalContracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publicApis",
+        "apiCalls",
+        "storageContracts",
+        "navigationContracts",
+        "analyticsEvents",
+        "errorBehavior",
+        "concurrencyBehavior",
+        "lifecycleBehavior"
+      ],
+      "properties": {
+        "publicApis": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "apiCalls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "storageContracts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "navigationContracts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "analyticsEvents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "errorBehavior": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "concurrencyBehavior": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lifecycleBehavior": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

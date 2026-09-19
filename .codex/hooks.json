@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ai/guard/engine.js --agent codex",
+            "command": "node ai/guard/runner.js --agent codex",
             "statusMessage": "ai-guard: checking against ai/guard.yaml"
           }
         ]

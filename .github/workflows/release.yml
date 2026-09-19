@@ -1,0 +1,48 @@
+name: Runtime Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Validate tag and runtime metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(npm run --silent workflow:version)"
+          test "${GITHUB_REF_NAME}" = "v${VERSION}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match runtime version v${VERSION}" >&2
+            exit 1
+          }
+          npm run workflow:release:check
+          npm run workflow:check
+          npm run workflow:artifacts:check
+          npm run guard:selftest
+          npm run exam:check
+
+      - name: Build release notes
+        run: npm run --silent workflow:release -- notes > runtime-release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --verify-tag --title "AI Agent Workflow Runtime ${GITHUB_REF_NAME#v}" --notes-file runtime-release-notes.md

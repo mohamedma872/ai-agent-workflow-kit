@@ -1,0 +1,2 @@
+feature-auth -> core-network
+core-network -> feature-auth
