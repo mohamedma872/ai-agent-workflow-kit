@@ -4,6 +4,19 @@
 
 - No unreleased runtime changes.
 
+## 1.2.0 — 2026-09-19
+
+- Added whole-app behavior-preserving refactor scope and the simplified `refactor:app` command.
+- Added evidence-backed architecture assessment covering product/business drivers, quality attributes, technical constraints, team/ownership, delivery/operations, security/compliance, data/integrations, testing, migration constraints, risks, unknowns, and weighted decision criteria.
+- Added 2-4 architecture alternatives with explicit trade-offs, migration effort/reversibility, cross-functional impact, common criteria scoring, C4 previews, and an advisory agent recommendation.
+- Added a mandatory human architecture-selection gate; the agent cannot choose the target architecture on behalf of the human.
+- Added a selected target-architecture contract with dependency rules, module boundaries, data ownership, security/observability/testing requirements, performance budgets, migration guardrails, and architecture fitness functions.
+- Added C4 architecture modeling with System Context and Container views, targeted Component views, optional Dynamic/Deployment views, and version-controlled Structurizr DSL.
+- Added deterministic promotion of selected architecture artifacts into `docs/architecture/` in the refactor worktree so architecture-as-code participates in Git review.
+- Added dependency/risk-aware architecture migration domains, waves, integration checkpoints, rollback points, and completion criteria.
+- Added an independent post-implementation architecture-compliance review before behavior-equivalence verification.
+- Extended final refactor reports with the human architecture decision, recommendation-vs-selection, C4/model statistics, migration waves, fitness functions, and architecture compliance findings.
+
 ## 1.1.0 — 2026-09-19
 
 - Added first-class behavior-preserving refactor mode with deterministic intent detection and explicit `--mode refactor` override.
