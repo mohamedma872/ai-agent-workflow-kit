@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/subagent-telemetry-v1.json",
+  "title": "Subagent Telemetry Report",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "role", "attempts"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runId": {"type": ["string", "null"]},
+    "role": {"type": "string"},
+    "attempts": {"type": "integer"},
+    "passes": {"type": "integer"},
+    "failures": {"type": "integer"},
+    "avgDurationMs": {"type": ["integer", "null"]},
+    "retries": {"type": "integer"},
+    "costUsd": {"type": ["number", "null"]},
+    "findingsProduced": {"type": "integer"},
+    "findingsRetained": {"type": "integer"},
+    "reviewFindings": {"type": "integer"},
+    "resolvedReviewFindings": {"type": "integer"}
+  }
+}

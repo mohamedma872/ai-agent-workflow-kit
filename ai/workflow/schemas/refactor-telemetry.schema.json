@@ -1,0 +1,19 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://ai-agent-workflow-runtime.local/schemas/refactor-telemetry-v1.json",
+  "title":"Refactor Behavior Telemetry",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","behaviorCount","coveredBehaviors","waivedBehaviors","uncoveredBehaviors","intentionalChanges","unexpectedChanges","unverifiedScenarios","verifiedIncrements","testLayers"],
+  "properties":{
+    "schemaVersion":{"const":1},
+    "behaviorCount":{"type":"integer","minimum":0},
+    "coveredBehaviors":{"type":"integer","minimum":0},
+    "waivedBehaviors":{"type":"integer","minimum":0},
+    "uncoveredBehaviors":{"type":"integer","minimum":0},
+    "intentionalChanges":{"type":"integer","minimum":0},
+    "unexpectedChanges":{"type":"integer","minimum":0},
+    "unverifiedScenarios":{"type":"integer","minimum":0},
+    "verifiedIncrements":{"type":"integer","minimum":0},
+    "testLayers":{"type":"array","items":{"type":"string"}}
+  }
+}
