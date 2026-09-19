@@ -1,6 +1,6 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.1.0**
+**Runtime version: 1.2.0**
 
 A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
 
