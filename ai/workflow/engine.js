@@ -180,6 +180,55 @@ function changedFileList(root) {
   const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
   return [...new Set([...(tracked.status === 0 ? String(tracked.stdout || '').split('\n') : []), ...(untracked.status === 0 ? String(untracked.stdout || '').split('\n') : [])].map(x => x.trim()).filter(Boolean))];
 }
+
+function promoteArchitectureAsCode(id) {
+  const source = runDir(id);
+  const root = productRoot(id);
+  const target = path.join(root, 'docs', 'architecture');
+  const decisions = path.join(target, 'decisions', id);
+  fs.mkdirSync(decisions, { recursive: true });
+
+  const copy = (from, to) => {
+    const sourceFile = path.join(source, from);
+    if (!fs.existsSync(sourceFile)) throw new Error(`architecture promotion missing ${from}`);
+    const targetFile = path.join(target, to);
+    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fs.copyFileSync(sourceFile, targetFile);
+  };
+
+  copy('05-architecture-assessment.md', path.join('decisions', id, 'assessment.md'));
+  copy('05-architecture-assessment.json', path.join('decisions', id, 'assessment.json'));
+  copy('05-architecture-options.md', path.join('decisions', id, 'options.md'));
+  copy('05-architecture-options.json', path.join('decisions', id, 'options.json'));
+  copy('05-architecture-selection.md', path.join('decisions', id, 'selection.md'));
+  copy('05-architecture-selection.json', path.join('decisions', id, 'selection.json'));
+  copy('05-target-architecture.md', 'target-architecture.md');
+  copy('05-target-architecture.json', 'target-architecture.json');
+  copy('05-c4-model.md', 'c4-model.md');
+  copy('05-c4-model.json', 'c4-model.json');
+  copy('05-architecture-migration.md', 'migration-plan.md');
+  copy('05-architecture-migration.json', 'migration-plan.json');
+
+  const c4 = readJson(path.join(source, '05-c4-model.json'));
+  if (!c4?.structurizrDsl) throw new Error('architecture promotion requires Structurizr DSL');
+  fs.writeFileSync(path.join(target, 'workspace.dsl'), c4.structurizrDsl.trim() + '\n');
+
+  const index = [
+    '# Architecture as code',
+    '',
+    `Generated from whole-app refactor run **${id}** after explicit human architecture selection.`,
+    '',
+    '- `target-architecture.md` — selected architecture contract and fitness functions',
+    '- `c4-model.md` / `c4-model.json` — C4 model',
+    '- `workspace.dsl` — Structurizr DSL source model',
+    '- `migration-plan.md` — dependency/risk-aware migration waves',
+    `- `decisions/${id}/` — assessment, alternatives/trade-offs, and human decision evidence`,
+    '',
+    'The generated model is part of the implementation diff and should be reviewed/updated when architecture changes.',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(target, 'README.md'), index);
+}
 function analysisRoles(wf, state, scope = 'auto', root = ROOT, id = null) {
   const existing = state?.selectedRoles?.analysis;
   if (Array.isArray(existing) && existing.length) return existing;
@@ -440,6 +489,9 @@ function executeStage(id, wf, stage, args = {}) {
       const p=refactorCheckpointProblems(id);
       if(p.length) throw new Error('refactor implementation missing verified checkpoint(s): '+p.join('; '));
     }
+    if (stage.id === 'architecture-migration' && readRefactorScope(id) === 'whole_app') {
+      promoteArchitectureAsCode(id);
+    }
     if (stage.id === 'behavior-equivalence' && readMode(id) === 'behavior_preserving_refactor') {
       const baseline=readJson(path.join(runDir(id),'04-behavior-baseline.json'))||{};
       const invariants=readJson(path.join(runDir(id),'04-refactor-invariants.json'))||{};
@@ -552,4 +604,4 @@ try {
   else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
-module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope };
+module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
