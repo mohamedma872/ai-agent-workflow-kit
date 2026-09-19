@@ -4,16 +4,14 @@
  *
  * While a /feature run is active (ai/runs/_active) and ai/runs/<id>/plan.approved
  * does not exist:
- *   - Edit / Write / MultiEdit / NotebookEdit / apply_patch outside ai/runs/ → deny
- *   - git commit → deny
- * Writing plan.approved (or `runs.js approve`) is the human's act → ask, except
- * in eval mode (AI_EVAL=1) where nobody is there: the gate opens once
- * 06-plan.md exists and is non-trivial.
+ *   - structured edits outside ai/runs/ are denied;
+ *   - apply_patch is denied;
+ *   - shell commands that can mutate files are denied unless they are scoped to
+ *     ai/runs/ or an approved workflow helper;
+ *   - git commit is denied.
  *
- * Direct shell mutation of plan.approved / _active is denied. This matters in a
- * multi-executor workflow: an implementation agent must not be able to open or
- * close the gate by touching workflow state directly.
- * Values (protected paths) come from guard.yaml next to this file.
+ * Approval is a human action. Direct mutation of plan.approved / _active is
+ * denied; use runs.js approve so the guard can ask the user.
  */
 const fs = require('fs');
 const path = require('path');
@@ -30,31 +28,59 @@ function activeRun() {
 const evalMode = () => process.env.AI_EVAL === '1';
 function gateOpen(id) {
   const dir = path.join(RUNS, id);
-  if (fs.existsSync(path.join(dir, 'plan.approved'))) {return true;}
-  if (evalMode()) { const p = path.join(dir, '06-plan.md'); return fs.existsSync(p) && fs.statSync(p).size >= 200; }
+  if (fs.existsSync(path.join(dir, 'plan.approved'))) return true;
+  if (evalMode()) {
+    const p = path.join(dir, '06-plan.md');
+    return fs.existsSync(p) && fs.statSync(p).size >= 200;
+  }
   return false;
 }
 
+const WORKFLOW_HELPER_RE = /\bnode\s+ai\/tasks\/feature\/runs\.js\s+(?:start|status|set|select-roles|set-role|evidence|reconcile|approve|close|selftest)\b/;
+const RUN_PATH_RE = /(?:^|[\s'"=])(?:\.\/)?ai\/runs\//;
+const SHELL_WRITE_RE = new RegExp([
+  String.raw`(?:^|[;&|]\s*)(?:touch|rm|mv|cp|tee|truncate|install|ln|dd|mkdir|rmdir|patch)\b`,
+  String.raw`\bsed\s+-[^;&|]*i\b`,
+  String.raw`\bperl\s+(?:-[^\s]*i[^\s]*|-pi|-ip)\b`,
+  String.raw`(?:^|[^<])(?:>>|>)(?!=)`,
+  String.raw`\bpython3?\b.*(?:open\s*\([^)]*,\s*['"][wax+]|write_text\s*\(|write_bytes\s*\(|shutil\.(?:copy|move)|os\.(?:remove|rename|replace|mkdir|makedirs))`,
+  String.raw`\bnode\b[^;&|]*(?:-e\s+)?[^;&|]*(?:writeFile|appendFile|copyFile|rename|unlink|rm|mkdir)(?:Sync)?\s*\(`,
+  String.raw`\bruby\b[^;&|]*(?:File\.(?:write|open|rename|delete)|IO\.write)`,
+].join('|'));
+
 function mutatesWorkflowMarker(cmd) {
-  if (!/(?:plan\.approved|ai\/runs\/_active)/.test(cmd)) {return false;}
-  return /(?:^|[;&|]\s*)(?:touch|rm|mv|cp|tee|truncate|install|ln|dd|python3?|node\s+-e|ruby|perl|sed\s+-i)\b|(?:>|>>)|(?:writeFile|appendFile|unlink|rename)Sync?\s*\(/.test(cmd);
+  if (!/(?:plan\.approved|ai\/runs\/_active)/.test(cmd)) return false;
+  return SHELL_WRITE_RE.test(cmd) || /(?:writeFile|appendFile|unlink|rename)Sync?\s*\(/.test(cmd);
+}
+
+function isRunScopedWrite(cmd) {
+  if (!SHELL_WRITE_RE.test(cmd)) return false;
+  if (!RUN_PATH_RE.test(cmd)) return false;
+
+  const repoPaths = String(cmd).match(/(?:\.\/)?(?:ai|src|app|lib|android|ios|packages|apps|docs|\.github|\.claude|\.codex)\/[A-Za-z0-9_./-]+/g) || [];
+  return repoPaths.length > 0 && repoPaths.every(p => p.replace(/^\.\//, '').startsWith('ai/runs/'));
+}
+
+function shellMutationProblem(cmd) {
+  if (!SHELL_WRITE_RE.test(cmd)) return null;
+  if (WORKFLOW_HELPER_RE.test(cmd)) return null;
+  if (isRunScopedWrite(cmd)) return null;
+  return 'plan gate: shell command can mutate repository files before plan approval; write only under ai/runs/ or wait for approval';
 }
 
 module.exports = {
   rules(payload, ctx, { deny, ask }) {
     const id = activeRun();
-    if (!id) {return;}
+    if (!id) return;
     const tool = payload.tool_name || '';
     const input = payload.tool_input || {};
     const rel = p => ctx.rel(String(p || ''));
-    const gate = (cfg().plan_gate || {});
+    const gate = cfg().plan_gate || {};
     const runPrefix = 'ai/runs/';
     const target = rel(input.file_path || input.notebook_path || '');
     const cmd = String(input.command || '');
     const shell = tool === 'Bash' || tool === 'Shell';
 
-    // Approval is a human action. The official helper asks; direct shell
-    // mutation is never accepted because it would make the marker forgeable.
     const isMarker = /(^|\/)ai\/runs\/[^/]+\/plan\.approved$/.test(target);
     const isApproveCmd = shell && /ai\/tasks\/feature\/runs\.js\s+approve\b/.test(cmd);
     if (shell && mutatesWorkflowMarker(cmd) && !isApproveCmd) {
@@ -62,14 +88,28 @@ module.exports = {
       return;
     }
     if ((isMarker && ['Write', 'Edit'].includes(tool)) || isApproveCmd) {
-      if (!evalMode()) {ask(`plan gate: approving the plan for run "${id}" — allow only if you have read and approved ai/runs/${id}/06-plan.md`);}
+      if (!evalMode()) ask(`plan gate: approving the plan for run "${id}" — allow only if you have read and approved ai/runs/${id}/06-plan.md`);
       return;
     }
-    if (gateOpen(id)) {return;}
+    if (gateOpen(id)) return;
 
-    const message = gate.message || `plan gate: run "${id}" has no approved plan yet — finish ai/runs/${id}/06-plan.md, get approval (AskUserQuestion, then plan.approved), then edit`;
-    if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && !target.startsWith(runPrefix)) {deny(`${message} (${target || 'file'})`);}
-    if (/^apply_patch$/i.test(tool)) {deny(message);}
-    if (shell && /\bgit\s+commit\b/.test(cmd)) {deny(`plan gate: no commits before the plan for run "${id}" is approved`);}
+    const message = gate.message || `plan gate: run "${id}" has no approved plan yet — finish ai/runs/${id}/06-plan.md, get approval, then edit`;
+    if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && !target.startsWith(runPrefix)) {
+      deny(`${message} (${target || 'file'})`);
+      return;
+    }
+    if (/^apply_patch$/i.test(tool)) {
+      deny(message);
+      return;
+    }
+    if (shell && /\bgit\s+commit\b/.test(cmd)) {
+      deny(`plan gate: no commits before the plan for run "${id}" is approved`);
+      return;
+    }
+    if (shell) {
+      const problem = shellMutationProblem(cmd);
+      if (problem) deny(problem);
+    }
   },
+  _test: { SHELL_WRITE_RE, isRunScopedWrite, shellMutationProblem },
 };

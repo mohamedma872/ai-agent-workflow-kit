@@ -1,0 +1,89 @@
+- name: security-exported-component
+  role: security
+  fixture: ai/tasks/subagent/fixtures/android-exported/AndroidManifest.xml
+  ask: Identify the concrete security issue in this manifest.
+  must_report:
+    - name: exported-component-without-permission
+      severity: high
+      any_of: ["exported + permission", "exported + protected"]
+
+- name: android-runtime-permission
+  role: android
+  fixture: ai/tasks/subagent/fixtures/android-permission/MainActivity.kt
+  ask: Review the runtime permission flow.
+  must_report:
+    - name: missing-runtime-permission-path
+      severity: high
+      any_of: ["permission + request", "camera + permission"]
+
+- name: ios-universal-link
+  role: ios
+  fixture: ai/tasks/subagent/fixtures/ios-link/AssociatedDomains.entitlements
+  ask: Review universal-link configuration.
+  must_report:
+    - name: associated-domain-gap
+      severity: medium
+      any_of: ["applinks + domain", "associated + domain"]
+
+- name: flutter-platform-channel
+  role: flutter
+  fixture: ai/tasks/subagent/fixtures/flutter-channel/channel.dart
+  ask: Review the platform-channel invocation for robustness.
+  must_report:
+    - name: platform-channel-error-handling
+      severity: medium
+      any_of: ["methodchannel + error", "invokeMethod + exception"]
+
+- name: react-native-new-architecture
+  role: react-native
+  fixture: ai/tasks/subagent/fixtures/react-native/NativeLegacyModule.ts
+  ask: Review compatibility with React Native New Architecture/TurboModules.
+  must_report:
+    - name: new-architecture-compatibility
+      severity: high
+      any_of: ["turbomodule + legacy", "new architecture + module"]
+
+- name: api-breaking-nullability
+  role: api-contract
+  fixture: ai/tasks/subagent/fixtures/api-contract/schema.graphql
+  ask: Review this schema change for client compatibility.
+  must_report:
+    - name: breaking-nullability
+      severity: high
+      any_of: ["non-null + breaking", "nullable + compatibility"]
+
+- name: migration-breaking-sdk
+  role: dependency-migration
+  fixture: ai/tasks/subagent/fixtures/migration/package.json
+  ask: Review the dependency migration risk described in the fixture.
+  must_report:
+    - name: migration-step
+      severity: high
+      any_of: ["react-native + migration", "upgrade + breaking"]
+
+- name: performance-safe-loop
+  role: performance-review
+  fixture: ai/tasks/subagent/fixtures/safe-performance/sum.js
+  ask: Review for a concrete performance regression. Do not invent one when evidence is insufficient.
+  forbidden_findings:
+    - "critical"
+    - "memory leak"
+
+
+- name: architecture-layer-cycle
+  role: architect
+  fixture: ai/tasks/subagent/fixtures/architecture-cycle/modules.txt
+  ask: Review the module dependency direction and identify the concrete architecture issue.
+  must_report:
+    - name: module-cycle
+      severity: high
+      any_of: ["cycle + module", "dependency + cycle"]
+
+- name: qa-missing-negative-case
+  role: qa-plan
+  fixture: ai/tasks/subagent/fixtures/qa-plan/acceptance.md
+  ask: Derive the missing negative test case from the acceptance requirement.
+  must_report:
+    - name: missing-negative-test
+      severity: medium
+      any_of: ["invalid token + test", "expired token + negative"]
