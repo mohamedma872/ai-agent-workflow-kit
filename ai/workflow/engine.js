@@ -31,7 +31,7 @@ const MOBILE_EVIDENCE = path.join(ROOT, 'ai', 'tasks', 'feature', 'mobile-eviden
 const WORKFLOW_FILE = path.join(ROOT, 'ai', 'workflows', 'feature.yaml');
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
-const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor']);
+const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -134,7 +134,7 @@ function saveScope(id, scope) { fs.mkdirSync(engineDir(id), { recursive: true })
 function readScope(id) { const data = readJson(scopeFile(id)); return data?.scope && VALID_SCOPES.has(data.scope) ? data.scope : 'auto'; }
 function saveMode(id, mode) {
   fs.mkdirSync(engineDir(id), { recursive: true });
-  const payload = { mode: mode.mode, reason: mode.reason, detectedAt: new Date().toISOString() };
+  const payload = { mode: mode.mode, reason: mode.reason, refactorScope: mode.refactorScope || null, scopeReason: mode.scopeReason || null, detectedAt: new Date().toISOString() };
   fs.writeFileSync(modeFile(id), JSON.stringify(payload, null, 2) + '\n');
   const state = loadState(id); if (state) {
     state.workflowMode = payload;
@@ -148,6 +148,10 @@ function saveMode(id, mode) {
 function readMode(id) {
   const state = loadState(id); if (state?.workflowMode?.mode) return state.workflowMode.mode;
   return readJson(modeFile(id))?.mode || 'feature';
+}
+function readRefactorScope(id) {
+  const state = loadState(id); if (state?.workflowMode?.refactorScope) return state.workflowMode.refactorScope;
+  return readJson(modeFile(id))?.refactorScope || null;
 }
 
 function doctorReport(scope) {
@@ -235,6 +239,10 @@ function evaluateCondition(name, id, state) {
   if (name === 'behavior_preserving_refactor') {
     const value = readMode(id) === 'behavior_preserving_refactor';
     return { known: true, value, reason: value ? 'behavior-preserving refactor mode' : 'normal feature mode' };
+  }
+  if (name === 'whole_app_refactor') {
+    const value = readMode(id) === 'behavior_preserving_refactor' && readRefactorScope(id) === 'whole_app';
+    return { known: true, value, reason: value ? 'whole-app behavior-preserving refactor' : 'not a whole-app refactor' };
   }
   if (name === 'mobile_or_ui_feature') {
     const requirement = state?.evidence?.mobileScreenshots?.requirement || 'unclassified';
@@ -395,7 +403,11 @@ function executeStage(id, wf, stage, args = {}) {
   if (stage.type === 'human_gate') {
     const marker = path.join(runDir(id), stage.marker || 'plan.approved');
     if (!fs.existsSync(marker) || phaseStatus(loadState(id), stage.id) !== 'pass') {
-      console.log(`${id}: waiting for human approval — review ai/runs/${id}/06-plan.md then run: node ai/tasks/feature/runs.js approve ${id}`);
+      if (stage.id === 'architecture-selection') {
+        console.log(`${id}: waiting for architecture selection — review ai/runs/${id}/05-architecture-assessment.md and 05-architecture-options.md then run: npm run refactor:architecture -- ${id} <option-id>`);
+      } else {
+        console.log(`${id}: waiting for human approval — review ai/runs/${id}/06-plan.md then run: node ai/tasks/feature/runs.js approve ${id}`);
+      }
       return 'waiting';
     }
     return 'pass';
@@ -456,11 +468,11 @@ function ensureRunWorktree(id) {
   process.env.AI_WORKFLOW_RUNTIME_ROOT = ROOT;
   return wt;
 }
-function start(id, requestText, explicitScope, explicitMode) {
+function start(id, requestText, explicitScope, explicitMode, explicitRefactorScope) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(id || '')) throw new Error('invalid run id');
   if (!requestText) throw new Error('workflow:start requires --request "..." or --request-file FILE');
   const scope = inferScope(requestText, explicitScope);
-  const mode = detectRefactorMode(requestText, explicitMode);
+  const mode = detectRefactorMode(requestText, explicitMode, explicitRefactorScope);
   const report = preflight(null, scope, false);
   ensureRun(id);
   const wt = ensureRunWorktree(id);
@@ -515,6 +527,8 @@ function selftest() {
   assert.strictEqual(SUPPORTED_CONDITIONS.has('mobile_or_ui_feature'), true);
   assert.strictEqual(SUPPORTED_CONDITIONS.has('behavior_preserving_refactor'), true);
   assert.strictEqual(detectRefactorMode('Refactor this repository without changing behavior').mode, 'behavior_preserving_refactor');
+  assert.strictEqual(detectRefactorMode('Refactor the entire application without changing behavior').refactorScope, 'whole_app');
+  assert.strictEqual(SUPPORTED_CONDITIONS.has('whole_app_refactor'), true);
   console.log('workflow engine selftest OK');
 }
 
@@ -525,7 +539,7 @@ try {
   else if (cmd === 'start') {
     let request = args.request || null;
     if (!request && args['request-file']) request = fs.readFileSync(path.resolve(args['request-file']), 'utf8');
-    start(idArg, request, args.scope, args.mode);
+    start(idArg, request, args.scope, args.mode, args['refactor-scope']);
     if (!args['no-run']) runLoop(idArg, {});
   } else if (cmd === 'next') {
     const state = loadState(idArg);
@@ -535,7 +549,7 @@ try {
   else if (cmd === 'resume' || cmd === 'run') { preflightExisting(idArg, args.scope); runLoop(idArg, {}); }
   else if (cmd === 'worktree') { const wt = inspectWorktree(ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
   else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(ROOT, idArg, { force: !!args.force }), null, 2));
-  else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
+  else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
-module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode };
+module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope };
