@@ -7,7 +7,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/mohamedma872/ai-agent-workflow-runtime"
+    "url": "https://github.com/mohamedma872/ai-agent-workflow-kit"
   },
   "scripts": {
     "guard:check": "node ai/guard/engine.js --check",
