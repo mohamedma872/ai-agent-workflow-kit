@@ -40,6 +40,7 @@ jobs:
           node --check ai/workflow/refactor-contract-diff.js
           node --check ai/workflow/refactor-telemetry.js
           node --check ai/workflow/refactor-report.js
+          node --check ai/workflow/refactor-cli.js
           node --check ai/workflow/conditions.js
           node --check ai/workflow/artifacts.js
           node --check ai/workflow/execution-policy.js

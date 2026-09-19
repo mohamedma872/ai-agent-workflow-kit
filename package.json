@@ -63,7 +63,11 @@
     "workflow:refactor:checkpoint": "node ai/workflow/refactor-checkpoints.js record",
     "workflow:refactor:gates:selftest": "node ai/workflow/refactor-coverage.js --selftest && node ai/workflow/refactor-checkpoints.js --selftest && node ai/workflow/refactor-verification-matrix.js --selftest",
     "workflow:refactor:report": "node ai/workflow/refactor-report.js",
-    "workflow:refactor:equivalence:selftest": "node ai/workflow/refactor-contract-diff.js --selftest && node ai/workflow/refactor-telemetry.js --selftest"
+    "workflow:refactor:equivalence:selftest": "node ai/workflow/refactor-contract-diff.js --selftest && node ai/workflow/refactor-telemetry.js --selftest",
+    "refactor": "node ai/workflow/refactor-cli.js run",
+    "refactor:approve": "node ai/workflow/refactor-cli.js approve",
+    "refactor:status": "node ai/workflow/refactor-cli.js status",
+    "refactor:report": "node ai/workflow/refactor-report.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
