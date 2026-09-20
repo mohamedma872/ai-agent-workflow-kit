@@ -1,7 +1,7 @@
 {
   "name": "ai-agent-workflow-runtime",
-  "version": "1.2.0",
-  "description": "Deterministic agentic engineering runtime with guarded stage progression, evidence, evals, and Claude/Codex execution.",
+  "version": "1.3.0",
+  "description": "Deterministic agentic engineering runtime with Hybrid RAG, guarded stage progression, evidence, evals, and Claude/Codex execution.",
   "license": "MIT",
   "author": "Mohamed Elsdody",
   "private": true,
@@ -30,6 +30,8 @@
     "workflow:worktree": "node ai/workflow/engine.js worktree",
     "workflow:cleanup": "node ai/workflow/engine.js cleanup",
     "workflow:artifacts:check": "node ai/workflow/artifacts.js check-schemas",
+    "workflow:rag": "node ai/rag/hybrid-rag.js",
+    "workflow:rag:selftest": "node ai/rag/hybrid-rag.js --selftest",
     "workflow:progress": "node ai/workflow/progress.js",
     "workflow:progress:watch": "node ai/workflow/progress.js --watch",
     "workflow:progress:json": "node ai/workflow/progress.js --json",

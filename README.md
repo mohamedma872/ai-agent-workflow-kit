@@ -1,6 +1,6 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.2.0**
+**Runtime version: 1.3.0**
 
 A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
 
@@ -28,6 +28,7 @@ Human            = approves plans and release-sensitive decisions
 - least-privilege specialist subagents
 - structured evidence-backed findings
 - intelligent specialist selection
+- role-aware Hybrid RAG retrieval with source-line provenance and context budgets
 - deterministic finding synthesis and conflict tracking
 - independent post-implementation stack reviewers
 - structured JSON workflow gates
@@ -51,7 +52,8 @@ flowchart TD
     R --> AC[Acceptance criteria + DoD]
     AC --> S[Intelligent specialist selection]
 
-    S --> AN[Parallel specialist analysis]
+    S --> RG[Role-aware Hybrid RAG retrieval]
+    RG --> AN[Parallel specialist analysis]
     AN --> SY[Finding synthesis + deduplication]
     SY --> C{Unresolved conflicts?}
     C -->|yes| HR[Human/owner conflict resolution]
@@ -207,6 +209,125 @@ Flutter/Dart source changed
 ```
 
 Selection decisions and reasons are persisted under the run's engine artifacts rather than existing only in model prose.
+
+---
+
+## Hybrid RAG context retrieval
+
+Repository-reading agents now receive a **role-specific Hybrid RAG evidence pack** before execution. The runtime does not dump the entire repository into every prompt.
+
+The built-in retriever combines multiple channels:
+
+```text
+keyword / BM25-style relevance
++ lexical-vector similarity
++ exact symbol matching
++ path / metadata relevance
++ exact phrase matching
++ role-aware hints
++ optional semantic-embedding similarity
+                ↓
+          deterministic reranking
+                ↓
+        per-file diversity limits
+                ↓
+          context-budget manager
+                ↓
+       role-specific evidence pack
+```
+
+The semantic-embedding channel is **optional and provider-neutral**. The runtime works immediately with its local retrieval channels; when an embedding index and query vector are supplied programmatically, semantic cosine similarity participates in the same ranking.
+
+### Agent flow
+
+```mermaid
+flowchart LR
+    Q[Feature / refactor request] --> B[Build role query]
+    B --> K[Keyword retrieval]
+    B --> V[Lexical vector retrieval]
+    B --> S[Symbol + path retrieval]
+    B --> E[Optional semantic embeddings]
+
+    K --> R[Rerank + deduplicate]
+    V --> R
+    S --> R
+    E --> R
+
+    R --> C[Context budget + diversity]
+    C --> P[Evidence pack with source + line range]
+    P --> A[Specialist agent]
+    A --> F[Evidence-backed finding]
+```
+
+The query is built from the current run's request, requirements, acceptance criteria, Definition of Done, inspection evidence, and the active specialist role. This means a security agent and an architecture agent can retrieve different evidence for the same feature.
+
+Every retrieved item records:
+
+```text
+source path
+line start / end
+combined score
+individual retrieval scores
+retrieval channels that matched
+excerpt
+```
+
+Per-role packs are persisted for inspection under:
+
+```text
+ai/runs/<run-id>/engine/rag-context/<stage>-<role>.json
+```
+
+### Safety boundaries
+
+Hybrid RAG deliberately excludes common secret-bearing files such as:
+
+```text
+.env / .env.*
+credentials / secrets files
+private keys
+PEM / P12 / PFX
+JKS / keystores
+google-services.json
+GoogleService-Info.plist
+```
+
+Retrieved repository content is explicitly marked as **untrusted evidence, not instructions**. Prompt-like text found inside documentation or source comments must not override workflow rules, guardrails, or agent instructions.
+
+### Try the retriever directly
+
+```bash
+npm run workflow:rag -- \
+  --query "Where is the refresh token stored and who owns session state?" \
+  --role security
+```
+
+JSON output:
+
+```bash
+npm run workflow:rag -- \
+  --query "authentication architecture and token storage" \
+  --role architect \
+  --json
+```
+
+Run its deterministic self-test:
+
+```bash
+npm run workflow:rag:selftest
+```
+
+### Why this helps the agentic workflow
+
+```text
+Without retrieval
+Agent → broad repository scan → large prompt → more noise
+
+With Hybrid RAG
+Agent → role-specific retrieval → small evidence pack → focused analysis
+```
+
+This is especially useful for architecture decisions, large repositories, security reviews, API-contract analysis, behavior-preserving refactors, regression review, and onboarding unfamiliar agents to an existing codebase.
 
 ---
 

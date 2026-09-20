@@ -4,6 +4,16 @@
 
 - No unreleased runtime changes.
 
+## 1.3.0 — 2026-09-20
+
+- Added role-aware Hybrid RAG context retrieval for repository-reading workflow agents.
+- Added keyword/BM25-style scoring, lexical-vector similarity, exact symbol matching, path/metadata relevance, phrase matching, role-aware hints, and an optional semantic-embedding scoring channel.
+- Added deterministic reranking, per-file diversity, excerpt limits, and a total context budget so agents receive focused evidence instead of repository dumps.
+- Added source path and line-range provenance to every retrieved context item and persisted per-role retrieval packs under `ai/runs/<run-id>/engine/rag-context/`.
+- Added sensitive-file exclusion for environment files, credentials/secrets, private keys, keystores, and platform service credential files.
+- Added an explicit prompt-injection boundary: retrieved repository text is treated as untrusted evidence, never runtime instructions.
+- Added `workflow:rag` and `workflow:rag:selftest` commands plus CI coverage for retrieval, semantic-channel injection, sensitive-file filtering, and subagent context integration.
+
 ## 1.2.0 — 2026-09-19
 
 - Added whole-app behavior-preserving refactor scope and the simplified `refactor:app` command.
