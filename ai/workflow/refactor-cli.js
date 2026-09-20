@@ -4,8 +4,11 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { runtimeRoot, projectRoot, stateRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const STATE_ROOT = stateRoot();
 const ENGINE = path.join(ROOT, 'ai', 'workflow', 'engine.js');
 const RUNS = path.join(ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const PROGRESS = path.join(ROOT, 'ai', 'workflow', 'progress.js');
@@ -17,7 +20,7 @@ function fail(message) {
 
 function execNode(file, args) {
   const result = spawnSync(process.execPath, [file, ...args], {
-    cwd: ROOT,
+    cwd: PROJECT_ROOT,
     env: process.env,
     stdio: 'inherit',
   });
@@ -64,7 +67,7 @@ Status:
 
 if (!id) fail('A run id is required, for example RF-001 or APP-RF-001.');
 
-const stateFile = path.join(ROOT, 'ai', 'runs', id, 'state.json');
+const stateFile = path.join(STATE_ROOT, id, 'state.json');
 
 if (command === 'run' || command === 'app') {
   if (!fs.existsSync(stateFile)) {
