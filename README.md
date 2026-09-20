@@ -15,6 +15,8 @@ Human            = approves plans and release-sensitive decisions
 
 > Agents perform engineering work. The runtime owns progression, permissions, evidence, and completion.
 
+Security reporting and supported security-update versions are documented in [SECURITY.md](SECURITY.md).
+
 ---
 
 ## What this runtime provides
@@ -632,50 +634,82 @@ These tests reject a refactor that produces cleaner code while changing observab
 
 ---
 
-## Standalone CLI — use the runtime inside an existing project
+## Standalone CLI
 
-The runtime can now operate as development tooling **outside the product dependency graph**.
+The standalone `agentic` CLI runs the workflow against an existing project without adding the runtime to the application's production dependencies.
+
+Supported project types include:
+
+```text
+Android native
+iOS native
+React Native
+Flutter
+Frontend
+Backend
+Generic Git repositories
+```
+
+### How the standalone CLI is separated from the product
 
 ```text
 Installed Agentic Runtime
         │
         │ agentic
         ▼
-Existing Git repository
- Android / iOS / RN / Flutter / FE / BE
+Existing project repository
         │
         ├── source code
         ├── tests
         ├── docs / ADRs / API specs
-        │
-        ├── .agentic/          lightweight config
-        ├── .agentic-runs/     runtime state · gitignored
+        ├── .agentic/          development configuration
+        ├── .agentic-runs/     workflow state · gitignored
         └── .ai-worktrees/     isolated product worktrees · gitignored
 ```
 
-The installed runtime and the product repository have separate roots:
+The CLI is development tooling only. It is not imported into Android, iOS, web, or backend application code and should not appear in APK/AAB/IPA/web/backend production artifacts.
 
-```text
-runtime root   → workflow engine, agents, guardrails, evals, schemas
-project root   → the user's existing repository
-product root   → .ai-worktrees/<run-id>
-state root     → .agentic-runs/
-```
+### 1. Install the CLI
 
-This means the workflow runtime is **not imported by application code** and does not become an Android/iOS/web/backend production dependency.
-
-### Initialize an existing repository
-
-With the CLI available on `PATH`:
+Current distribution uses a Git clone plus `npm link`:
 
 ```bash
-cd ~/projects/my-app
+git clone https://github.com/mohamedma872/ai-agent-workflow-kit
+cd ai-agent-workflow-kit
 
-agentic init
-agentic doctor
+npm ci
+npm link
 ```
 
-`agentic init` detects the repository stack and creates development-only configuration:
+Verify:
+
+```bash
+agentic version
+```
+
+Expected for this release:
+
+```text
+1.5.1
+```
+
+On macOS/Linux the tracked CLI entry point is executable. If an older clone previously reported `zsh: permission denied: agentic`, update that clone to 1.5.1 or newer and relink it.
+
+### 2. Initialize an existing project
+
+Move to the project you want Agentic to work on:
+
+```bash
+cd ~/projects/my-project
+```
+
+Run:
+
+```bash
+agentic init
+```
+
+The initializer detects the stack and creates lightweight development-only configuration:
 
 ```text
 .agentic/
@@ -686,83 +720,256 @@ agentic doctor
 
 .codex/
 └── hooks.json
+
+.mcp.json
 ```
 
-It also ignores:
+Runtime state and temporary worktrees are gitignored:
 
 ```text
 .agentic-runs/
 .ai-worktrees/
 ```
 
-For detected mobile projects, initialization also preserves your existing MCP servers and adds Appium MCP when no Appium alias is already configured:
+`agentic init` is idempotent. You can run it again after upgrading Agentic. Existing MCP servers are preserved.
 
-```json
-{
-  "appium-mcp": {
-    "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "appium-mcp@latest"],
-    "timeout": 100
-  }
-}
+For detected mobile projects, Appium MCP is added when no Appium alias is already configured.
+
+### 3. Check project readiness
+
+Run:
+
+```bash
+agentic doctor
 ```
 
-`agentic doctor` recognizes `appium`, `appium-mcp`, or `mcp-appium` from project or global Claude/Codex MCP configuration. A globally installed package without MCP-client configuration is reported separately rather than as if the package were absent.
+Or choose an explicit scope:
 
-Claude receives a runtime-owned session settings file through its CLI, so the runtime guard does not need to be copied into the application. Codex uses the small project hook adapter to call back into `agentic guard-hook`.
+```bash
+agentic doctor --scope mobile
+agentic doctor --scope frontend
+agentic doctor --scope backend
+agentic doctor --scope all
+```
 
-### One command surface across stacks
+The doctor checks relevant capabilities such as:
 
 ```text
-Android native ─┐
-iOS native     ─┤
-React Native   ─┤
-Flutter        ─┼──► agentic ─► same deterministic runtime
-Frontend       ─┤
-Backend        ─┤
-Generic Git    ─┘
+Node / Git
+Claude / Codex
+MCP configuration
+Android SDK / ADB
+Xcode / simulator
+Flutter
+Appium MCP
+frontend package manager/build
+backend runtime/build/test tooling
 ```
 
-Normal feature:
+Example:
+
+```text
+Workflow doctor — scope=mobile — android
+
+✓ node                         required available
+✓ git                          required available
+✓ agent:claude                required available
+✓ agent:codex                 required available
+✓ android:adb                 required available
+✓ android:sdk                 required available
+✓ mcp:appium                  required available
+
+READY: required capabilities available
+```
+
+For Appium, the doctor normalizes these names to the same capability:
+
+```text
+appium
+appium-mcp
+mcp-appium
+```
+
+It can discover Appium from project configuration or global Claude/Codex MCP configuration. A globally installed package that is not configured as an MCP server is reported separately.
+
+### 4. Start a feature
+
+Example:
 
 ```bash
 agentic feature AUTH-104 \
   --request "Add biometric login with password fallback"
+```
 
+The runtime automatically performs:
+
+```text
+Request
+  ↓
+Doctor
+  ↓
+Isolated worktree
+  ↓
+Requirements
+  ↓
+Acceptance Criteria + Definition of Done
+  ↓
+Repository inspection
+  ↓
+Hybrid RAG
+  ↓
+Relevant specialist agents
+  ↓
+Finding synthesis / conflict detection
+  ↓
+Implementation plan
+  ↓
+HUMAN APPROVAL
+```
+
+The workflow stops when the plan requires approval.
+
+### 5. Watch progress
+
+One-time status:
+
+```bash
+agentic progress AUTH-104
+```
+
+Live progress:
+
+```bash
 agentic progress AUTH-104 --watch
 ```
 
-The workflow stops at the real human plan gate. After reviewing the generated plan:
+JSON:
+
+```bash
+agentic progress AUTH-104 --json
+```
+
+Example:
+
+```text
+AUTH-104
+
+██████████████████░░░░░░ 71%
+
+✓ Requirements
+✓ Acceptance Criteria
+✓ Hybrid RAG
+✓ Architecture analysis
+✓ Security analysis
+✓ QA analysis
+✓ Plan
+✓ Human approval
+
+→ Implementation
+○ Build & Tests
+○ Independent Reviews
+○ Final Verification
+```
+
+### 6. Approve the implementation plan
+
+Review the generated plan first, then run:
 
 ```bash
 agentic approve AUTH-104
 ```
 
-Local behavior-preserving refactor:
+Approval is a real human gate. Coding agents are not allowed to run `agentic approve` themselves.
+
+After approval the runtime continues through implementation, build/test, independent reviews, fixes, evidence, and final verification.
+
+### 7. Resume a paused run
+
+If a run stops because of a recoverable prerequisite or execution problem:
+
+```bash
+agentic resume AUTH-104
+```
+
+Completed stages are not blindly repeated.
+
+### 8. Behavior-preserving refactor
+
+Start:
 
 ```bash
 agentic refactor RF-001 \
   --request "Refactor authentication without changing behavior"
+```
 
+The refactor workflow adds behavior-safety stages:
+
+```text
+Behavior baseline
+  ↓
+Preservation invariants
+  ↓
+Characterization coverage
+  ↓
+Plan
+  ↓
+Human approval
+  ↓
+Incremental implementation/checkpoints
+  ↓
+Build & tests
+  ↓
+Behavior regression review
+  ↓
+Contract diff
+  ↓
+Behavior equivalence
+```
+
+Approve:
+
+```bash
 agentic approve RF-001
+```
+
+Final report:
+
+```bash
 agentic report RF-001
 ```
 
-Whole-app architecture refactor:
+### 9. Whole-application refactor
+
+Start:
 
 ```bash
 agentic refactor-app APP-001 \
-  --request "Modernize the whole application architecture without changing behavior"
+  --request "Modernize the complete application architecture without changing behavior"
+```
 
-# inspect generated architecture alternatives
+The runtime generates an architecture assessment and multiple architecture options before implementation.
+
+When the options are ready, the human chooses one:
+
+```bash
 agentic architecture APP-001 B
+```
 
-# later, after reviewing the implementation/migration plan
+Architecture selection is also a human-only gate.
+
+After reviewing the selected target architecture, C4 model, migration waves, and implementation plan:
+
+```bash
 agentic approve APP-001
 ```
 
-Hybrid RAG inspection:
+The runtime then performs implementation, architecture-compliance review, behavior-equivalence verification, and final verification.
+
+### 10. Inspect Hybrid RAG directly
+
+Normal workflows invoke Hybrid RAG automatically.
+
+For debugging or exploration:
 
 ```bash
 agentic rag \
@@ -770,10 +977,187 @@ agentic rag \
   --role security
 ```
 
-Target another repository without changing directories:
+Architecture example:
+
+```bash
+agentic rag \
+  --query "How are feature modules coupled?" \
+  --role architect
+```
+
+Results include repository paths and line ranges so retrieved context remains inspectable.
+
+### 11. Work with another repository without changing directories
 
 ```bash
 agentic --project ~/projects/banking-android doctor
+```
+
+Feature example:
+
+```bash
+agentic --project ~/projects/payment-backend \
+  feature PAY-101 \
+  --request "Add idempotency to payment creation"
+```
+
+### 12. Stack examples
+
+Android:
+
+```bash
+agentic feature AND-101 \
+  --request "Add certificate pinning"
+```
+
+iOS:
+
+```bash
+agentic feature IOS-101 \
+  --request "Add Face ID authentication"
+```
+
+React Native:
+
+```bash
+agentic feature RN-101 \
+  --request "Add offline-first profile caching"
+```
+
+Flutter:
+
+```bash
+agentic feature FL-101 \
+  --request "Add biometric authentication"
+```
+
+Frontend:
+
+```bash
+agentic feature WEB-101 \
+  --request "Add an accessible checkout flow"
+```
+
+Backend:
+
+```bash
+agentic feature BE-101 \
+  --request "Add idempotency to the payment API"
+```
+
+The command surface stays the same. Stack detection and specialist selection determine which analysis, tests, and verification paths are relevant.
+
+### 13. Check and install Agentic updates
+
+Check for updates without modifying the runtime:
+
+```bash
+agentic update --check
+```
+
+Machine-readable status:
+
+```bash
+agentic update --check --json
+```
+
+Install the latest stable runtime:
+
+```bash
+agentic update
+```
+
+Update flow:
+
+```text
+fetch origin/main
+      ↓
+verify runtime clone is clean
+      ↓
+verify safe fast-forward
+      ↓
+update runtime
+      ↓
+npm ci
+      ↓
+npm link
+      ↓
+runtime version check
+      ↓
+standalone CLI self-test
+      ↓
+external-project isolation self-test
+      ↓
+success
+```
+
+The updater changes only the installed Agentic runtime clone. It does not update or reset your Android/iOS/RN/Flutter/frontend/backend project.
+
+If installation or verification fails after Git moves, the updater restores the previous runtime commit and attempts to restore dependencies and the global link.
+
+### 14. Inspect or clean a run worktree
+
+Show the isolated worktree for a run:
+
+```bash
+agentic worktree AUTH-104
+```
+
+Clean it when it is safe to remove:
+
+```bash
+agentic cleanup AUTH-104
+```
+
+Force cleanup is available only when you intentionally accept the risk:
+
+```bash
+agentic cleanup AUTH-104 --force
+```
+
+The runtime refuses unsafe cleanup when unpublished or uncommitted work would be lost unless force is explicitly requested.
+
+### 15. Command reference
+
+| Command | Purpose |
+|---|---|
+| `agentic init` | initialize an existing Git project |
+| `agentic doctor` | validate project/runtime prerequisites |
+| `agentic feature <id> --request "..."` | start a normal feature workflow |
+| `agentic resume <id>` | resume a paused workflow |
+| `agentic approve <id>` | human approval of the implementation plan |
+| `agentic progress <id> [--watch]` | show workflow progress |
+| `agentic refactor <id> --request "..."` | start a behavior-preserving refactor |
+| `agentic refactor-app <id> --request "..."` | start a whole-application architecture refactor |
+| `agentic architecture <id> <option>` | record the human architecture choice |
+| `agentic report <id>` | generate/read the refactor verification report |
+| `agentic rag --query "..."` | inspect Hybrid RAG retrieval directly |
+| `agentic worktree <id>` | inspect run worktree state |
+| `agentic cleanup <id>` | safely remove a run worktree |
+| `agentic version` | show runtime version |
+| `agentic update --check` | check for a newer stable runtime |
+| `agentic update` | safely update the installed runtime |
+
+### 16. Recommended first run
+
+For a new project:
+
+```bash
+cd ~/projects/my-project
+
+agentic init
+agentic doctor
+
+agentic feature FEAT-001 \
+  --request "Describe the feature you want to implement"
+
+agentic progress FEAT-001 --watch
+```
+
+When the plan is ready, review it and run:
+
+```bash
+agentic approve FEAT-001
 ```
 
 ### Standalone workflow visualization
@@ -796,9 +1180,7 @@ flowchart TD
     E --> G[GitHub verification]
 ```
 
-### Guardrail boundary
-
-For standalone runs:
+### Human authority and guardrails
 
 ```text
 Runtime policy
@@ -813,98 +1195,15 @@ Claude / Codex tool request
 Decision against PRODUCT WORKTREE
 ```
 
-The agent cannot promote itself through the human gates. Attempts from an executing coding agent to run:
+The agent cannot promote itself through human gates. Attempts from an executing coding agent to run:
 
 ```bash
 agentic approve ...
 agentic architecture ...
 ```
 
-are rejected by the workflow guard. Those commands must be run directly by the human.
+are rejected by the workflow guard.
 
-### Current distribution state
-
-Runtime 1.5.0 provides the standalone command, external-project architecture, and a safe updater for the current clone + `npm link` distribution.
-
-Initial installation:
-
-```bash
-git clone https://github.com/mohamedma872/ai-agent-workflow-kit
-cd ai-agent-workflow-kit
-npm ci
-npm link
-```
-
-Then `agentic` is available globally on that machine.
-
-### Updating an existing installation
-
-Check without changing the runtime:
-
-```bash
-agentic update --check
-```
-
-Example:
-
-```text
-Current: 1.5.0  abc1234567
-Latest:  1.6.0  def9876543
-
-Update available. Run:
-  agentic update
-```
-
-Apply the update:
-
-```bash
-agentic update
-```
-
-The updater:
-
-```text
-fetch origin/main
-      ↓
-verify runtime clone is clean
-      ↓
-refuse custom/contributor branches
-      ↓
-fast-forward local main only
-      ↓
-npm ci
-      ↓
-npm link
-      ↓
-runtime version check
-      ↓
-standalone CLI self-test
-      ↓
-external-project isolation self-test
-      ↓
-success
-```
-
-If dependency installation or verification fails after Git has moved, the updater restores the exact previous runtime commit and attempts to restore its dependencies/link.
-
-The updater modifies **only the Agentic runtime clone**. It does not update or reset the Android/iOS/RN/Flutter/frontend/backend project where you happen to run the command.
-
-If a user is still on 1.4.1 or older, that older CLI does not contain `agentic update` yet. Bootstrap once:
-
-```bash
-cd /path/to/ai-agent-workflow-kit
-git pull --ff-only
-npm ci
-npm link
-```
-
-After that, future updates use:
-
-```bash
-agentic update
-```
-
-Native single-file installers/Homebrew/WinGet packaging can later use the same updater/version-check contract without changing the workflow core.
 
 ---
 
