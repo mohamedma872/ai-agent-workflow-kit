@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Agent|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agentic guard-hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
