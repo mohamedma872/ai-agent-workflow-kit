@@ -1,6 +1,6 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.3.0**
+**Runtime version: 1.4.0**
 
 A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
 
@@ -29,6 +29,7 @@ Human            = approves plans and release-sensitive decisions
 - structured evidence-backed findings
 - intelligent specialist selection
 - role-aware Hybrid RAG retrieval with source-line provenance and context budgets
+- standalone `agentic` CLI for existing Android/iOS/RN/Flutter/frontend/backend repositories
 - deterministic finding synthesis and conflict tracking
 - independent post-implementation stack reviewers
 - structured JSON workflow gates
@@ -628,6 +629,194 @@ The hardening suite includes adversarial cases for:
 - null/default/error fallback behavior
 
 These tests reject a refactor that produces cleaner code while changing observable behavior.
+
+---
+
+## Standalone CLI — use the runtime inside an existing project
+
+The runtime can now operate as development tooling **outside the product dependency graph**.
+
+```text
+Installed Agentic Runtime
+        │
+        │ agentic
+        ▼
+Existing Git repository
+ Android / iOS / RN / Flutter / FE / BE
+        │
+        ├── source code
+        ├── tests
+        ├── docs / ADRs / API specs
+        │
+        ├── .agentic/          lightweight config
+        ├── .agentic-runs/     runtime state · gitignored
+        └── .ai-worktrees/     isolated product worktrees · gitignored
+```
+
+The installed runtime and the product repository have separate roots:
+
+```text
+runtime root   → workflow engine, agents, guardrails, evals, schemas
+project root   → the user's existing repository
+product root   → .ai-worktrees/<run-id>
+state root     → .agentic-runs/
+```
+
+This means the workflow runtime is **not imported by application code** and does not become an Android/iOS/web/backend production dependency.
+
+### Initialize an existing repository
+
+With the CLI available on `PATH`:
+
+```bash
+cd ~/projects/my-app
+
+agentic init
+agentic doctor
+```
+
+`agentic init` detects the repository stack and creates development-only configuration:
+
+```text
+.agentic/
+├── config.yaml
+├── knowledge.yaml
+├── guardrails.yaml
+└── README.md
+
+.codex/
+└── hooks.json
+```
+
+It also ignores:
+
+```text
+.agentic-runs/
+.ai-worktrees/
+```
+
+Claude receives a runtime-owned session settings file through its CLI, so the runtime guard does not need to be copied into the application. Codex uses the small project hook adapter to call back into `agentic guard-hook`.
+
+### One command surface across stacks
+
+```text
+Android native ─┐
+iOS native     ─┤
+React Native   ─┤
+Flutter        ─┼──► agentic ─► same deterministic runtime
+Frontend       ─┤
+Backend        ─┤
+Generic Git    ─┘
+```
+
+Normal feature:
+
+```bash
+agentic feature AUTH-104 \
+  --request "Add biometric login with password fallback"
+
+agentic progress AUTH-104 --watch
+```
+
+The workflow stops at the real human plan gate. After reviewing the generated plan:
+
+```bash
+agentic approve AUTH-104
+```
+
+Local behavior-preserving refactor:
+
+```bash
+agentic refactor RF-001 \
+  --request "Refactor authentication without changing behavior"
+
+agentic approve RF-001
+agentic report RF-001
+```
+
+Whole-app architecture refactor:
+
+```bash
+agentic refactor-app APP-001 \
+  --request "Modernize the whole application architecture without changing behavior"
+
+# inspect generated architecture alternatives
+agentic architecture APP-001 B
+
+# later, after reviewing the implementation/migration plan
+agentic approve APP-001
+```
+
+Hybrid RAG inspection:
+
+```bash
+agentic rag \
+  --query "Where is the refresh token stored?" \
+  --role security
+```
+
+Target another repository without changing directories:
+
+```bash
+agentic --project ~/projects/banking-android doctor
+```
+
+### Standalone workflow visualization
+
+```mermaid
+flowchart TD
+    CLI[agentic CLI] --> P[Target project]
+    P --> D[Doctor + stack detection]
+    D --> W[Isolated product worktree]
+    W --> R[Requirements + AC + DoD]
+    R --> H[Hybrid RAG]
+    H --> S[Relevant specialist agents]
+    S --> Y[Synthesis + conflict gate]
+    Y --> PL[Implementation plan]
+    PL --> A{Human approval}
+    A --> I[Implementation]
+    I --> T[Build + tests]
+    T --> V[Independent reviews]
+    V --> E[Evidence / equivalence / architecture compliance]
+    E --> G[GitHub verification]
+```
+
+### Guardrail boundary
+
+For standalone runs:
+
+```text
+Runtime policy
+     │
+     ▼
+agentic guard-hook
+     │
+     ▼
+Claude / Codex tool request
+     │
+     ▼
+Decision against PRODUCT WORKTREE
+```
+
+The agent cannot promote itself through the human gates. Attempts from an executing coding agent to run:
+
+```bash
+agentic approve ...
+agentic architecture ...
+```
+
+are rejected by the workflow guard. Those commands must be run directly by the human.
+
+### Current distribution state
+
+Runtime 1.4.0 provides the standalone command and external-project architecture. During repository development, expose the command with:
+
+```bash
+npm ci
+npm link
+```
+
+Then `agentic` is available globally on that machine. Native single-file installers/Homebrew/WinGet packaging can be added on top of this CLI without changing the workflow core.
 
 ---
 
