@@ -199,14 +199,16 @@ project:
   outward_writes_require_confirmation: true
 `);
 
-  writeIfMissing(path.join(agentic, 'README.md'), `# Agentic project configuration
-
-This directory contains development-time configuration for the standalone Agentic Workflow CLI.
-
-It is not imported by application code and must not be packaged into production artifacts.
-
-Runtime state is stored in `.agentic-runs/` and isolated worktrees in `.ai-worktrees/`; both are gitignored.
-`);
+  writeIfMissing(path.join(agentic, 'README.md'), [
+    '# Agentic project configuration',
+    '',
+    'This directory contains development-time configuration for the standalone Agentic Workflow CLI.',
+    '',
+    'It is not imported by application code and must not be packaged into production artifacts.',
+    '',
+    'Runtime state is stored in .agentic-runs/ and isolated worktrees in .ai-worktrees/; both are gitignored.',
+    '',
+  ].join('\\n'));
 
   writeIfMissing(path.join(project, '.mcp.json'), JSON.stringify({
     mcpServers: {
