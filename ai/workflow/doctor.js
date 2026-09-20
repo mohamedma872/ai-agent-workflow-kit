@@ -6,8 +6,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+const { runtimeRoot, projectRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
 
 function parseArgs(argv) {
@@ -56,7 +58,7 @@ function majorFrom(text) {
   return m ? Number(m[1]) : null;
 }
 
-function detectStacks(root = ROOT) {
+function detectStacks(root = PROJECT_ROOT) {
   const pkg = readJson(path.join(root, 'package.json')) || {};
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
   const stacks = [];
@@ -77,9 +79,10 @@ function detectStacks(root = ROOT) {
 }
 
 function mcpConfig() {
-  const actual = path.join(ROOT, '.mcp.json');
+  const projectActual = path.join(PROJECT_ROOT, '.mcp.json');
+  const runtimeActual = path.join(ROOT, '.mcp.json');
   const example = path.join(ROOT, '.mcp.json.example');
-  const file = fs.existsSync(actual) ? actual : example;
+  const file = fs.existsSync(projectActual) ? projectActual : fs.existsSync(runtimeActual) ? runtimeActual : example;
   return { file, data: readJson(file) || { mcpServers: {} }, usingExample: file === example };
 }
 
@@ -96,7 +99,7 @@ function requiredForArea(scope, area, stacks) {
   if (scope === 'auto') return area === 'mobile' && hasMobile(stacks);
   return false;
 }
-function packageManager(root = ROOT) {
+function packageManager(root = PROJECT_ROOT) {
   if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
   if (fs.existsSync(path.join(root, 'yarn.lock'))) return 'yarn';
   return 'npm';
@@ -133,7 +136,7 @@ function runChecks(options = {}) {
   const scope = String(options.scope || 'auto').toLowerCase();
   if (!VALID_SCOPES.has(scope)) throw new Error(`invalid doctor scope "${scope}"; use auto, mobile, frontend, backend, or all`);
   const checks = [];
-  const stacks = detectStacks();
+  const stacks = detectStacks(PROJECT_ROOT);
   const nodeMajor = Number(process.versions.node.split('.')[0]);
   if (nodeMajor < 20) checks.push(incompatible('node', 'runtime', true, `Node ${process.versions.node}`, 'Install Node.js 20+'));
   else checks.push(result('node', 'runtime', true, true, `Node ${process.versions.node}`));
@@ -197,11 +200,11 @@ function runChecks(options = {}) {
     if (appiumConfigured && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', false, `current Node ${process.versions.node}; Appium MCP may require Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
   } else checks.push(notApplicable('mobile:project', 'mobile', 'no mobile stack detected'));
 
-  const pkg = readJson(path.join(ROOT, 'package.json')) || {};
+  const pkg = readJson(path.join(PROJECT_ROOT, 'package.json')) || {};
   const frontendDetected = stacks.includes('frontend');
   const frontendRequired = requiredForArea(scope, 'frontend', stacks);
   if (frontendDetected || scope === 'frontend' || scope === 'all') {
-    const pm = packageManager();
+    const pm = packageManager(PROJECT_ROOT);
     const pmOk = commandExists(pm);
     checks.push(result('frontend:package-manager', 'frontend', frontendRequired, pmOk, `${pm}${pmOk ? ' available' : ' not found'}`, `Install ${pm} or use the repository's configured package manager`));
     const build = !!pkg.scripts?.build;
@@ -225,7 +228,7 @@ function runChecks(options = {}) {
     if (!backendDetected) checks.push(notApplicable('backend:project', 'backend', 'no backend project detected; explicit backend scope cannot infer a project'));
   } else checks.push(notApplicable('backend:project', 'backend', 'no backend stack detected; backend prerequisites are optional'));
 
-  return { generatedAt: new Date().toISOString(), root: ROOT, scope, stacks, checks };
+  return { generatedAt: new Date().toISOString(), root: PROJECT_ROOT, runtimeRoot: ROOT, scope, stacks, checks };
 }
 
 function blockingChecks(report) { return report.checks.filter(c => c.required && c.status !== 'available'); }
