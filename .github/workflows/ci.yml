@@ -25,6 +25,9 @@ jobs:
           node --check ai/workflow/router.js
           node --check ai/workflow/subagent-contracts.js
           node --check ai/workflow/subagent-context.js
+          node --check ai/workflow/paths.js
+          node --check ai/cli/agentic.js
+          node --check ai/cli/external-project-selftest.js
           node --check ai/rag/hybrid-rag.js
           node --check ai/workflow/subagent-context-selftest.js
           node --check ai/workflow/subagent-selector.js
@@ -95,6 +98,8 @@ jobs:
           node ai/guard/subagent-capabilities.js --selftest
           node ai/workflow/subagent-context-selftest.js
           node ai/rag/hybrid-rag.js --selftest
+          node ai/cli/agentic.js selftest
+          node ai/cli/external-project-selftest.js
           node ai/workflow/subagent-selector.js --selftest
           node ai/workflow/finding-synthesis.js --selftest
           node ai/workflow/conflict-tracker.js --selftest

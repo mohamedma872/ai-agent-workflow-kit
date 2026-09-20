@@ -7,9 +7,11 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { inspect: inspectWorktree } = require('./worktree');
+const { runtimeRoot, projectRoot, stateRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
-const RUNS = path.join(ROOT, 'ai', 'runs');
+const ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const RUNS = stateRoot();
 const WORKFLOW_FILE = path.join(ROOT, 'ai', 'workflows', 'feature.yaml');
 const CONTEXT = 'agentic-workflow-verification';
 const TERMINAL_OK = new Set(['pass', 'skipped']);
@@ -40,8 +42,8 @@ function git(root, args) {
 }
 function currentSha(id) {
   const wt = inspectWorktree(ROOT, id);
-  if (wt?.currentSha) return { sha: wt.currentSha, productRoot: wt.path || wt.sourceRoot || ROOT, branch: wt.branch || null };
-  return { sha: git(ROOT, ['rev-parse', 'HEAD']), productRoot: ROOT, branch: git(ROOT, ['branch', '--show-current']) || null };
+  if (wt?.currentSha) return { sha: wt.currentSha, productRoot: wt.path || wt.sourceRoot || PROJECT_ROOT, branch: wt.branch || null };
+  return { sha: git(PROJECT_ROOT, ['rev-parse', 'HEAD']), productRoot: PROJECT_ROOT, branch: git(PROJECT_ROOT, ['branch', '--show-current']) || null };
 }
 function parseRepoSlug(value) {
   if (!value) return null;
@@ -132,7 +134,7 @@ function evaluateRun(id, state, options = {}) {
       refactor,
       verifiedAt: new Date().toISOString(),
     },
-    productRoot: identity.productRoot || ROOT,
+    productRoot: identity.productRoot || PROJECT_ROOT,
   };
 }
 
@@ -143,7 +145,7 @@ function writeSummary(id, summary) {
   return file;
 }
 function gh(args, options = {}) {
-  const res = spawnSync('gh', args, { cwd: options.cwd || ROOT, encoding: 'utf8', timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  const res = spawnSync('gh', args, { cwd: options.cwd || PROJECT_ROOT, encoding: 'utf8', timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   if (res.error || res.status !== 0) throw new Error(res.error?.message || String(res.stderr || res.stdout || '').trim() || `gh exited ${res.status}`);
   return String(res.stdout || '').trim();
 }
@@ -166,7 +168,7 @@ function publish(id, options = {}) {
   if (!sha) throw new Error('cannot publish without a commit SHA');
   const stateName = evaluated.success ? 'success' : 'failure';
   const description = evaluated.success ? (evaluated.summary.refactor?.verificationLevel==='partial' ? `workflow ${id} verified; refactor behavior coverage partial` : `workflow ${id} verified`) : `workflow ${id} incomplete/invalid`;
-  const payload = { repo, sha, context: CONTEXT, state: stateName, description, summaryFile: path.relative(ROOT, file) };
+  const payload = { repo, sha, context: CONTEXT, state: stateName, description, summaryFile: path.relative(PROJECT_ROOT, file) };
   if (options.dryRun) return { ...payload, published: false, dryRun: true, problems: evaluated.problems };
   if (spawnSync('which', ['gh'], { stdio: 'ignore' }).status !== 0) throw new Error('`gh` is not on PATH; install/authenticate GitHub CLI before publishing');
   const prior = latestContextStatus(repo, sha, evaluated.productRoot);

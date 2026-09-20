@@ -3,9 +3,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { stateRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
-const RUNS = path.join(ROOT, 'ai', 'runs');
+const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
 
 const PHASES = [

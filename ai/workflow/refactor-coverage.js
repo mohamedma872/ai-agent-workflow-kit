@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const fs=require('fs'); const path=require('path'); const assert=require('assert');
-const ROOT=path.resolve(__dirname,'..','..'); const RUNS=path.join(ROOT,'ai','runs');
+const {stateRoot}=require('./paths'); const RUNS=stateRoot();
 function waiverFile(runId){return path.join(RUNS,runId,'engine','refactor-waivers.json');}
 function loadWaivers(runId){try{return JSON.parse(fs.readFileSync(waiverFile(runId),'utf8'));}catch{return {schemaVersion:1,runId,waivers:[]};}}
 function saveWaivers(runId,data){const file=waiverFile(runId);fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+'.tmp-'+process.pid+'-'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2)+'\n');fs.renameSync(tmp,file);}

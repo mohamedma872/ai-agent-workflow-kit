@@ -17,7 +17,10 @@ function safeRunId(id) { if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(id || '')
 function repoCommonDir(root) { return path.resolve(root, git(root, ['rev-parse', '--git-common-dir'])); }
 function repoTop(root) { return path.resolve(root, git(root, ['rev-parse', '--show-toplevel'])); }
 function worktreesRoot(root) { return path.join(repoTop(root), '.ai-worktrees'); }
-function metadataFile(runtimeRoot, id) { return path.join(runtimeRoot, 'ai', 'runs', id, 'engine', 'worktree.json'); }
+function metadataFile(runtimeRoot, id) {
+  const runs = process.env.AI_WORKFLOW_STATE_ROOT ? path.resolve(process.env.AI_WORKFLOW_STATE_ROOT) : path.join(runtimeRoot, 'ai', 'runs');
+  return path.join(runs, id, 'engine', 'worktree.json');
+}
 function branchName(id) { return `ai/run/${safeRunId(id).replace(/[^A-Za-z0-9._-]/g, '-')}`; }
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function atomicJson(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true }); const temp = `${file}.tmp-${process.pid}-${Date.now()}`; fs.writeFileSync(temp, JSON.stringify(value, null, 2) + '\n'); fs.renameSync(temp, file); }

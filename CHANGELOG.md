@@ -4,6 +4,18 @@
 
 - No unreleased runtime changes.
 
+## 1.4.0 — 2026-09-20
+
+- Added the first standalone `agentic` CLI facade for existing Android, iOS, React Native, Flutter, frontend, backend, and generic Git repositories.
+- Added explicit separation between runtime root, target project root, product worktree, and workflow state root so an installed runtime no longer assumes its own repository is the product.
+- Added `agentic init` with lightweight `.agentic/` project configuration, state/worktree gitignore entries, stack detection, and a Codex guard-hook adapter.
+- Added CLI commands for doctor, feature, resume, approve, progress, local refactor, whole-app refactor, architecture selection, reports, Hybrid RAG, worktree inspection/cleanup, and versioning.
+- Added a session-scoped Claude settings adapter so standalone workflows use runtime guardrails without copying Claude runtime files into the target project.
+- Added `agentic guard-hook` so external-project Claude/Codex hooks call the installed runtime guard policy while decisions are evaluated against the product worktree.
+- Hardened human gates so agents cannot invoke `agentic approve` or `agentic architecture` themselves.
+- Moved standalone run state to `.agentic-runs/` and isolated worktrees to `.ai-worktrees/` in the target repository; neither is part of application build dependencies.
+- Added external-project self-tests proving state/worktree isolation from the installed runtime.
+
 ## 1.3.0 — 2026-09-20
 
 - Added role-aware Hybrid RAG context retrieval for repository-reading workflow agents.

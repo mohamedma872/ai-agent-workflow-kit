@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const fs=require('fs'); const path=require('path'); const assert=require('assert');
-const ROOT=path.resolve(__dirname,'..','..'); const RUNS=path.join(ROOT,'ai','runs');
+const {stateRoot}=require('./paths'); const RUNS=stateRoot();
 function file(runId){return path.join(RUNS,runId,'engine','refactor-checkpoints.json');}
 function planFile(runId){return path.join(RUNS,runId,'06-plan.json');}
 function load(filePath,fallback){try{return JSON.parse(fs.readFileSync(filePath,'utf8'));}catch{return fallback;}}

@@ -217,9 +217,10 @@ function projectOwnsGuard(root) {
 }
 
 function makeCtx(payload) {
-  const root = process.env.CLAUDE_PROJECT_DIR || payload.cwd || process.cwd();
-  const policy = loadPolicy(root);
-  const packs = loadPacks(root);
+  const root = path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT || payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const policyRoot = path.resolve(process.env.AI_WORKFLOW_RUNTIME_ROOT || process.env.CLAUDE_PROJECT_DIR || root);
+  const policy = loadPolicy(policyRoot);
+  const packs = loadPacks(policyRoot);
   const secretFiles = [...policy.secretFiles, ...packs.flatMap(p => p.secretFiles)];
   const guardedFiles = [...policy.guardedFiles, ...packs.flatMap(p => p.guardedFiles)];
   const rel = p => (path.isAbsolute(p) ? path.relative(root, p) : p);
@@ -227,7 +228,7 @@ function makeCtx(payload) {
   let secretValues = [];
   for (const p of packs) { if (p.secrets) { try { secretValues = secretValues.concat(p.secrets() || []); } catch { /* ignore */ } } }
   return {
-    root, policy, packs, rel,
+    root, policyRoot, policy, packs, rel,
     isSecretPath: p => secretFiles.some(x => x.test(clean(p))),
     isGuardedPath: p => guardedFiles.some(x => x.test(clean(p))),
     evidence: packs.flatMap(p => p.evidence),

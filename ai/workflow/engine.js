@@ -21,14 +21,16 @@ const { materialize, sidecarForMarkdown, schemaContract } = require('./artifacts
 const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('./execution-policy');
 const { attemptsFor, recordAttempt } = require('./attempts');
 const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree } = require('./worktree');
+const { runtimeRoot, projectRoot, stateRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
-const RUNS = path.join(ROOT, 'ai', 'runs');
-const RUNS_TOOL = path.join(ROOT, 'ai', 'tasks', 'feature', 'runs.js');
-const ROUTER = path.join(ROOT, 'ai', 'workflow', 'router.js');
-const DOCTOR = path.join(ROOT, 'ai', 'workflow', 'doctor.js');
-const MOBILE_EVIDENCE = path.join(ROOT, 'ai', 'tasks', 'feature', 'mobile-evidence.js');
-const WORKFLOW_FILE = path.join(ROOT, 'ai', 'workflows', 'feature.yaml');
+const RUNTIME_ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const RUNS = stateRoot();
+const RUNS_TOOL = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
+const ROUTER = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'router.js');
+const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
+const MOBILE_EVIDENCE = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'mobile-evidence.js');
+const WORKFLOW_FILE = path.join(RUNTIME_ROOT, 'ai', 'workflows', 'feature.yaml');
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
 const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
@@ -56,8 +58,8 @@ function phaseStatus(state, id) { return state?.phases?.[id]?.status || 'pending
 function depsSatisfied(stage, state) { return (stage.needs || []).every(dep => TERMINAL_OK.has(phaseStatus(state, dep))); }
 function productRoot(id) {
   if (process.env.AI_WORKFLOW_PRODUCT_ROOT) return path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT);
-  const wt = id ? inspectWorktree(ROOT, id) : null;
-  return wt?.exists ? wt.path : ROOT;
+  const wt = id ? inspectWorktree(RUNTIME_ROOT, id) : null;
+  return wt?.exists ? wt.path : PROJECT_ROOT;
 }
 
 function nextEligibleStage(wf, state) {
@@ -72,7 +74,7 @@ function nextEligibleStage(wf, state) {
 
 function spawnRaw(bin, args, options = {}) {
   const res = spawnSync(bin, args, {
-    cwd: options.cwd || ROOT,
+    cwd: options.cwd || PROJECT_ROOT,
     env: { ...process.env, ...(options.env || {}) },
     encoding: 'utf8',
     maxBuffer: 512 * 1024 * 1024,
@@ -103,7 +105,7 @@ function selectRoles(id, group, roles) { return runs(id, ['select-roles', group,
 function conditionalState(id, phaseName, roleName, status, reason) { return runs(id, ['conditional', phaseName, roleName, status, ...(reason ? [reason] : [])], { print: false }); }
 
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
-function detectStacks(root = ROOT) {
+function detectStacks(root = PROJECT_ROOT) {
   const pkg = readJson(path.join(root, 'package.json')) || {};
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
   return {
@@ -155,11 +157,11 @@ function readRefactorScope(id) {
 }
 
 function doctorReport(scope) {
-  const res = spawnSync(process.execPath, [DOCTOR, '--json', '--scope', scope], { cwd: ROOT, env: process.env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 30 * 1000 });
+  const res = spawnSync(process.execPath, [DOCTOR, '--json', '--scope', scope], { cwd: PROJECT_ROOT, env: process.env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 30 * 1000 });
   let report = null;
   try { report = JSON.parse(res.stdout || '{}'); } catch { /* show human result below */ }
   if (res.error || res.status !== 0 || !report) {
-    const human = spawnSync(process.execPath, [DOCTOR, '--scope', scope], { cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 30 * 1000 });
+    const human = spawnSync(process.execPath, [DOCTOR, '--scope', scope], { cwd: PROJECT_ROOT, env: process.env, encoding: 'utf8', timeout: 30 * 1000 });
     if (human.stdout) process.stdout.write(human.stdout);
     if (human.stderr) process.stderr.write(human.stderr);
     throw new Error(`workflow preflight failed for scope=${scope}; fix required prerequisites before workflow work starts`);
@@ -229,7 +231,7 @@ function promoteArchitectureAsCode(id) {
   ].join('\n');
   fs.writeFileSync(path.join(target, 'README.md'), index);
 }
-function analysisRoles(wf, state, scope = 'auto', root = ROOT, id = null) {
+function analysisRoles(wf, state, scope = 'auto', root = PROJECT_ROOT, id = null) {
   const existing = state?.selectedRoles?.analysis;
   if (Array.isArray(existing) && existing.length) return existing;
   const stage = wf.stages.find(x => x.id === 'analysis') || {};
@@ -237,7 +239,7 @@ function analysisRoles(wf, state, scope = 'auto', root = ROOT, id = null) {
   if (id) { fs.mkdirSync(engineDir(id), { recursive: true }); fs.writeFileSync(path.join(engineDir(id), 'subagent-selection-analysis.json'), JSON.stringify(selected, null, 2) + '\n'); }
   return selected.roles;
 }
-function reviewRoles(wf, state, root = ROOT, id = null) {
+function reviewRoles(wf, state, root = PROJECT_ROOT, id = null) {
   const existing = state?.selectedRoles?.reviews;
   if (Array.isArray(existing) && existing.length) return existing;
   const stage = wf.stages.find(x => x.id === 'reviews') || {};
@@ -327,7 +329,7 @@ function executeRole(id, wf, stage, roleName, output) {
   if (schemaName && !output) throw new Error(`${stage.id}/${roleName}: structured artifact schema ${schemaName} requires an artifact path`);
   const structuredInstruction = schemaName ? `\nThis stage is machine-gated. Return ONLY one JSON object, with no Markdown fence or prose. It MUST match this JSON Schema exactly enough for validation and MUST use runId "${id}". The runtime will validate it, save the .json sidecar, and render the human-readable Markdown.\n\nJSON Schema:\n${schemaContract(schemaName)}\n` : '';
   const refactorInstruction = readMode(id)==='behavior_preserving_refactor' && roleName==='implementation'
-    ? `\nRefactor mode is active. Execute the approved refactorIncrements strictly in order. After each logical increment, run its required verification and record evidence with:\nnode ${path.join(ROOT,'ai','workflow','refactor-checkpoints.js')} record ${id} <increment-id> --diff "<git diff reference or summary>" --test "<verification command/result>"\nDo not combine business/UI redesign with mechanical restructuring and do not continue to the next increment until the current checkpoint is recorded.\n`
+    ? `\nRefactor mode is active. Execute the approved refactorIncrements strictly in order. After each logical increment, run its required verification and record evidence with:\nnode ${path.join(RUNTIME_ROOT,'ai','workflow','refactor-checkpoints.js')} record ${id} <increment-id> --diff "<git diff reference or summary>" --test "<verification command/result>"\nDo not combine business/UI redesign with mechanical restructuring and do not continue to the next increment until the current checkpoint is recorded.\n`
     : '';
   const body = `# Deterministic workflow assignment\n\nRun: ${id}\nStage: ${stage.id}\nRole: ${roleName}\nScope: ${readScope(id)}\nProduct worktree: ${productRoot(id)}\n\nThe workflow engine owns state. Perform only this stage responsibility. Do not advance stages or approve gates.\n${output ? schemaName ? `Return the structured artifact for ${output}.` : `Write your final stage artifact as the response; the engine stores it at ${output}.` : ''}${structuredInstruction}${refactorInstruction}\n${buildRoleContext({ runDir: runDir(id), productRoot: productRoot(id), contract: roleContract(roleName), excludeArtifact: output, roleName, stageId: stage.id })}\n`;
   fs.writeFileSync(prompt, body);
@@ -343,7 +345,7 @@ function executeRole(id, wf, stage, roleName, output) {
     const args = [ROUTER, 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
     if (rawOutput) args.push('--output-file', rawOutput);
     const child = spawnRaw(process.execPath, args, {
-      env: { FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
+      env: { FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
       timeout: timeoutMs + 15000,
     });
     if (child.error || child.status !== 0) {
@@ -358,12 +360,12 @@ function executeRole(id, wf, stage, roleName, output) {
         if (schemaName) materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
       }
-      refreshWorktree(ROOT, id);
+      refreshWorktree(RUNTIME_ROOT, id);
       return { ok: true, value: { executor, attemptId }, attemptId };
     } catch (error) {
       return { ok: false, exitType: 'deterministic', reason: `artifact/worktree validation failed: ${error.message}`, attemptId };
     } finally { if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* best effort */ } } }
-  }, entry => recordAttempt(ROOT, id, stage.id, roleName, entry));
+  }, entry => recordAttempt(RUNTIME_ROOT, id, stage.id, roleName, entry));
 
   if (!result.ok) throw new Error(`${stage.id}/${roleName}: ${result.reason}`);
   if (result.skipped) {
@@ -414,7 +416,7 @@ function executeConditional(id, wf, stage) {
       if (fresh?.evidence?.mobileScreenshots?.requirement !== 'required') throw new Error('mobile condition is true but evidence is not classified as required');
       if (fresh?.evidence?.mobileScreenshots?.execution?.status !== 'pass') {
         const worktree = productRoot(id);
-        command(process.execPath, [MOBILE_EVIDENCE, 'run', id], { env: { FEATURE_RUN_ID: id, AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: ROOT } });
+        command(process.execPath, [MOBILE_EVIDENCE, 'run', id], { env: { FEATURE_RUN_ID: id, AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS } });
       }
     } else executeRole(id, wf, stage, roleName, (wf.roles[roleName] || {}).artifact);
     conditionalState(id, stage.id, roleName, 'pass', result.reason);
@@ -515,9 +517,11 @@ function executeStage(id, wf, stage, args = {}) {
 }
 
 function ensureRunWorktree(id) {
-  const wt = ensureWorktree(ROOT, id, { sourceRoot: ROOT });
+  const wt = ensureWorktree(RUNTIME_ROOT, id, { sourceRoot: PROJECT_ROOT });
   process.env.AI_WORKFLOW_PRODUCT_ROOT = wt.path;
-  process.env.AI_WORKFLOW_RUNTIME_ROOT = ROOT;
+  process.env.AI_WORKFLOW_RUNTIME_ROOT = RUNTIME_ROOT;
+  process.env.AI_WORKFLOW_PROJECT_ROOT = PROJECT_ROOT;
+  process.env.AI_WORKFLOW_STATE_ROOT = RUNS;
   return wt;
 }
 function start(id, requestText, explicitScope, explicitMode, explicitRefactorScope) {
@@ -556,7 +560,7 @@ function runLoop(id, opts = {}) {
     const state = loadState(id);
     if (!state) throw new Error(`run ${id} does not exist`);
     const stage = nextEligibleStage(wf, state);
-    if (!stage) { console.log(`${id}: workflow complete`); refreshWorktree(ROOT, id); return 'complete'; }
+    if (!stage) { console.log(`${id}: workflow complete`); refreshWorktree(RUNTIME_ROOT, id); return 'complete'; }
     console.log(`${id}: ${stage.id} (${phaseStatus(state, stage.id)})`);
     const result = executeStage(id, wf, stage, opts);
     if (result === 'waiting' || result === 'dry-run') return result;
@@ -599,8 +603,8 @@ try {
     console.log(nextEligibleStage(workflow(), state)?.id || 'done');
   } else if (cmd === 'run-next') { preflightExisting(idArg, args.scope); runLoop(idArg, { once: true, 'dry-run': !!args['dry-run'] }); }
   else if (cmd === 'resume' || cmd === 'run') { preflightExisting(idArg, args.scope); runLoop(idArg, {}); }
-  else if (cmd === 'worktree') { const wt = inspectWorktree(ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
-  else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(ROOT, idArg, { force: !!args.force }), null, 2));
+  else if (cmd === 'worktree') { const wt = inspectWorktree(RUNTIME_ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
+  else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(RUNTIME_ROOT, idArg, { force: !!args.force }), null, 2));
   else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
