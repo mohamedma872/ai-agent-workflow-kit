@@ -6,6 +6,12 @@ defaults:
   confidence:
     min: 0
     max: 1
+  retrieval:
+    mode: hybrid_rag
+    top_k: 8
+    max_context_chars: 24000
+    max_excerpt_chars: 4200
+    max_per_file: 2
 
 roles:
   orchestration:
