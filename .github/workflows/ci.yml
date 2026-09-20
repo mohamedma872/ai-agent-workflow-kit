@@ -20,6 +20,9 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: CLI executable mode
+        run: test -x ai/cli/agentic.js
+
       - name: Syntax
         run: |
           node --check ai/workflow/router.js
