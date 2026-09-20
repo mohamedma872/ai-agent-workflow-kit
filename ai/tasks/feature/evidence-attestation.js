@@ -5,9 +5,12 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { runtimeRoot, projectRoot, stateRoot } = require('../../workflow/paths');
 
-const RUNTIME_ROOT = path.resolve(__dirname, '..', '..', '..');
-const PRODUCT_ROOT = process.env.AI_WORKFLOW_PRODUCT_ROOT ? path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT) : RUNTIME_ROOT;
+const RUNTIME_ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const STATE_ROOT = stateRoot();
+const PRODUCT_ROOT = process.env.AI_WORKFLOW_PRODUCT_ROOT ? path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT) : PROJECT_ROOT;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const REQUIRED_SESSION_FIELDS = ['sessionId', 'deviceId', 'appId', 'appVersion', 'buildNumber', 'buildArtifact', 'sessionStartedAt', 'sessionEndedAt'];
 
@@ -64,6 +67,10 @@ function displayBuildPath(abs) {
   const rel = path.relative(PRODUCT_ROOT, abs);
   return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : abs;
 }
+function displayEvidencePath(abs) {
+  const rel = path.relative(PROJECT_ROOT, abs);
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : abs;
+}
 function validateSessionMetadata(session, platform, attemptStartedMs) {
   for (const field of REQUIRED_SESSION_FIELDS) {
     const value = session[field];
@@ -111,13 +118,13 @@ function buildAttestation({ runId, attemptId, platforms, startedMs, deviceDir, s
       flavor: session.flavor || null, scheme: session.scheme || null, environment: session.environment || null,
       gitSha: head, workspaceFingerprint: workspace,
       buildArtifact: { path: displayBuildPath(buildAbs), sha256: hashPath(buildAbs), kind: fs.statSync(buildAbs).isDirectory() ? 'directory' : 'file' },
-      screenshots: files.map(name => ({ path: `ai/runs/${runId}/device/screenshots/${name}`, sha256: sha256(path.join(screenshotDir, name)) })),
+      screenshots: files.map(name => ({ path: displayEvidencePath(path.join(screenshotDir, name)), sha256: sha256(path.join(screenshotDir, name)) })),
     };
   });
   const evidence = {
     schemaVersion: 1, generatedBy: 'ai-agent-workflow-runtime', generatedAt: new Date().toISOString(), runId, attemptId, status: 'pass',
     gitSha: head, workspaceFingerprint: workspace, productRoot: PRODUCT_ROOT,
-    manifest: { path: `ai/runs/${runId}/device/mobile-device-qc.md`, sha256: sha256(manifestFile) }, platforms: platformEntries,
+    manifest: { path: displayEvidencePath(manifestFile), sha256: sha256(manifestFile) }, platforms: platformEntries,
   };
   const output = path.join(deviceDir, 'evidence.json');
   fs.writeFileSync(output, JSON.stringify(evidence, null, 2) + '\n');
@@ -125,7 +132,7 @@ function buildAttestation({ runId, attemptId, platforms, startedMs, deviceDir, s
 }
 function resolveEvidencePath(storedPath, evidenceFilePath) {
   if (path.isAbsolute(storedPath)) return storedPath;
-  for (const root of [PRODUCT_ROOT, RUNTIME_ROOT]) {
+  for (const root of [PRODUCT_ROOT, PROJECT_ROOT, STATE_ROOT, RUNTIME_ROOT]) {
     const candidate = path.resolve(root, storedPath);
     if (fs.existsSync(candidate)) return candidate;
   }
