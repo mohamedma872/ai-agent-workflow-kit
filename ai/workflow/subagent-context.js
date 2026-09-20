@@ -18,9 +18,10 @@ function retrievalSettings(contract){
  const cfg=specific===false||specific==='none'?{mode:'off'}:(specific||defaults||{});
  return {mode:String(cfg.mode||'off').toLowerCase(),topK:Number(cfg.top_k||cfg.topK||8),maxContextChars:Number(cfg.max_context_chars||cfg.maxContextChars||24000),maxExcerptChars:Number(cfg.max_excerpt_chars||cfg.maxExcerptChars||4200),maxPerFile:Number(cfg.max_per_file||cfg.maxPerFile||2)};
 }
-function retrievalQuery(runDir,roleName){
+function retrievalQuery(runDir,roleName,productRoot){
  const parts=[`workflow role: ${roleName||'unknown'}`];
  for(const f of ['00-request.md','01-requirements.md','02-acceptance-criteria.md','03-definition-of-done.md','04-inspection.md']){const t=read(path.join(runDir,f));if(t)parts.push(t.slice(0,7000));}
+ const changed=productRoot?changedFiles(productRoot):[];if(changed.length)parts.push('changed files:\n'+changed.join('\n'));
  return parts.join('\n\n');
 }
 function safeName(v){return String(v||'role').replace(/[^A-Za-z0-9._-]+/g,'-').slice(0,100);}
@@ -28,7 +29,7 @@ function hybridRagContext({runDir,productRoot,contract,roleName,stageId}){
  const cfg=retrievalSettings(contract);
  if(!['hybrid','hybrid_rag','hybrid-rag'].includes(cfg.mode))return '';
  if(!Array.isArray(contract?.tools)||!contract.tools.includes('repository_read')||!productRoot||!fs.existsSync(productRoot))return '';
- const pack=retrieve({root:productRoot,query:retrievalQuery(runDir,roleName),role:roleName,topK:cfg.topK,maxContextChars:cfg.maxContextChars,maxExcerptChars:cfg.maxExcerptChars,maxPerFile:cfg.maxPerFile});
+ const pack=retrieve({root:productRoot,query:retrievalQuery(runDir,roleName,productRoot),role:roleName,topK:cfg.topK,maxContextChars:cfg.maxContextChars,maxExcerptChars:cfg.maxExcerptChars,maxPerFile:cfg.maxPerFile});
  const outDir=path.join(runDir,'engine','rag-context');fs.mkdirSync(outDir,{recursive:true});
  fs.writeFileSync(path.join(outDir,`${safeName(stageId||'stage')}-${safeName(roleName||'role')}.json`),JSON.stringify(pack,null,2)+'\n');
  return formatContext(pack);
