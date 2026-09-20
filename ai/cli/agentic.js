@@ -320,7 +320,7 @@ function selftest() {
   const aliasProject = path.join(symlinkRoot, 'alias-project');
   fs.mkdirSync(realProject, { recursive: true });
   spawnSync('git', ['init', '-q'], { cwd: realProject });
-  fs.symlinkSync(realProject, aliasProject, 'dir');
+  fs.symlinkSync(realProject, aliasProject, process.platform === 'win32' ? 'junction' : 'dir');
   initProject(aliasProject);
   assert.strictEqual(gitRoot(aliasProject), canonicalPath(realProject));
   fs.rmSync(symlinkRoot, { recursive: true, force: true });
