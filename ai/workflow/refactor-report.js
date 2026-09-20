@@ -3,8 +3,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { stateRoot } = require('./paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
+const RUNS = stateRoot();
 
 function read(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -12,7 +13,7 @@ function read(file) {
 }
 
 function build(runId) {
-  const dir = path.join(ROOT, 'ai', 'runs', runId);
+  const dir = path.join(RUNS, runId);
   const engine = path.join(dir, 'engine');
   const mode = read(path.join(engine, 'mode.json')) || {};
   const architecture = {
