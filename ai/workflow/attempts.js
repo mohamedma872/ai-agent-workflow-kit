@@ -6,7 +6,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-function stateFile(root, runId) { return path.join(root, 'ai', 'runs', runId, 'state.json'); }
+function stateFile(root, runId) {
+  const runs = process.env.AI_WORKFLOW_STATE_ROOT ? path.resolve(process.env.AI_WORKFLOW_STATE_ROOT) : path.join(root, 'ai', 'runs');
+  return path.join(runs, runId, 'state.json');
+}
 
 function atomicWrite(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
