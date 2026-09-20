@@ -4,6 +4,12 @@
 
 - No unreleased runtime changes.
 
+## 1.5.3 — 2026-09-20
+
+- Fixed the external-project runtime self-test on macOS by comparing canonical physical paths instead of raw `/var` vs `/private/var` path strings.
+- Replaced the fragile worktree-path prefix assertion with a canonical containment check.
+- Added explicit symlinked-project coverage so external-project isolation is validated through aliased repository paths on macOS/Linux/Windows.
+
 ## 1.5.2 — 2026-09-20
 
 - Fixed standalone CLI project-root checks on macOS when temporary or symlinked paths resolve differently (for example `/var/...` vs `/private/var/...`).

@@ -17,6 +17,19 @@ function git(root, args) {
   return String(r.stdout || '').trim();
 }
 
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); }
+  catch { return resolved; }
+}
+
+function isInside(parent, child) {
+  const base = canonicalPath(parent);
+  const target = canonicalPath(child);
+  const rel = path.relative(base, target);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-external-'));
   const project = path.join(temp, 'android-project');
@@ -31,12 +44,17 @@ function main() {
   git(project, ['add', '.']);
   git(project, ['commit', '-qm', 'initial']);
 
-  const state = path.join(project, '.agentic-runs');
+  const aliasProject = path.join(temp, 'android-project-alias');
+  fs.symlinkSync(project, aliasProject, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.strictEqual(canonicalPath(aliasProject), canonicalPath(project));
+
+  const projectInput = aliasProject;
+  const state = path.join(projectInput, '.agentic-runs');
   const env = {
     ...process.env,
     AI_AGENTIC_CLI: '1',
     AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT,
-    AI_WORKFLOW_PROJECT_ROOT: project,
+    AI_WORKFLOW_PROJECT_ROOT: projectInput,
     AI_WORKFLOW_STATE_ROOT: state,
   };
   const previous = {
@@ -46,20 +64,20 @@ function main() {
   };
   Object.assign(process.env, {
     AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT,
-    AI_WORKFLOW_PROJECT_ROOT: project,
+    AI_WORKFLOW_PROJECT_ROOT: projectInput,
     AI_WORKFLOW_STATE_ROOT: state,
   });
 
   try {
-    const start = spawnSync(process.execPath, [RUNS_TOOL, 'start', 'EXT-001'], { cwd: project, env, encoding: 'utf8' });
+    const start = spawnSync(process.execPath, [RUNS_TOOL, 'start', 'EXT-001'], { cwd: projectInput, env, encoding: 'utf8' });
     assert.strictEqual(start.status, 0, start.stderr);
     assert(fs.existsSync(path.join(state, 'EXT-001', 'state.json')));
     assert(!fs.existsSync(path.join(RUNTIME_ROOT, 'ai', 'runs', 'EXT-001', 'state.json')));
 
-    const wt = ensure(RUNTIME_ROOT, 'EXT-001', { sourceRoot: project });
-    assert(wt.path.startsWith(path.join(project, '.ai-worktrees')));
+    const wt = ensure(RUNTIME_ROOT, 'EXT-001', { sourceRoot: projectInput });
+    assert(isInside(path.join(projectInput, '.ai-worktrees'), wt.path));
     assert(fs.existsSync(path.join(state, 'EXT-001', 'engine', 'worktree.json')));
-    assert.strictEqual(inspect(RUNTIME_ROOT, 'EXT-001').sourceRoot, project);
+    assert.strictEqual(canonicalPath(inspect(RUNTIME_ROOT, 'EXT-001').sourceRoot), canonicalPath(projectInput));
 
     fs.writeFileSync(path.join(wt.path, 'app', 'Demo.kt'), 'class Demo\n');
     assert.strictEqual(inspect(RUNTIME_ROOT, 'EXT-001').dirty, true);
