@@ -15,6 +15,8 @@ Human            = approves plans and release-sensitive decisions
 
 > Agents perform engineering work. The runtime owns progression, permissions, evidence, and completion.
 
+Security reporting and supported security-update versions are documented in [SECURITY.md](SECURITY.md).
+
 ---
 
 ## What this runtime provides
