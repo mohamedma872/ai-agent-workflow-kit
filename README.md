@@ -1,6 +1,6 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.4.0**
+**Runtime version: 1.4.1**
 
 A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
 
@@ -694,6 +694,21 @@ It also ignores:
 .agentic-runs/
 .ai-worktrees/
 ```
+
+For detected mobile projects, initialization also preserves your existing MCP servers and adds Appium MCP when no Appium alias is already configured:
+
+```json
+{
+  "appium-mcp": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "appium-mcp@latest"],
+    "timeout": 100
+  }
+}
+```
+
+`agentic doctor` recognizes `appium`, `appium-mcp`, or `mcp-appium` from project or global Claude/Codex MCP configuration. A globally installed package without MCP-client configuration is reported separately rather than as if the package were absent.
 
 Claude receives a runtime-owned session settings file through its CLI, so the runtime guard does not need to be copied into the application. Codex uses the small project hook adapter to call back into `agentic guard-hook`.
 

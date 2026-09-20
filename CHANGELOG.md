@@ -4,6 +4,15 @@
 
 - No unreleased runtime changes.
 
+## 1.4.1 — 2026-09-20
+
+- Fixed standalone doctor false negatives for Appium MCP when the server is configured globally or named `appium-mcp` instead of `appium`.
+- Added shared MCP discovery across project config, runtime config, user-level Claude config, user-level Codex config, and Claude MCP listing.
+- Distinguished a globally installed `appium-mcp` package from a configured MCP server and improved remediation text.
+- Made `agentic init` idempotently merge the standard Appium MCP entry into mobile projects while preserving existing MCP servers.
+- Normalized `appium`, `appium-mcp`, and `mcp-appium` to one logical capability for doctor and subagent preflight.
+- Enforced the Appium MCP Node 22+ prerequisite when mobile verification is required.
+
 ## 1.4.0 — 2026-09-20
 
 - Added the first standalone `agentic` CLI facade for existing Android, iOS, React Native, Flutter, frontend, backend, and generic Git repositories.

@@ -7,6 +7,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { runtimeRoot, projectRoot } = require('./paths');
+const { discoverMcps, hasMcp } = require('./mcp-discovery');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -150,6 +151,7 @@ function runChecks(options = {}) {
   }
 
   const mcp = mcpConfig();
+  const discoveredMcps = discoverMcps({ projectRoot: PROJECT_ROOT, runtimeRoot: ROOT });
   checks.push(result('mcp-config', 'mcp', true, !mcp.usingExample, mcp.usingExample ? 'using .mcp.json.example only' : '.mcp.json present', 'Copy .mcp.json.example to .mcp.json and configure required servers'));
   for (const [name, spec] of Object.entries(mcp.data.mcpServers || {})) {
     const required = name === 'codex-delegate';
@@ -195,9 +197,18 @@ function runChecks(options = {}) {
         checks.push(result('ios:simulator', 'mobile', false, sims.ok && count > 0, sims.ok ? `${count} available simulator device(s)` : 'could not enumerate simulators', 'Install an iOS Simulator runtime'));
       }
     }
-    const appiumConfigured = Object.prototype.hasOwnProperty.call(mcp.data.mcpServers || {}, 'appium');
-    checks.push(result('mcp:appium', 'mobile', mobileRequired, appiumConfigured, appiumConfigured ? 'Appium MCP configured' : 'Appium MCP not configured in project MCP config', 'Configure the Appium MCP before mobile/UI verification'));
-    if (appiumConfigured && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', false, `current Node ${process.versions.node}; Appium MCP may require Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
+    const appiumConfigured = hasMcp(discoveredMcps, 'appium');
+    const appiumInstalled = discoveredMcps.installed.appiumMcp;
+    const appiumDetail = appiumConfigured
+      ? 'Appium MCP configured (project or global provider configuration)'
+      : appiumInstalled
+        ? 'appium-mcp is installed globally but is not configured as an MCP server for this project/provider'
+        : 'Appium MCP is not configured';
+    const appiumRemediation = appiumInstalled
+      ? 'Run agentic init again to add the project MCP entry, or configure appium-mcp in Claude/Codex'
+      : 'Run agentic init to add Appium MCP for this mobile project';
+    checks.push(result('mcp:appium', 'mobile', mobileRequired, appiumConfigured, appiumDetail, appiumRemediation));
+    if ((appiumConfigured || appiumInstalled) && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', mobileRequired, `current Node ${process.versions.node}; appium-mcp requires Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
   } else checks.push(notApplicable('mobile:project', 'mobile', 'no mobile stack detected'));
 
   const pkg = readJson(path.join(PROJECT_ROOT, 'package.json')) || {};

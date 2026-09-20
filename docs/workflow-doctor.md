@@ -32,7 +32,9 @@ Where applicable it checks:
 - Android SDK environment, ADB, and current device availability;
 - Flutter CLI;
 - Xcode/xcrun/simulator availability on macOS;
-- Appium MCP configuration and Node compatibility warning;
+- Appium MCP configuration from project config or global Claude/Codex configuration, including `appium` / `appium-mcp` aliases;
+- globally installed `appium-mcp` packages that still need MCP-client configuration;
+- Appium MCP Node 22+ compatibility when mobile evidence is required;
 - frontend package manager, build, and test commands;
 - backend Python/Node package manager and build/test verification commands.
 
@@ -43,3 +45,36 @@ For a mobile-only feature in a repository that also contains web or backend code
 ## Security
 
 The doctor never prints MCP credentials, URL query strings, URL fragments, or embedded username/password values. Authentication checks report only state (`authenticated`, `not authenticated`, or `could not be confirmed`).
+
+## Appium MCP discovery
+
+For mobile scopes, the doctor distinguishes **installation** from **MCP configuration**.
+
+Accepted configuration sources include:
+
+- the project `.mcp.json`;
+- the runtime `.mcp.json`;
+- user-level Claude MCP configuration;
+- user-level Codex `~/.codex/config.toml`;
+- Claude's `claude mcp list` output when available.
+
+The names `appium`, `appium-mcp`, and `mcp-appium` are normalized to the same capability.
+
+A globally installed `appium-mcp` package by itself is not enough for an agent to call it; it must also be configured in the active MCP client. For a mobile project, rerun:
+
+```bash
+agentic init
+```
+
+The initializer preserves existing MCP servers and adds the standard project entry when no Appium alias is already configured:
+
+```json
+{
+  "appium-mcp": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "appium-mcp@latest"],
+    "timeout": 100
+  }
+}
+```
