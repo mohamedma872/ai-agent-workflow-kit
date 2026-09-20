@@ -208,7 +208,7 @@ function runChecks(options = {}) {
       ? 'Run agentic init again to add the project MCP entry, or configure appium-mcp in Claude/Codex'
       : 'Run agentic init to add Appium MCP for this mobile project';
     checks.push(result('mcp:appium', 'mobile', mobileRequired, appiumConfigured, appiumDetail, appiumRemediation));
-    if ((appiumConfigured || appiumInstalled) && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', false, `current Node ${process.versions.node}; appium-mcp requires Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
+    if ((appiumConfigured || appiumInstalled) && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', mobileRequired, `current Node ${process.versions.node}; appium-mcp requires Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
   } else checks.push(notApplicable('mobile:project', 'mobile', 'no mobile stack detected'));
 
   const pkg = readJson(path.join(PROJECT_ROOT, 'package.json')) || {};
