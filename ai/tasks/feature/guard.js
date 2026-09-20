@@ -37,7 +37,7 @@ function gateOpen(id) {
 }
 
 const WORKFLOW_HELPER_RE = /\bnode\s+ai\/tasks\/feature\/runs\.js\s+(?:start|status|set|select-roles|set-role|evidence|reconcile|approve|close|selftest)\b/;
-const RUN_PATH_RE = /(?:^|[\\s'\"=])(?:\\.\\/)?(?:ai\\/runs|\\.agentic-runs)\\//;
+const RUN_PATH_RE = /(?:^|[\s'"=])(?:\.\/)?(?:ai\/runs|\.agentic-runs)\//;
 const SHELL_WRITE_RE = new RegExp([
   String.raw`(?:^|[;&|]\s*)(?:touch|rm|mv|cp|tee|truncate|install|ln|dd|mkdir|rmdir|patch)\b`,
   String.raw`\bsed\s+-[^;&|]*i\b`,
@@ -49,7 +49,7 @@ const SHELL_WRITE_RE = new RegExp([
 ].join('|'));
 
 function mutatesWorkflowMarker(cmd) {
-  if (!/(?:plan\\.approved|ai\\/runs\\/_active|\\.agentic-runs\\/_active)/.test(cmd)) return false;
+  if (!/(?:plan\.approved|ai\/runs\/_active|\.agentic-runs\/_active)/.test(cmd)) return false;
   return SHELL_WRITE_RE.test(cmd) || /(?:writeFile|appendFile|unlink|rename)Sync?\s*\(/.test(cmd);
 }
 
@@ -57,7 +57,7 @@ function isRunScopedWrite(cmd) {
   if (!SHELL_WRITE_RE.test(cmd)) return false;
   if (!RUN_PATH_RE.test(cmd)) return false;
 
-  const repoPaths = String(cmd).match(/(?:\.\/)?(?:ai|src|app|lib|android|ios|packages|apps|docs|\.github|\.claude|\.codex)\/[A-Za-z0-9_./-]+/g) || [];
+  const repoPaths = String(cmd).match(/(?:\.\/)?(?:ai|src|app|lib|android|ios|packages|apps|docs|\.github|\.claude|\.codex|\.agentic-runs)\/[A-Za-z0-9_./-]+/g) || [];
   return repoPaths.length > 0 && repoPaths.every(p => { const v=p.replace(/^\.\//, ''); return v.startsWith('ai/runs/') || v.startsWith('.agentic-runs/'); });
 }
 
@@ -81,7 +81,7 @@ module.exports = {
     const cmd = String(input.command || '');
     const shell = tool === 'Bash' || tool === 'Shell';
 
-    if (shell && /\\bagentic\\s+(approve|architecture)\\b/.test(cmd)) {
+    if (shell && /\bagentic\s+(approve|architecture)\b/.test(cmd)) {
       deny('human gate: agentic approve/architecture selection must be run directly by a human outside the agent');
       return;
     }
