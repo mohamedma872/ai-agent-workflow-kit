@@ -12,9 +12,11 @@ const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { validateAttestation } = require('./evidence-attestation');
 const { validateArtifactFile, sidecarForMarkdown } = require('../../workflow/artifacts');
+const { runtimeRoot, projectRoot, stateRoot } = require('../../workflow/paths');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
-const RUNS = path.join(ROOT, 'ai', 'runs');
+const ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
 const WORKFLOW_FILE = path.join(ROOT, 'ai', 'workflows', 'feature.yaml');
 const RUNTIME_VERSION_FILE = path.join(ROOT, 'ai', 'runtime-version.json');
@@ -174,7 +176,7 @@ function screenshotFiles(id) {
 }
 
 function gitHead() {
-  const res = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' });
+  const res = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: process.env.AI_WORKFLOW_PRODUCT_ROOT || PROJECT_ROOT, encoding: 'utf8' });
   return res.status === 0 ? String(res.stdout).trim() : null;
 }
 
