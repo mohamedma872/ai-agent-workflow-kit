@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
-const RUNS = path.join(ROOT, 'ai', 'runs');
+const RUNS = process.env.AI_WORKFLOW_STATE_ROOT ? path.resolve(process.env.AI_WORKFLOW_STATE_ROOT) : path.join(ROOT, 'ai', 'runs');
 
 function cfg() {
   try { return require('js-yaml').load(fs.readFileSync(path.join(__dirname, 'guard.yaml'), 'utf8')) || {}; } catch { return {}; }
@@ -37,7 +37,7 @@ function gateOpen(id) {
 }
 
 const WORKFLOW_HELPER_RE = /\bnode\s+ai\/tasks\/feature\/runs\.js\s+(?:start|status|set|select-roles|set-role|evidence|reconcile|approve|close|selftest)\b/;
-const RUN_PATH_RE = /(?:^|[\s'"=])(?:\.\/)?ai\/runs\//;
+const RUN_PATH_RE = /(?:^|[\\s'\"=])(?:\\.\\/)?(?:ai\\/runs|\\.agentic-runs)\\//;
 const SHELL_WRITE_RE = new RegExp([
   String.raw`(?:^|[;&|]\s*)(?:touch|rm|mv|cp|tee|truncate|install|ln|dd|mkdir|rmdir|patch)\b`,
   String.raw`\bsed\s+-[^;&|]*i\b`,
@@ -49,7 +49,7 @@ const SHELL_WRITE_RE = new RegExp([
 ].join('|'));
 
 function mutatesWorkflowMarker(cmd) {
-  if (!/(?:plan\.approved|ai\/runs\/_active)/.test(cmd)) return false;
+  if (!/(?:plan\\.approved|ai\\/runs\\/_active|\\.agentic-runs\\/_active)/.test(cmd)) return false;
   return SHELL_WRITE_RE.test(cmd) || /(?:writeFile|appendFile|unlink|rename)Sync?\s*\(/.test(cmd);
 }
 
@@ -58,7 +58,7 @@ function isRunScopedWrite(cmd) {
   if (!RUN_PATH_RE.test(cmd)) return false;
 
   const repoPaths = String(cmd).match(/(?:\.\/)?(?:ai|src|app|lib|android|ios|packages|apps|docs|\.github|\.claude|\.codex)\/[A-Za-z0-9_./-]+/g) || [];
-  return repoPaths.length > 0 && repoPaths.every(p => p.replace(/^\.\//, '').startsWith('ai/runs/'));
+  return repoPaths.length > 0 && repoPaths.every(p => { const v=p.replace(/^\.\//, ''); return v.startsWith('ai/runs/') || v.startsWith('.agentic-runs/'); });
 }
 
 function shellMutationProblem(cmd) {
@@ -76,12 +76,17 @@ module.exports = {
     const input = payload.tool_input || {};
     const rel = p => ctx.rel(String(p || ''));
     const gate = cfg().plan_gate || {};
-    const runPrefix = 'ai/runs/';
+    const runPrefixes = ['ai/runs/', '.agentic-runs/'];
     const target = rel(input.file_path || input.notebook_path || '');
     const cmd = String(input.command || '');
     const shell = tool === 'Bash' || tool === 'Shell';
 
-    const isMarker = /(^|\/)ai\/runs\/[^/]+\/plan\.approved$/.test(target);
+    if (shell && /\\bagentic\\s+(approve|architecture)\\b/.test(cmd)) {
+      deny('human gate: agentic approve/architecture selection must be run directly by a human outside the agent');
+      return;
+    }
+
+    const isMarker = /(^|\/)(?:ai\/runs|\.agentic-runs)\/[^/]+\/plan\.approved$/.test(target);
     const isApproveCmd = shell && /ai\/tasks\/feature\/runs\.js\s+approve\b/.test(cmd);
     if (shell && mutatesWorkflowMarker(cmd) && !isApproveCmd) {
       deny('plan gate: workflow state markers (plan.approved / ai/runs/_active) cannot be modified directly; use ai/tasks/feature/runs.js');
@@ -94,7 +99,7 @@ module.exports = {
     if (gateOpen(id)) return;
 
     const message = gate.message || `plan gate: run "${id}" has no approved plan yet — finish ai/runs/${id}/06-plan.md, get approval, then edit`;
-    if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && !target.startsWith(runPrefix)) {
+    if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && !runPrefixes.some(prefix => target.startsWith(prefix))) {
       deny(`${message} (${target || 'file'})`);
       return;
     }
