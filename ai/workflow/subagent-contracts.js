@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 const fs=require('fs'); const path=require('path'); const assert=require('assert'); const yaml=require('js-yaml');
-const ROOT=path.resolve(__dirname,'..','..'); const CONTRACTS=path.join(ROOT,'ai','subagents','contracts.yaml'); const WORKFLOW=path.join(ROOT,'ai','workflows','feature.yaml');
+const {runtimeRoot,projectRoot}=require('./paths');
+const ROOT=runtimeRoot(); const PROJECT_ROOT=projectRoot(); const CONTRACTS=path.join(ROOT,'ai','subagents','contracts.yaml'); const WORKFLOW=path.join(ROOT,'ai','workflows','feature.yaml');
 function load(file){return yaml.load(fs.readFileSync(file,'utf8'))||{};}
 function validate(){
  const c=load(CONTRACTS), w=load(WORKFLOW), problems=[];
@@ -20,7 +21,7 @@ function validate(){
 function roleContract(name){const c=load(CONTRACTS); if(!c.roles?.[name]) throw new Error('unknown subagent contract '+name); return {version:c.version,defaults:c.defaults||{},role:name,...c.roles[name]};}
 function availableMcps(){
  const set=new Set(String(process.env.AI_WORKFLOW_AVAILABLE_MCPS||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean));
- for(const file of [path.join(ROOT,'.mcp.json')]){
+ for(const file of [path.join(PROJECT_ROOT,'.mcp.json'),path.join(ROOT,'.mcp.json')]){
    try{const d=JSON.parse(fs.readFileSync(file,'utf8'));for(const name of Object.keys(d.mcpServers||{}))set.add(name.toLowerCase());}catch{/* optional config */}
  }
  return set;
