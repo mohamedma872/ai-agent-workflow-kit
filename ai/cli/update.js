@@ -103,8 +103,9 @@ function updateStatus(root = DEFAULT_ROOT) {
   return {
     current,
     latest,
-    updateAvailable: versionComparison < 0 || current.sha !== latest.sha,
+    updateAvailable: versionComparison < 0,
     versionUpdateAvailable: versionComparison < 0,
+    sourceDiffers: current.sha !== latest.sha,
   };
 }
 
@@ -182,6 +183,7 @@ function printStatus(result, options = {}) {
       latestVersion: result.latest.version,
       latestSha: result.latest.sha,
       updateAvailable: result.updateAvailable,
+      sourceDiffers: !!result.sourceDiffers,
       changed: !!result.changed,
     }, null, 2));
     return;
@@ -247,6 +249,16 @@ function selftest() {
   const after = gitState(install);
   assert.strictEqual(after.version, '1.1.0');
   assert.strictEqual(after.sha, status.latest.sha);
+
+  fs.writeFileSync(path.join(source, 'README.md'), 'docs-only\n');
+  git(source, ['add', 'README.md']);
+  git(source, ['commit', '-qm', 'docs only']);
+  git(source, ['push', '-q', 'origin', 'main']);
+  const sameVersionStatus = updateStatus(install);
+  assert.strictEqual(sameVersionStatus.current.version, '1.1.0');
+  assert.strictEqual(sameVersionStatus.latest.version, '1.1.0');
+  assert.strictEqual(sameVersionStatus.sourceDiffers, true);
+  assert.strictEqual(sameVersionStatus.updateAvailable, false);
 
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('agentic update selftest OK');
