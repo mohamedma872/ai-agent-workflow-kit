@@ -17,6 +17,7 @@ const REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-report.js');
 const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
 const VERSION = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'version.js');
 const GUARD_RUNNER = path.join(RUNTIME_ROOT, 'ai', 'guard', 'runner.js');
+const CODEX_MCP = path.join(RUNTIME_ROOT, 'ai', 'mcp', 'codex-delegate.mjs');
 
 function fail(message, code = 1) {
   console.error('✗ ' + message);
@@ -207,7 +208,14 @@ It is not imported by application code and must not be packaged into production 
 Runtime state is stored in `.agentic-runs/` and isolated worktrees in `.ai-worktrees/`; both are gitignored.
 `);
 
-  appendGitignore(project, ['.agentic-runs/', '.ai-worktrees/']);
+  writeIfMissing(path.join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      'codex-delegate': { command: 'agentic', args: ['mcp', 'codex-delegate'] },
+      context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] }
+    }
+  }, null, 2) + '\n');
+
+  appendGitignore(project, ['.agentic-runs/', '.ai-worktrees/', '.mcp.json']);
 
   addHook(path.join(project, '.codex', 'hooks.json'), {
     matcher: '',
@@ -217,7 +225,7 @@ Runtime state is stored in `.agentic-runs/` and isolated worktrees in `.ai-workt
   console.log('Agentic project initialized');
   console.log('Project: ' + project);
   console.log('Detected: ' + (stacks.join(', ') || 'generic Git repository'));
-  console.log('Created/verified: .agentic/, .agentic-runs ignore, .ai-worktrees ignore, Codex guard hook adapter');
+  console.log('Created/verified: .agentic/, local MCP config, .agentic-runs/.ai-worktrees ignores, Codex guard hook adapter');
   console.log('');
   console.log('Next:');
   console.log('  agentic doctor');
@@ -242,6 +250,7 @@ Usage:
   agentic worktree <run-id>
   agentic cleanup <run-id> [--force]
   agentic version
+  agentic mcp codex-delegate   # internal MCP entry point
 
 Global:
   --project <repo>   Target an existing repository without changing directory.
@@ -258,6 +267,9 @@ function selftest() {
   initProject(temp);
   assert(fs.existsSync(path.join(temp, '.agentic', 'config.yaml')));
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.agentic-runs/'));
+  assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.mcp.json'));
+  const mcp = loadJson(path.join(temp, '.mcp.json'));
+  assert.strictEqual(mcp.mcpServers['codex-delegate'].command, 'agentic');
   assert(fs.existsSync(path.join(RUNTIME_ROOT, 'ai', 'cli', 'claude-settings.json')));
   const codex = loadJson(path.join(temp, '.codex', 'hooks.json'));
   assert(codex.hooks.PreToolUse.some(x => x.hooks.some(h => h.command.includes('--agent codex'))));
@@ -288,6 +300,11 @@ function main() {
     if (r.error) throw r.error;
     process.exitCode = r.status == null ? 1 : r.status;
     return;
+  }
+
+  if (command === 'mcp') {
+    if (args[1] !== 'codex-delegate') throw new Error('mcp requires: codex-delegate');
+    return runNode(CODEX_MCP, args.slice(2), project);
   }
 
   if (command === 'init') return initProject(project);
