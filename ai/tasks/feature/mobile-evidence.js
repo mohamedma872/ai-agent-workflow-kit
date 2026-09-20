@@ -7,10 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { buildAttestation } = require('./evidence-attestation');
+const { runtimeRoot, projectRoot, stateRoot } = require('../../workflow/paths');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
-const PRODUCT_ROOT = process.env.AI_WORKFLOW_PRODUCT_ROOT ? path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT) : ROOT;
-const RUNS = path.join(ROOT, 'ai', 'runs');
+const ROOT = runtimeRoot();
+const PROJECT_ROOT = projectRoot();
+const PRODUCT_ROOT = process.env.AI_WORKFLOW_PRODUCT_ROOT ? path.resolve(process.env.AI_WORKFLOW_PRODUCT_ROOT) : PROJECT_ROOT;
+const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
 const ROUTER = path.join(ROOT, 'ai', 'workflow', 'router.js');
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
@@ -135,7 +137,7 @@ function runEvidence(id, args) {
 
   const child = spawnSync(process.execPath, [ROUTER, 'exec', 'feature', 'mobile-evidence', '--prompt-file', contextFile(id), '--output-file', agentOutputFile(id), '--cwd', PRODUCT_ROOT, '--timeout-min', String(Number(args['timeout-min']) || 30)], {
     cwd: ROOT,
-    env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
+    env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
     encoding: 'utf8', maxBuffer: 512 * 1024 * 1024,
   });
   if (child.stdout) process.stdout.write(child.stdout);
