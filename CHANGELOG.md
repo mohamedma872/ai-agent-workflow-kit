@@ -4,6 +4,11 @@
 
 - No unreleased runtime changes.
 
+## 1.5.1 — 2026-09-20
+
+- Fixed the Git executable bit for `ai/cli/agentic.js` so clone + `npm link` installations can execute the global `agentic` command on macOS/Linux.
+- Added CI enforcement with `test -x ai/cli/agentic.js` so future releases cannot regress the CLI entrypoint permission.
+
 ## 1.5.0 — 2026-09-20
 
 - Added `agentic update` for clone + `npm link` installations.
