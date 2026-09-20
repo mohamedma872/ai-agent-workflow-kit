@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const fs=require('fs'); const path=require('path');
-const ROOT=path.resolve(__dirname,'..','..'); const RUNS=path.join(ROOT,'ai','runs');
+const {stateRoot}=require('./paths'); const RUNS=stateRoot();
 function file(id){return path.join(RUNS,id,'05-analysis','conflicts.json');}
 function load(id){return JSON.parse(fs.readFileSync(file(id),'utf8'));}
 function resolveData(d,conflictId,{decision,rationale,owner}){
