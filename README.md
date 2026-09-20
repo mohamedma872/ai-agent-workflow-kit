@@ -1,644 +1,122 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.5.1**
+[![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
+![Runtime](https://img.shields.io/badge/runtime-1.5.1-blue)
+![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
+A deterministic, cross-stack **agentic engineering runtime** for Claude Code, Codex, and specialist subagents.
 
-It separates four responsibilities:
+It turns an AI coding agent from “a model that can edit files” into a governed engineering workflow with:
 
-```text
-Workflow engine  = decides what can run next
-Guardrails       = decide what agents are allowed to do
-Evals            = decide whether the result is actually good
-Human            = approves plans and release-sensitive decisions
-```
+- a standalone CLI
+- deterministic workflow stages
+- Hybrid RAG over the target repository
+- specialist agents with least-privilege contracts
+- enforced human approval gates
+- behavior-preserving refactor safety
+- whole-app architecture assessment and C4 modeling
+- Appium-based mobile evidence
+- structured artifacts and verification
+- runtime/eval hardening
+- GitHub verification
+- safe self-updates
 
-> Agents perform engineering work. The runtime owns progression, permissions, evidence, and completion.
+> Models perform engineering work. The runtime owns progression, permissions, evidence, verification, and completion.
 
 Security reporting and supported security-update versions are documented in [SECURITY.md](SECURITY.md).
 
 ---
 
-## What this runtime provides
+## Table of contents
 
-- deterministic DAG-driven feature workflows
-- first-class behavior-preserving refactor mode with behavioral-equivalence gates
-- explicit human approval before product implementation
-- isolated git worktrees per feature run
-- controlled state transitions and resumable execution
-- retry, timeout, and fallback policies
-- least-privilege specialist subagents
-- structured evidence-backed findings
-- intelligent specialist selection
-- role-aware Hybrid RAG retrieval with source-line provenance and context budgets
-- standalone `agentic` CLI for existing Android/iOS/RN/Flutter/frontend/backend repositories
-- deterministic finding synthesis and conflict tracking
-- independent post-implementation stack reviewers
-- structured JSON workflow gates
-- Appium-based Android/iOS evidence tied to the exact tested build
-- commit-bound GitHub verification status
-- runtime hardening and per-agent eval suites
-- subagent precision/recall, false-positive, latency, retry, cost, and finding telemetry
-- runtime versioning and release tooling
-
----
-
-## End-to-end flow
-
-```mermaid
-flowchart TD
-    A[Feature request] --> D[Workflow doctor]
-    D -->|missing prerequisite| X[BLOCKED]
-    D -->|ready| W[Per-run git worktree]
-
-    W --> R[Requirements]
-    R --> AC[Acceptance criteria + DoD]
-    AC --> S[Intelligent specialist selection]
-
-    S --> RG[Role-aware Hybrid RAG retrieval]
-    RG --> AN[Parallel specialist analysis]
-    AN --> SY[Finding synthesis + deduplication]
-    SY --> C{Unresolved conflicts?}
-    C -->|yes| HR[Human/owner conflict resolution]
-    HR --> P
-    C -->|no| P[Structured implementation plan]
-
-    P --> H{Human approval}
-    H -->|approved| I[Implementation]
-    I --> T[Build + tests]
-
-    T --> RS[Dynamic independent reviewers]
-    RS --> F[Validated fixes]
-
-    F --> M{Mobile/UI evidence required?}
-    M -->|yes| AP[Appium Android / iOS]
-    AP --> E[Exact-build evidence attestation]
-    M -->|no| FV[Final verification]
-    E --> FV
-
-    FV --> G[Commit-bound GitHub verification]
-```
-
-The workflow definition lives in:
-
-```text
-ai/workflows/feature.yaml
-```
-
-The engine, not the model, determines eligible stages.
+- [Why this exists](#why-this-exists)
+- [What it provides](#what-it-provides)
+- [Supported project types](#supported-project-types)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Quick start](#quick-start)
+- [Standalone CLI](#standalone-cli)
+- [Normal feature workflow](#normal-feature-workflow)
+- [Specialist agents](#specialist-agents)
+- [Hybrid RAG](#hybrid-rag)
+- [Guardrails and human authority](#guardrails-and-human-authority)
+- [Run isolation](#run-isolation)
+- [Structured artifacts and evidence](#structured-artifacts-and-evidence)
+- [Behavior-preserving refactoring](#behavior-preserving-refactoring)
+- [Whole-application refactor and architecture](#whole-application-refactor-and-architecture)
+- [Mobile verification with Appium](#mobile-verification-with-appium)
+- [Evals and quality measurement](#evals-and-quality-measurement)
+- [GitHub verification and merge enforcement](#github-verification-and-merge-enforcement)
+- [Configuration](#configuration)
+- [Updates](#updates)
+- [Versioning and releases](#versioning-and-releases)
+- [Security](#security)
+- [Repository layout](#repository-layout)
+- [Documentation index](#documentation-index)
+- [Development and validation](#development-and-validation)
+- [Current status and known limits](#current-status-and-known-limits)
+- [License](#license)
 
 ---
 
-## Subagent architecture
+## Why this exists
 
-Subagents are not unrestricted prompts. Every role has a machine-readable contract.
-
-A contract defines:
+AI coding tools can generate code quickly, but code generation alone does not answer engineering questions such as:
 
 ```text
-inputs
-outputs
-read/write mode
-allowed tools
-required MCPs
-optional MCPs
-evidence requirements
-state-mutation restrictions
+Was the right problem understood?
+Was the repository inspected before coding?
+Were relevant specialists consulted?
+Did security or architecture concerns conflict?
+Did a human approve the plan?
+Did implementation preserve existing behavior?
+Was the final build actually tested?
+Does the evidence belong to the exact commit/build?
+Can the result be reproduced and reviewed?
 ```
 
-Contracts live in:
+This runtime treats those questions as workflow responsibilities rather than prompt wording.
+
+The core separation is:
 
 ```text
-ai/subagents/contracts.yaml
+Model / agent     → performs engineering work
+Workflow engine   → decides what may run next
+Guardrails        → decide what tools/actions are allowed
+Evals             → test the runtime and agent behavior
+Evidence          → proves what was actually verified
+Human             → approves plan/architecture-sensitive decisions
 ```
 
-Example behavior:
+---
 
-```text
-Security reviewer
-  ✓ repository read
-  ✓ declared documentation MCPs
-  ✗ product write
-  ✗ undeclared MCPs
-  ✗ nested agents
-  ✗ workflow-state mutation
+## What it provides
 
-Implementation
-  ✓ repository read
-  ✓ product write
-  ✓ declared documentation MCPs
-  ✗ arbitrary workflow-state changes
-
-Mobile evidence
-  ✓ repository read
-  ✓ declared device/Appium execution
-  ✗ product modification
-```
-
-Required MCP capabilities are checked before a role is launched. A sample MCP configuration file does not count as an active capability.
-
-### Specialist roles
-
-The runtime supports pre-implementation analysis specialists including:
-
-| Role | Focus |
+| Capability | Purpose |
 |---|---|
-| Architecture | boundaries, dependencies, modularity, cross-stack impact |
-| Security | threat model, trust boundaries, auth, secrets, storage, transport |
-| QA plan | acceptance coverage, negative paths, edge cases |
-| Performance | likely hot paths, budgets, measurement plan |
-| React Native | Hermes, New Architecture, Fabric, TurboModules, Metro, navigation, native integration |
-| Android | lifecycle, permissions, manifest, background work, Gradle/native integration |
-| iOS | lifecycle, entitlements, privacy permissions, concurrency, signing/native integration |
-| Flutter | widgets/state, plugins, platform channels, flavors, Android/iOS integration |
-| Frontend | routing, accessibility, state/data flow, browser behavior |
-| Backend | APIs, persistence, queues, transactions, concurrency, reliability |
-| API contract | OpenAPI/GraphQL, nullability, compatibility, errors, pagination, auth, idempotency |
-| Dependency migration | framework/SDK upgrade impact, breaking changes, validation, rollback |
-| Docs | current framework/library documentation where version-sensitive facts matter |
-
-Security and performance analysis are intentionally separate from their final review roles.
-
-### Independent post-implementation reviewers
-
-After build/test, the runtime can dynamically add stack-specific reviewers based on the actual changed files:
-
-```text
-React Native reviewer
-Android reviewer
-iOS reviewer
-Flutter reviewer
-Frontend reviewer
-Backend reviewer
-API-contract reviewer
-```
-
-Baseline code, security, and performance review still run as configured.
-
-This prevents a pre-implementation specialist from simply validating its own earlier recommendation.
+| Standalone `agentic` CLI | use the runtime against an existing project |
+| Deterministic workflow DAG | stage progression is runtime-owned, not model-owned |
+| Project doctor | verify stack/runtime/device prerequisites before execution |
+| Git worktree isolation | each run works in an isolated product worktree |
+| Hybrid RAG | retrieve focused, role-specific repository evidence |
+| Specialist subagents | architecture, security, QA, performance, stack-specific analysis |
+| Finding synthesis | deduplicate findings and preserve provenance |
+| Conflict tracking | stop planning when specialists materially disagree |
+| Human approval gate | prevent agents from approving their own implementation plan |
+| Behavior-safe refactor mode | baseline behavior and prove equivalence after refactoring |
+| Architecture/C4 workflow | whole-app architecture assessment, alternatives, selection, migration |
+| Appium evidence | Android/iOS evidence tied to the tested build |
+| Structured artifacts | machine-readable JSON + human-readable Markdown gates |
+| Retry/timeout/fallback | bounded execution with persistent attempt history |
+| GitHub verification | bind final verification to a specific commit |
+| Evals | runtime hardening and specialist quality measurement |
+| Self-update | safely update clone + npm-link installations |
 
 ---
 
-## Intelligent specialist selection
+## Supported project types
 
-The runtime selects relevant specialists from:
-
-```text
-repository stack
-requested scope
-feature/request wording
-changed files
-risk/domain signals
-```
-
-Examples:
-
-```text
-React Native project
-  → React Native specialist
-  → Android/iOS specialists as applicable
-
-GraphQL/OpenAPI/schema change
-  → API contract specialist
-
-Framework or SDK upgrade
-  → dependency migration specialist
-
-Android source changed
-  → Android final reviewer
-
-Flutter/Dart source changed
-  → Flutter final reviewer
-```
-
-Selection decisions and reasons are persisted under the run's engine artifacts rather than existing only in model prose.
-
----
-
-## Hybrid RAG context retrieval
-
-Repository-reading agents now receive a **role-specific Hybrid RAG evidence pack** before execution. The runtime does not dump the entire repository into every prompt.
-
-The built-in retriever combines multiple channels:
-
-```text
-keyword / BM25-style relevance
-+ lexical-vector similarity
-+ exact symbol matching
-+ path / metadata relevance
-+ exact phrase matching
-+ role-aware hints
-+ optional semantic-embedding similarity
-                ↓
-          deterministic reranking
-                ↓
-        per-file diversity limits
-                ↓
-          context-budget manager
-                ↓
-       role-specific evidence pack
-```
-
-The semantic-embedding channel is **optional and provider-neutral**. The runtime works immediately with its local retrieval channels; when an embedding index and query vector are supplied programmatically, semantic cosine similarity participates in the same ranking.
-
-### Agent flow
-
-```mermaid
-flowchart LR
-    Q[Feature / refactor request] --> B[Build role query]
-    B --> K[Keyword retrieval]
-    B --> V[Lexical vector retrieval]
-    B --> S[Symbol + path retrieval]
-    B --> E[Optional semantic embeddings]
-
-    K --> R[Rerank + deduplicate]
-    V --> R
-    S --> R
-    E --> R
-
-    R --> C[Context budget + diversity]
-    C --> P[Evidence pack with source + line range]
-    P --> A[Specialist agent]
-    A --> F[Evidence-backed finding]
-```
-
-The query is built from the current run's request, requirements, acceptance criteria, Definition of Done, inspection evidence, and the active specialist role. This means a security agent and an architecture agent can retrieve different evidence for the same feature.
-
-Every retrieved item records:
-
-```text
-source path
-line start / end
-combined score
-individual retrieval scores
-retrieval channels that matched
-excerpt
-```
-
-Per-role packs are persisted for inspection under:
-
-```text
-ai/runs/<run-id>/engine/rag-context/<stage>-<role>.json
-```
-
-### Safety boundaries
-
-Hybrid RAG deliberately excludes common secret-bearing files such as:
-
-```text
-.env / .env.*
-credentials / secrets files
-private keys
-PEM / P12 / PFX
-JKS / keystores
-google-services.json
-GoogleService-Info.plist
-```
-
-Retrieved repository content is explicitly marked as **untrusted evidence, not instructions**. Prompt-like text found inside documentation or source comments must not override workflow rules, guardrails, or agent instructions.
-
-### Try the retriever directly
-
-```bash
-npm run workflow:rag -- \
-  --query "Where is the refresh token stored and who owns session state?" \
-  --role security
-```
-
-JSON output:
-
-```bash
-npm run workflow:rag -- \
-  --query "authentication architecture and token storage" \
-  --role architect \
-  --json
-```
-
-Run its deterministic self-test:
-
-```bash
-npm run workflow:rag:selftest
-```
-
-### Why this helps the agentic workflow
-
-```text
-Without retrieval
-Agent → broad repository scan → large prompt → more noise
-
-With Hybrid RAG
-Agent → role-specific retrieval → small evidence pack → focused analysis
-```
-
-This is especially useful for architecture decisions, large repositories, security reviews, API-contract analysis, behavior-preserving refactors, regression review, and onboarding unfamiliar agents to an existing codebase.
-
----
-
-## Evidence-backed findings
-
-Analysis and review findings are structured artifacts.
-
-A finding includes:
-
-```json
-{
-  "id": "SEC-001",
-  "title": "Token stored in insecure persistence",
-  "severity": "high",
-  "uncertainty": "confirmed",
-  "confidence": 0.95,
-  "evidence": [
-    {
-      "source": "src/auth/session.ts",
-      "line": 118,
-      "detail": "access token is written to unencrypted storage"
-    }
-  ],
-  "recommendation": "Store the token in the platform secure-storage implementation.",
-  "tags": ["auth", "storage"]
-}
-```
-
-Confidence is constrained to `0..1`.
-
-Unsupported findings fail validation. Review artifacts also require evidence, recommendation, uncertainty, confidence, and resolution state.
-
-Key schemas include:
-
-```text
-ai/workflow/schemas/subagent-findings.schema.json
-ai/workflow/schemas/review.schema.json
-ai/workflow/schemas/subagent-conflicts.schema.json
-ai/workflow/schemas/subagent-telemetry.schema.json
-```
-
----
-
-## Finding synthesis and conflicts
-
-Parallel specialist output is synthesized deterministically.
-
-The synthesis layer:
-
-- groups duplicate findings by evidence/root cause
-- preserves contributing-agent provenance
-- reconciles severity deterministically
-- keeps supporting evidence
-- does not create unsupported findings
-
-When specialists explicitly disagree, the runtime creates a conflict record:
-
-```text
-CONFLICT-001
-topic: storage
-findings: [SEC-003, ARCH-007]
-status: unresolved
-```
-
-Unresolved conflicts block the plan stage.
-
-Resolve a conflict explicitly:
-
-```bash
-npm run workflow:conflict:resolve -- \
-  HM-003 \
-  CONFLICT-001 \
-  --decision "Use platform secure storage" \
-  --rationale "Required for credential material" \
-  --owner "Mohamed"
-```
-
-A resolution records:
-
-```text
-decision
-rationale
-owner
-resolvedAt
-```
-
----
-
-## Behavior-preserving refactoring
-
-Refactor mode treats **behavioral equivalence**, not cleaner code, as the success criterion.
-
-The engine detects common refactoring intent automatically, or you can force it explicitly:
-
-```bash
-npm run workflow:start -- RF-001 \
-  --request "Refactor login validation without changing behavior" \
-  --mode refactor \
-  --scope mobile
-```
-
-The refactor-only flow is:
-
-```text
-impact/inspection
-      ↓
-behavior baseline
-      ↓
-preservation invariants
-      ↓
-characterization coverage gate
-      ↓
-specialist analysis
-      ↓
-incremental refactor plan
-      ↓
-human approval
-      ↓
-one verified increment at a time
-      ↓
-scope-aware build/test matrix
-      ↓
-independent behavior regression review
-      ↓
-validated fixes
-      ↓
-behavior-equivalence gate
-      ↓
-final verification
-```
-
-### Behavior baseline
-
-Before implementation, the runtime freezes observable behavior such as:
-
-```text
-public APIs
-state transitions
-side effects
-API calls/contracts
-storage keys/formats
-navigation/deep links
-analytics events
-error semantics
-concurrency/ordering
-lifecycle/background behavior
-known unverified areas
-```
-
-Each critical/high behavior must be covered by characterization/golden-master evidence or have an explicit risk waiver.
-
-Record a waiver:
-
-```bash
-npm run workflow:refactor:coverage -- \
-  waive RF-001 B-003 \
-  --reason "Requires unavailable legacy hardware" \
-  --owner "Mohamed"
-```
-
-### Preservation invariants
-
-Refactor runs explicitly declare which contracts must not change:
-
-```text
-public API
-API contracts
-navigation
-storage format
-storage keys
-analytics events
-error semantics
-backward compatibility
-concurrency behavior
-lifecycle behavior
-```
-
-Intentional exceptions must be declared and approved; otherwise a detected contract change blocks equivalence verification.
-
-### Incremental refactor checkpoints
-
-A refactor plan must contain ordered `refactorIncrements`.
-
-After each increment, implementation records diff and test evidence before continuing:
-
-```bash
-npm run workflow:refactor:checkpoint -- \
-  RF-001 R1 \
-  --diff "git diff -- src/auth" \
-  --test "npm test -- auth"
-```
-
-The runtime will not mark implementation complete while a planned increment lacks verification evidence.
-
-### Scope-aware verification
-
-The runtime derives a verification matrix from the affected behavior and changed files.
-
-Examples:
-
-```text
-pure logic
-  → characterization + unit
-
-repository/API/data layer
-  → unit + integration + API contract
-
-navigation/deep links
-  → navigation integration + E2E
-
-persistence
-  → migration/backward-compatibility tests
-
-mobile UI/state
-  → reducer/ViewModel/state tests + device/E2E as required
-
-native bridge/platform code
-  → native integration + device verification
-```
-
-The matrix is persisted in:
-
-```text
-ai/runs/<run-id>/engine/refactor-verification-matrix.json
-```
-
-### Independent behavior regression review
-
-Refactor runs dynamically add a dedicated `behavior-regression-reviewer`.
-
-It focuses on runtime differences rather than style, including:
-
-```text
-removed conditions
-changed defaults/null handling
-ordering and async sequencing
-race conditions
-retries/backoff
-navigation
-state initialization/transitions
-API payload/schema changes
-storage keys/formats
-analytics
-lost side effects
-lifecycle/background behavior
-```
-
-### Behavior-equivalence gate
-
-After reviews and fixes, a dedicated verifier produces:
-
-```text
-10-behavior-equivalence.md
-10-behavior-equivalence.json
-```
-
-The gate records:
-
-```text
-verified behaviors
-intentional changes
-unexpected changes
-observed final contracts
-test layers/evidence
-unverified scenarios
-fullyVerified
-```
-
-Unexpected behavior changes fail the gate.
-
-If `unverifiedScenarios` is non-empty, the run may be honestly reported as **partially verified**, but it cannot claim `fullyVerified: true`.
-
-The runtime also writes:
-
-```text
-engine/refactor-contract-diff.json
-engine/refactor-telemetry.json
-```
-
-Generate a local report:
-
-```bash
-npm run workflow:refactor:report -- RF-001
-npm run workflow:refactor:report -- RF-001 --json
-```
-
-GitHub verification includes whether refactor behavior coverage is **full** or **partial**.
-
-### Refactor safety evals
-
-The hardening suite includes adversarial cases for:
-
-- login error/token semantics
-- storage key/format compatibility
-- async ordering/retries/idempotency
-- navigation/deep links
-- analytics preservation
-- null/default/error fallback behavior
-
-These tests reject a refactor that produces cleaner code while changing observable behavior.
-
----
-
-## Standalone CLI
-
-The standalone `agentic` CLI runs the workflow against an existing project without adding the runtime to the application's production dependencies.
-
-Supported project types include:
+The same runtime can operate against:
 
 ```text
 Android native
@@ -650,26 +128,85 @@ Backend
 Generic Git repositories
 ```
 
-### How the standalone CLI is separated from the product
+Stack-specific specialists and verification paths are selected dynamically.
+
+Examples:
+
+```text
+Android change
+  → Android specialist
+  → Android reviewer
+  → Gradle / Android checks
+  → Appium evidence when required
+
+GraphQL / OpenAPI change
+  → API-contract specialist
+  → API-contract reviewer
+
+Framework / SDK upgrade
+  → dependency-migration specialist
+
+React Native feature
+  → React Native specialist
+  → Android/iOS specialists when native impact exists
+```
+
+---
+
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    U[Developer] --> CLI[agentic CLI]
+    CLI --> ENG[Deterministic Workflow Engine]
+
+    ENG --> DOC[Doctor]
+    ENG --> WT[Isolated Git Worktree]
+    ENG --> RAG[Hybrid RAG]
+    ENG --> SEL[Specialist Selection]
+    ENG --> SYN[Finding Synthesis]
+    ENG --> GATE[Human Gates]
+    ENG --> VER[Verification]
+
+    RAG --> AG[Specialist Agents]
+    SEL --> AG
+    AG --> SYN
+
+    GUARD[Guardrails] --> AG
+    GUARD --> ENG
+
+    GATE --> IMP[Implementation / Refactor]
+    IMP --> TEST[Build + Tests]
+    TEST --> REV[Independent Reviews]
+    REV --> EVID[Evidence / Equivalence / Compliance]
+    EVID --> VER
+    VER --> GH[GitHub Verification]
+```
+
+The product repository and installed runtime remain separate:
 
 ```text
 Installed Agentic Runtime
         │
         │ agentic
         ▼
-Existing project repository
+Target project
         │
-        ├── source code
+        ├── application source
         ├── tests
         ├── docs / ADRs / API specs
         ├── .agentic/          development configuration
         ├── .agentic-runs/     workflow state · gitignored
-        └── .ai-worktrees/     isolated product worktrees · gitignored
+        └── .ai-worktrees/     isolated run worktrees · gitignored
 ```
 
-The CLI is development tooling only. It is not imported into Android, iOS, web, or backend application code and should not appear in APK/AAB/IPA/web/backend production artifacts.
+The runtime is development tooling. It is not imported into the product application's production dependency graph.
 
-### 1. Install the CLI
+---
+
+## Quick start
+
+### 1. Install
 
 Current distribution uses a Git clone plus `npm link`:
 
@@ -687,29 +224,57 @@ Verify:
 agentic version
 ```
 
-Expected for this release:
+Current runtime:
 
 ```text
 1.5.1
 ```
 
-On macOS/Linux the tracked CLI entry point is executable. If an older clone previously reported `zsh: permission denied: agentic`, update that clone to 1.5.1 or newer and relink it.
-
-### 2. Initialize an existing project
-
-Move to the project you want Agentic to work on:
+### 2. Initialize a project
 
 ```bash
 cd ~/projects/my-project
+agentic init
 ```
 
-Run:
+### 3. Check readiness
+
+```bash
+agentic doctor
+```
+
+### 4. Start a feature
+
+```bash
+agentic feature FEAT-001 \
+  --request "Add biometric login with password fallback"
+```
+
+### 5. Watch progress
+
+```bash
+agentic progress FEAT-001 --watch
+```
+
+### 6. Approve the generated plan
+
+After reviewing it:
+
+```bash
+agentic approve FEAT-001
+```
+
+---
+
+## Standalone CLI
+
+### Initialize a repository
 
 ```bash
 agentic init
 ```
 
-The initializer detects the stack and creates lightweight development-only configuration:
+The initializer detects the project and creates:
 
 ```text
 .agentic/
@@ -724,176 +289,389 @@ The initializer detects the stack and creates lightweight development-only confi
 .mcp.json
 ```
 
-Runtime state and temporary worktrees are gitignored:
+It also ensures these are ignored:
 
 ```text
 .agentic-runs/
 .ai-worktrees/
 ```
 
-`agentic init` is idempotent. You can run it again after upgrading Agentic. Existing MCP servers are preserved.
+`agentic init` is idempotent and can be rerun after runtime upgrades.
 
-For detected mobile projects, Appium MCP is added when no Appium alias is already configured.
+For mobile projects, it preserves existing MCPs and adds Appium MCP when no Appium alias is configured.
 
-### 3. Check project readiness
-
-Run:
+### Doctor
 
 ```bash
 agentic doctor
-```
-
-Or choose an explicit scope:
-
-```bash
 agentic doctor --scope mobile
 agentic doctor --scope frontend
 agentic doctor --scope backend
 agentic doctor --scope all
 ```
 
-The doctor checks relevant capabilities such as:
+The doctor checks the relevant environment, for example:
 
 ```text
-Node / Git
+Node
+Git
 Claude / Codex
 MCP configuration
 Android SDK / ADB
-Xcode / simulator
+Xcode / Simulator
 Flutter
 Appium MCP
-frontend package manager/build
+frontend tooling
 backend runtime/build/test tooling
 ```
 
-Example:
+### Progress
+
+```bash
+agentic progress FEAT-001
+agentic progress FEAT-001 --watch
+agentic progress FEAT-001 --json
+```
+
+### Resume
+
+```bash
+agentic resume FEAT-001
+```
+
+### Worktree
+
+```bash
+agentic worktree FEAT-001
+```
+
+### Cleanup
+
+```bash
+agentic cleanup FEAT-001
+agentic cleanup FEAT-001 --force
+```
+
+### Target another repository
+
+```bash
+agentic --project ~/projects/banking-android doctor
+```
+
+```bash
+agentic --project ~/projects/payment-backend \
+  feature PAY-101 \
+  --request "Add idempotency to payment creation"
+```
+
+### Command reference
+
+| Command | Purpose |
+|---|---|
+| `agentic init` | initialize an existing Git project |
+| `agentic doctor` | check runtime/project prerequisites |
+| `agentic feature <id> --request "..."` | start a feature workflow |
+| `agentic resume <id>` | resume a paused workflow |
+| `agentic approve <id>` | human approval of the implementation plan |
+| `agentic progress <id> [--watch]` | inspect workflow progress |
+| `agentic refactor <id> --request "..."` | start a behavior-preserving refactor |
+| `agentic refactor-app <id> --request "..."` | start a whole-app architecture refactor |
+| `agentic architecture <id> <option>` | record the human architecture choice |
+| `agentic report <id>` | produce/read refactor verification results |
+| `agentic rag --query "..."` | inspect Hybrid RAG directly |
+| `agentic worktree <id>` | inspect run worktree state |
+| `agentic cleanup <id>` | safely remove a run worktree |
+| `agentic version` | display runtime version |
+| `agentic update --check` | check for a newer stable runtime |
+| `agentic update` | safely update the installed runtime |
+
+---
+
+## Normal feature workflow
+
+```mermaid
+flowchart TD
+    REQ[Feature request] --> DOC[Workflow doctor]
+    DOC --> WT[Isolated worktree]
+    WT --> R[Requirements]
+    R --> AC[Acceptance criteria + DoD]
+    AC --> INS[Repository inspection]
+    INS --> RAG[Hybrid RAG]
+    RAG --> SEL[Specialist selection]
+    SEL --> ANA[Parallel specialist analysis]
+    ANA --> SYN[Synthesis + deduplication]
+    SYN --> CON{Blocking conflict?}
+    CON -->|yes| RES[Explicit conflict resolution]
+    RES --> PLAN
+    CON -->|no| PLAN[Structured implementation plan]
+    PLAN --> APP{Human approval}
+    APP --> IMP[Implementation]
+    IMP --> BT[Build + tests]
+    BT --> REV[Independent reviews]
+    REV --> FIX[Validated fixes]
+    FIX --> EV[Evidence / final checks]
+    EV --> VER[Final verification]
+    VER --> GH[Commit-bound GitHub verification]
+```
+
+The engine, not the model, decides which stage is eligible to run next.
+
+Workflow definition:
 
 ```text
-Workflow doctor — scope=mobile — android
-
-✓ node                         required available
-✓ git                          required available
-✓ agent:claude                required available
-✓ agent:codex                 required available
-✓ android:adb                 required available
-✓ android:sdk                 required available
-✓ mcp:appium                  required available
-
-READY: required capabilities available
+ai/workflows/feature.yaml
 ```
 
-For Appium, the doctor normalizes these names to the same capability:
+---
+
+## Specialist agents
+
+Subagents are machine-readable roles, not free-form prompts.
+
+Each contract declares:
 
 ```text
-appium
-appium-mcp
-mcp-appium
+inputs
+outputs
+read/write mode
+allowed tools
+required MCPs
+optional MCPs
+evidence requirements
+state-mutation restrictions
+retrieval configuration
 ```
 
-It can discover Appium from project configuration or global Claude/Codex MCP configuration. A globally installed package that is not configured as an MCP server is reported separately.
-
-### 4. Start a feature
-
-Example:
-
-```bash
-agentic feature AUTH-104 \
-  --request "Add biometric login with password fallback"
-```
-
-The runtime automatically performs:
+Contracts:
 
 ```text
-Request
-  ↓
-Doctor
-  ↓
-Isolated worktree
-  ↓
-Requirements
-  ↓
-Acceptance Criteria + Definition of Done
-  ↓
-Repository inspection
-  ↓
-Hybrid RAG
-  ↓
-Relevant specialist agents
-  ↓
-Finding synthesis / conflict detection
-  ↓
-Implementation plan
-  ↓
-HUMAN APPROVAL
+ai/subagents/contracts.yaml
 ```
 
-The workflow stops when the plan requires approval.
+### Analysis roles
 
-### 5. Watch progress
+| Role | Focus |
+|---|---|
+| Architecture | boundaries, dependencies, modularity, cross-stack impact |
+| Security | trust boundaries, auth, secrets, storage, transport |
+| QA plan | acceptance coverage, edge cases, negative paths |
+| Performance | hot paths, budgets, measurement plan |
+| Android | lifecycle, manifest, permissions, Gradle/native integration |
+| iOS | lifecycle, entitlements, privacy, concurrency, signing |
+| React Native | Hermes, New Architecture, navigation, native bridges |
+| Flutter | widgets/state, plugins, platform channels, flavors |
+| Frontend | routing, accessibility, state/data flow, browser behavior |
+| Backend | APIs, persistence, transactions, queues, concurrency |
+| API contract | OpenAPI/GraphQL compatibility, errors, nullability, pagination |
+| Dependency migration | framework/SDK upgrade impact and rollback |
+| Docs | version-sensitive framework/library documentation |
 
-One-time status:
+### Independent reviewers
 
-```bash
-agentic progress AUTH-104
-```
-
-Live progress:
-
-```bash
-agentic progress AUTH-104 --watch
-```
-
-JSON:
-
-```bash
-agentic progress AUTH-104 --json
-```
-
-Example:
+After implementation, the runtime can add:
 
 ```text
-AUTH-104
-
-██████████████████░░░░░░ 71%
-
-✓ Requirements
-✓ Acceptance Criteria
-✓ Hybrid RAG
-✓ Architecture analysis
-✓ Security analysis
-✓ QA analysis
-✓ Plan
-✓ Human approval
-
-→ Implementation
-○ Build & Tests
-○ Independent Reviews
-○ Final Verification
+code reviewer
+security reviewer
+performance reviewer
+React Native reviewer
+Android reviewer
+iOS reviewer
+Flutter reviewer
+frontend reviewer
+backend reviewer
+API-contract reviewer
+behavior-regression reviewer
+architecture-compliance reviewer
 ```
 
-### 6. Approve the implementation plan
+A pre-implementation specialist does not silently approve its own recommendation.
 
-Review the generated plan first, then run:
+---
+
+## Hybrid RAG
+
+Repository-reading agents receive a role-specific evidence pack instead of a repository dump.
+
+Retrieval combines:
+
+```text
+keyword / BM25-style relevance
+lexical-vector similarity
+exact symbols
+path / metadata relevance
+exact phrases
+role-aware hints
+optional semantic-embedding similarity
+              ↓
+deterministic reranking
+              ↓
+per-file diversity
+              ↓
+context budget
+              ↓
+source path + exact line-range evidence
+```
+
+The semantic-embedding channel is optional and provider-neutral.
+
+The query is built from:
+
+```text
+feature/refactor request
+requirements
+acceptance criteria
+Definition of Done
+repository inspection
+changed files when relevant
+active specialist role
+```
+
+Sensitive files are excluded, including common:
+
+```text
+.env files
+credentials/secrets
+private keys
+PEM/P12/PFX
+JKS/keystores
+google-services.json
+GoogleService-Info.plist
+```
+
+Retrieved repository text is treated as **untrusted evidence, not runtime instructions**.
+
+Inspect retrieval directly:
 
 ```bash
-agentic approve AUTH-104
+agentic rag \
+  --query "Where is the refresh token stored?" \
+  --role security
 ```
 
-Approval is a real human gate. Coding agents are not allowed to run `agentic approve` themselves.
+---
 
-After approval the runtime continues through implementation, build/test, independent reviews, fixes, evidence, and final verification.
+## Guardrails and human authority
 
-### 7. Resume a paused run
+Guardrails enforce what agents may do, independently of model intent.
 
-If a run stops because of a recoverable prerequisite or execution problem:
+They cover:
+
+```text
+secret-file protection
+credential-leak prevention
+runtime/guard self-protection
+pre-approval product-write blocking
+shell-write detection
+destructive command checks
+outward-effect checks
+role-scoped MCP/tool permissions
+fail-closed handling for protected actions
+```
+
+Main policy files:
+
+```text
+ai/guard.yaml
+ai/guard/engine.js
+ai/guard/runner.js
+ai/guard/subagent-capabilities.js
+ai/tasks/feature/guard.js
+```
+
+Human-only actions include:
 
 ```bash
-agentic resume AUTH-104
+agentic approve ...
+agentic architecture ...
 ```
 
-Completed stages are not blindly repeated.
+Agents are prevented from promoting themselves through those gates.
 
-### 8. Behavior-preserving refactor
+The authority model is:
+
+```text
+Model output          ≠ workflow authority
+Agent prose           ≠ evidence
+Human gate            = explicit human action
+Runtime state         = controlled transition
+Verification evidence = exact run/build/commit identity
+```
+
+---
+
+## Run isolation
+
+Each run receives an isolated Git worktree.
+
+Standalone mode:
+
+```text
+.ai-worktrees/<run-id>/
+.agentic-runs/<run-id>/
+```
+
+Runtime-development mode uses the runtime's own run state directory.
+
+A run records:
+
+```text
+base SHA
+current SHA
+branch
+source repository
+worktree path
+dirty state
+attempt history
+stage status
+```
+
+Unsafe cleanup is rejected unless force is explicitly requested.
+
+See [docs/run-isolation.md](docs/run-isolation.md).
+
+---
+
+## Structured artifacts and evidence
+
+Important workflow decisions are persisted as artifacts rather than existing only in model conversation history.
+
+Examples include:
+
+```text
+requirements
+acceptance criteria
+Definition of Done
+specialist findings
+conflicts
+implementation plan
+build/test results
+reviews
+architecture assessment/options/selection
+behavior baseline/invariants/equivalence
+C4 model
+verification
+device evidence
+telemetry
+```
+
+Artifacts are stored as human-readable Markdown with structured JSON sidecars where required.
+
+Schemas live in:
+
+```text
+ai/workflow/schemas/
+```
+
+Invalid, missing, stale, wrong-run, or semantically failing artifacts block stage completion.
+
+See [docs/structured-artifacts.md](docs/structured-artifacts.md).
+
+---
+
+## Behavior-preserving refactoring
+
+Refactor mode treats **observable behavior equivalence** as the success criterion.
 
 Start:
 
@@ -902,43 +680,65 @@ agentic refactor RF-001 \
   --request "Refactor authentication without changing behavior"
 ```
 
-The refactor workflow adds behavior-safety stages:
+Flow:
 
 ```text
-Behavior baseline
-  ↓
-Preservation invariants
-  ↓
-Characterization coverage
-  ↓
-Plan
-  ↓
-Human approval
-  ↓
-Incremental implementation/checkpoints
-  ↓
-Build & tests
-  ↓
-Behavior regression review
-  ↓
-Contract diff
-  ↓
-Behavior equivalence
+impact / inspection
+      ↓
+behavior baseline
+      ↓
+preservation invariants
+      ↓
+characterization coverage gate
+      ↓
+specialist analysis
+      ↓
+refactor plan
+      ↓
+human approval
+      ↓
+verified increments
+      ↓
+scope-aware build/test matrix
+      ↓
+behavior-regression review
+      ↓
+contract diff
+      ↓
+behavior-equivalence gate
+      ↓
+final verification
 ```
 
-Approve:
+The baseline can cover:
 
-```bash
-agentic approve RF-001
+```text
+public APIs
+state transitions
+side effects
+network/API behavior
+storage keys/formats
+navigation/deep links
+analytics
+errors/fallbacks
+concurrency/ordering
+lifecycle/background behavior
+known unverified scenarios
 ```
 
-Final report:
+Unexpected behavior changes fail equivalence.
+
+Generate the final report:
 
 ```bash
 agentic report RF-001
 ```
 
-### 9. Whole-application refactor
+---
+
+## Whole-application refactor and architecture
+
+Whole-app refactoring adds an architecture decision workflow before implementation.
 
 Start:
 
@@ -947,444 +747,38 @@ agentic refactor-app APP-001 \
   --request "Modernize the complete application architecture without changing behavior"
 ```
 
-The runtime generates an architecture assessment and multiple architecture options before implementation.
+The runtime produces:
 
-When the options are ready, the human chooses one:
+```text
+architecture assessment
+2-4 architecture options
+trade-offs and weighted criteria
+advisory recommendation
+C4 previews
+migration complexity/reversibility
+team/operations/security/performance/testability impact
+```
+
+The human selects the target:
 
 ```bash
 agentic architecture APP-001 B
 ```
 
-Architecture selection is also a human-only gate.
-
-After reviewing the selected target architecture, C4 model, migration waves, and implementation plan:
-
-```bash
-agentic approve APP-001
-```
-
-The runtime then performs implementation, architecture-compliance review, behavior-equivalence verification, and final verification.
-
-### 10. Inspect Hybrid RAG directly
-
-Normal workflows invoke Hybrid RAG automatically.
-
-For debugging or exploration:
-
-```bash
-agentic rag \
-  --query "Where is the refresh token stored?" \
-  --role security
-```
-
-Architecture example:
-
-```bash
-agentic rag \
-  --query "How are feature modules coupled?" \
-  --role architect
-```
-
-Results include repository paths and line ranges so retrieved context remains inspectable.
-
-### 11. Work with another repository without changing directories
-
-```bash
-agentic --project ~/projects/banking-android doctor
-```
-
-Feature example:
-
-```bash
-agentic --project ~/projects/payment-backend \
-  feature PAY-101 \
-  --request "Add idempotency to payment creation"
-```
-
-### 12. Stack examples
-
-Android:
-
-```bash
-agentic feature AND-101 \
-  --request "Add certificate pinning"
-```
-
-iOS:
-
-```bash
-agentic feature IOS-101 \
-  --request "Add Face ID authentication"
-```
-
-React Native:
-
-```bash
-agentic feature RN-101 \
-  --request "Add offline-first profile caching"
-```
-
-Flutter:
-
-```bash
-agentic feature FL-101 \
-  --request "Add biometric authentication"
-```
-
-Frontend:
-
-```bash
-agentic feature WEB-101 \
-  --request "Add an accessible checkout flow"
-```
-
-Backend:
-
-```bash
-agentic feature BE-101 \
-  --request "Add idempotency to the payment API"
-```
-
-The command surface stays the same. Stack detection and specialist selection determine which analysis, tests, and verification paths are relevant.
-
-### 13. Check and install Agentic updates
-
-Check for updates without modifying the runtime:
-
-```bash
-agentic update --check
-```
-
-Machine-readable status:
-
-```bash
-agentic update --check --json
-```
-
-Install the latest stable runtime:
-
-```bash
-agentic update
-```
-
-Update flow:
+The runtime then generates:
 
 ```text
-fetch origin/main
-      ↓
-verify runtime clone is clean
-      ↓
-verify safe fast-forward
-      ↓
-update runtime
-      ↓
-npm ci
-      ↓
-npm link
-      ↓
-runtime version check
-      ↓
-standalone CLI self-test
-      ↓
-external-project isolation self-test
-      ↓
-success
+selected target architecture
+dependency/boundary contract
+C4 model
+Structurizr DSL
+migration waves
+rollback points
+architecture fitness functions
+implementation plan
 ```
 
-The updater changes only the installed Agentic runtime clone. It does not update or reset your Android/iOS/RN/Flutter/frontend/backend project.
-
-If installation or verification fails after Git moves, the updater restores the previous runtime commit and attempts to restore dependencies and the global link.
-
-### 14. Inspect or clean a run worktree
-
-Show the isolated worktree for a run:
-
-```bash
-agentic worktree AUTH-104
-```
-
-Clean it when it is safe to remove:
-
-```bash
-agentic cleanup AUTH-104
-```
-
-Force cleanup is available only when you intentionally accept the risk:
-
-```bash
-agentic cleanup AUTH-104 --force
-```
-
-The runtime refuses unsafe cleanup when unpublished or uncommitted work would be lost unless force is explicitly requested.
-
-### 15. Command reference
-
-| Command | Purpose |
-|---|---|
-| `agentic init` | initialize an existing Git project |
-| `agentic doctor` | validate project/runtime prerequisites |
-| `agentic feature <id> --request "..."` | start a normal feature workflow |
-| `agentic resume <id>` | resume a paused workflow |
-| `agentic approve <id>` | human approval of the implementation plan |
-| `agentic progress <id> [--watch]` | show workflow progress |
-| `agentic refactor <id> --request "..."` | start a behavior-preserving refactor |
-| `agentic refactor-app <id> --request "..."` | start a whole-application architecture refactor |
-| `agentic architecture <id> <option>` | record the human architecture choice |
-| `agentic report <id>` | generate/read the refactor verification report |
-| `agentic rag --query "..."` | inspect Hybrid RAG retrieval directly |
-| `agentic worktree <id>` | inspect run worktree state |
-| `agentic cleanup <id>` | safely remove a run worktree |
-| `agentic version` | show runtime version |
-| `agentic update --check` | check for a newer stable runtime |
-| `agentic update` | safely update the installed runtime |
-
-### 16. Recommended first run
-
-For a new project:
-
-```bash
-cd ~/projects/my-project
-
-agentic init
-agentic doctor
-
-agentic feature FEAT-001 \
-  --request "Describe the feature you want to implement"
-
-agentic progress FEAT-001 --watch
-```
-
-When the plan is ready, review it and run:
-
-```bash
-agentic approve FEAT-001
-```
-
-### Standalone workflow visualization
-
-```mermaid
-flowchart TD
-    CLI[agentic CLI] --> P[Target project]
-    P --> D[Doctor + stack detection]
-    D --> W[Isolated product worktree]
-    W --> R[Requirements + AC + DoD]
-    R --> H[Hybrid RAG]
-    H --> S[Relevant specialist agents]
-    S --> Y[Synthesis + conflict gate]
-    Y --> PL[Implementation plan]
-    PL --> A{Human approval}
-    A --> I[Implementation]
-    I --> T[Build + tests]
-    T --> V[Independent reviews]
-    V --> E[Evidence / equivalence / architecture compliance]
-    E --> G[GitHub verification]
-```
-
-### Human authority and guardrails
-
-```text
-Runtime policy
-     │
-     ▼
-agentic guard-hook
-     │
-     ▼
-Claude / Codex tool request
-     │
-     ▼
-Decision against PRODUCT WORKTREE
-```
-
-The agent cannot promote itself through human gates. Attempts from an executing coding agent to run:
-
-```bash
-agentic approve ...
-agentic architecture ...
-```
-
-are rejected by the workflow guard.
-
-
----
-
-## Quick start
-
-```bash
-git clone https://github.com/mohamedma872/ai-agent-workflow-kit
-cd ai-agent-workflow-kit
-npm ci
-cp .mcp.json.example .mcp.json
-```
-
-Configure only the MCPs you actually use.
-
-Validate the runtime:
-
-```bash
-npm run workflow:version
-npm run workflow:version:check
-npm run guard:check
-npm run guard:selftest
-npm run workflow:check
-npm run workflow:artifacts:check
-npm run workflow:subagents:check
-npm run exam:check
-npm run exam:subagents:check
-```
-
----
-
-## Refactor in 3 commands
-
-For normal use, this is all you need.
-
-### 1. Start the refactor
-
-```bash
-npm run refactor -- RF-001 \
-  --request "Refactor login validation without changing behavior" \
-  --scope mobile
-```
-
-This automatically creates the run, forces **refactor mode**, builds the behavior baseline and invariants, runs the required analysis/checks, creates the refactor plan, and stops at the human approval gate.
-
-### 2. Review and approve
-
-Review:
-
-```text
-ai/runs/RF-001/04-behavior-baseline.md
-ai/runs/RF-001/04-refactor-invariants.md
-ai/runs/RF-001/06-plan.md
-```
-
-Then:
-
-```bash
-npm run refactor:approve -- RF-001
-```
-
-That single command approves the plan and continues through implementation, incremental verification, tests, independent reviews, fixes, behavior-equivalence checking, and final verification.
-
-### 3. Read the final report
-
-```bash
-npm run refactor:report -- RF-001
-```
-
-Optional progress check:
-
-```bash
-npm run refactor:status -- RF-001
-```
-
-The runtime handles the detailed refactor gates automatically. Low-level commands such as manual checkpoints and coverage waivers are only needed for recovery or exceptional cases.
-
----
-
-## Whole-app refactor with architecture decision + C4
-
-A whole-app refactor adds an architecture decision phase before implementation. The agent explores alternatives and explains the evidence/trade-offs; **the human chooses the target architecture**.
-
-### 1. Start the whole-app refactor
-
-```bash
-npm run refactor:app -- APP-RF-001 \
-  --request "Refactor the entire application without changing behavior" \
-  --scope mobile
-```
-
-The runtime automatically produces:
-
-```text
-04-behavior-baseline.md
-04-refactor-invariants.md
-05-architecture-assessment.md
-05-architecture-options.md
-```
-
-The architecture assessment covers the information needed for a defensible decision:
-
-```text
-current architecture and dependencies
-business/product drivers
-hard technical constraints
-quality attributes and priorities
-team structure and ownership
-delivery/release constraints
-operations and observability
-security and compliance
-data ownership and integrations
-performance/scalability
-testing and quality strategy
-migration constraints and rollback
-cost/complexity constraints
-risks, unknowns and assumptions
-weighted decision criteria
-```
-
-Each proposed option includes:
-
-```text
-architecture style and boundaries
-benefits
-trade-offs
-risks
-migration effort/complexity
-reversibility and rollback
-team impact
-delivery/operations impact
-security impact
-performance impact
-testability impact
-scores against the same decision criteria
-C4 preview
-agent recommendation + caveats
-```
-
-The recommendation is advisory only. Execution stops at the architecture human gate.
-
-### 2. Choose the architecture
-
-Review:
-
-```text
-ai/runs/APP-RF-001/05-architecture-assessment.md
-ai/runs/APP-RF-001/05-architecture-options.md
-```
-
-Then explicitly select an option:
-
-```bash
-npm run refactor:architecture -- APP-RF-001 A
-```
-
-That records the human decision and continues automatically to generate:
-
-```text
-05-architecture-selection.md
-05-target-architecture.md
-05-c4-model.md
-05-architecture-migration.md
-06-plan.md
-```
-
-The workflow then stops again at the normal implementation-plan approval gate.
-
-### C4 integration
-
-The selected architecture is modeled using the C4 model:
-
-```text
-System Context     required
-Container          required
-Component          generated for important/high-risk containers
-Dynamic            generated when interaction sequencing matters
-Deployment         generated when runtime/deployment topology matters
-Code-level         optional/on-demand
-```
-
-The C4 artifact also contains version-controlled **Structurizr DSL**. After the architecture package is generated, the runtime promotes the selected architecture into the refactor worktree:
+Architecture-as-code is promoted into:
 
 ```text
 docs/architecture/
@@ -1396,509 +790,469 @@ docs/architecture/
 ├── workspace.dsl
 ├── migration-plan.md
 ├── migration-plan.json
-└── decisions/APP-RF-001/
-    ├── assessment.md
-    ├── options.md
-    └── selection.md
+└── decisions/<run-id>/
 ```
 
-This makes the architecture model part of the Git diff and review process rather than leaving it only in the ignored `ai/runs/` directory.
-
-The target architecture contract separately defines machine-checkable rules such as:
-
-```text
-allowed dependencies
-forbidden dependencies
-module responsibilities
-data ownership
-state/navigation rules
-integration contracts
-security controls
-observability requirements
-testing strategy
-performance budgets
-migration guardrails
-architecture fitness functions
-```
-
-### 3. Approve the migration plan
-
-Review the generated target architecture, C4 model, migration waves, and `06-plan.md`.
-
-Then:
-
-```bash
-npm run refactor:approve -- APP-RF-001
-```
-
-Implementation continues through each refactor increment/wave, build and tests, independent reviewers, fixes, an **architecture compliance review**, behavior-equivalence verification, and final verification.
-
-### 4. Read the final report
-
-```bash
-npm run refactor:report -- APP-RF-001
-```
-
-The final report includes both:
-
-```text
-Behavior verification
-  baseline coverage
-  unexpected behavior changes
-  contract/invariant diff
-  unverified scenarios
-
-Architecture verification
-  human-selected option
-  agent recommendation vs human choice
-  target architecture contract
-  C4 container count
-  migration wave count
-  architecture compliance status/findings
-  architecture fitness functions
-```
-
-Optional progress:
-
-```bash
-npm run refactor:status -- APP-RF-001
-```
+After implementation, an independent architecture-compliance review runs before final behavior-equivalence verification.
 
 ---
 
-## Start a feature
+## Mobile verification with Appium
 
-The doctor and isolated worktree are automatic.
-
-```bash
-npm run workflow:start -- HM-003 \
-  --request "Add Flutter biometric login with password fallback" \
-  --scope mobile
-```
-
-The runtime advances until it reaches:
-
-```text
-human approval
-blocked prerequisite
-policy failure
-execution failure
-unresolved specialist conflict
-final completion
-```
-
-Review the plan and approve explicitly:
-
-```bash
-node ai/tasks/feature/runs.js approve HM-003
-npm run workflow:resume -- HM-003
-```
-
-Useful commands:
-
-```bash
-npm run workflow:next -- HM-003
-npm run workflow:run-next -- HM-003
-npm run workflow:resume -- HM-003
-npm run workflow:worktree -- HM-003
-npm run workflow:cleanup -- HM-003
-npm run workflow:progress -- --run HM-003
-```
-
-`ai/runs/_active` is only an interactive convenience pointer. Runtime commands use explicit run identity.
-
----
-
-## Workflow doctor
-
-The runtime checks prerequisites before execution and again on resume where needed.
-
-Scopes:
-
-```text
---scope mobile
---scope frontend
---scope backend
---scope all
---scope auto
-```
-
-Examples:
-
-```bash
-npm run workflow:doctor -- --scope mobile
-npm run workflow:doctor:json -- --scope mobile
-```
-
-The doctor checks relevant runtime dependencies, configured agents/MCPs, project tooling, and device prerequisites.
-
-See [docs/workflow-doctor.md](docs/workflow-doctor.md).
-
----
-
-## Run isolation
-
-Each feature run gets its own git worktree:
-
-```text
-.ai-worktrees/<run-id>/
-```
-
-and branch:
-
-```text
-ai/run/<run-id>
-```
-
-Runtime worktree metadata is recorded in:
-
-```text
-ai/runs/<run-id>/engine/worktree.json
-```
-
-The runtime records the base/current SHA and refuses unsafe cleanup when unpublished or uncommitted work exists.
-
-See [docs/run-isolation.md](docs/run-isolation.md).
-
----
-
-## Structured workflow artifacts
-
-The runtime keeps human-readable Markdown and machine-readable JSON sidecars.
-
-Examples:
-
-```text
-02-acceptance-criteria.md
-02-acceptance-criteria.json
-
-05-analysis/*.md
-05-analysis/*.json
-
-06-plan.md
-06-plan.json
-
-08-build-test.md
-08-build-test.json
-
-09-reviews/*.md
-09-reviews/*.json
-
-11-verification.md
-11-verification.json
-```
-
-Missing, invalid, wrong-run, or semantically failing structured artifacts prevent stage completion.
-
-Review gates reject unresolved critical/high findings.
-
-See [docs/structured-artifacts.md](docs/structured-artifacts.md).
-
----
-
-## Guardrails
-
-Guardrails enforce what agents may do.
-
-They cover:
-
-- secret-file protection
-- credential-leak prevention
-- runtime/guard self-protection
-- pre-approval product-write blocking
-- shell-write detection
-- destructive command checks
-- outward-effect checks
-- role-scoped MCP/tool permissions
-- fail-closed handling for protected/destructive guard failures
-
-A read-only specialist cannot become a writer merely because the model decides it wants to edit a file.
-
-Main files:
-
-```text
-ai/guard/engine.js
-ai/guard/runner.js
-ai/guard/subagent-capabilities.js
-ai/guard.yaml
-ai/tasks/feature/guard.js
-```
-
----
-
-## Retry, timeout, and fallback
-
-Execution policy is declarative.
-
-Attempt history records:
-
-```text
-attempt id
-attempt number
-executor
-start/end time
-status
-exit classification
-reason
-```
-
-Failure classes include:
-
-```text
-success
-timeout
-transient
-unavailable
-deterministic
-policy
-```
-
-Only configured retryable classes retry.
-
-Completed stages are not rerun blindly when a feature resumes.
-
----
-
-## Mobile verification
-
-Required mobile/UI evidence runs after implementation, build/test, review, and fixes.
+For mobile/UI workflows requiring device evidence:
 
 ```text
 final post-fix build
       ↓
-Appium session per required platform
+Appium Android / iOS session
       ↓
-AC-driven device checks
+acceptance-criteria-driven checks
       ↓
 fresh screenshots + QC manifest
       ↓
-runtime evidence attestation
+exact-build evidence attestation
       ↓
 final verification
 ```
 
-Evidence directory:
+Evidence binds to:
 
 ```text
-ai/runs/<run-id>/device/
-├── mobile-device-qc.md
-├── appium-sessions.json
-├── evidence.json
-└── screenshots/
+run ID
+attempt ID
+Git SHA
+workspace fingerprint
+real Appium session metadata
+device identity
+package/bundle identity
+APK/AAB/IPA/.app SHA-256 where applicable
+build/version metadata
+screenshot hashes
+manifest hash
 ```
 
-`evidence.json` binds evidence to:
+Partial, stale, copied, wrong-platform, wrong-attempt, or wrong-build evidence cannot satisfy a required mobile verification gate.
 
-- current run and attempt
-- Git SHA
-- workspace fingerprint
-- real Appium session metadata
-- device identity
-- app package/bundle identity
-- exact APK/AAB/IPA/.app SHA-256 where applicable
-- build/version metadata
-- screenshot hashes
-- manifest hash
+Appium MCP aliases recognized by the doctor:
 
-Partial, stale, copied, wrong-platform, wrong-attempt, or wrong-build evidence cannot satisfy required mobile verification.
+```text
+appium
+appium-mcp
+mcp-appium
+```
+
+For Appium MCP execution, Node 22+ may be required. The core runtime itself supports Node 20+.
+
+See:
+
+- [docs/mobile-evidence-runner.md](docs/mobile-evidence-runner.md)
+- [docs/mobile-evidence-attestation.md](docs/mobile-evidence-attestation.md)
+- [docs/workflow-doctor.md](docs/workflow-doctor.md)
 
 ---
 
-## GitHub verification
+## Evals and quality measurement
 
-After final verification:
-
-```bash
-npm run workflow:verify:github -- HM-003 \
-  --repo owner/repo \
-  --sha <expected-pr-head-sha>
-```
-
-Status context:
-
-```text
-agentic-workflow-verification
-```
-
-The published status uses an allowlisted summary and does not publish prompts, screenshots, diffs, review prose, logs, or secrets.
-
-Repository protection should require:
-
-```text
-validate
-agentic-workflow-verification
-```
-
-**Repository administration is separate from runtime correctness.** On some private GitHub repository/account configurations, required-status enforcement may need an eligible GitHub plan and repository-admin setup. Runtime issue #40 tracks proving that merge blocking is operational for this repository.
-
-See [docs/github-verification.md](docs/github-verification.md) and [docs/github-merge-enforcement.md](docs/github-merge-enforcement.md).
-
----
-
-## Evals
+The runtime includes deterministic hardening checks and specialist evals.
 
 ### Runtime health
-
-Fast deterministic/oracle/null checks:
 
 ```bash
 npm run exam:check
 ```
 
-Runtime hardening cases cover areas such as:
+Hardening covers areas such as:
 
-- state-forging attempts
-- guard weakening
-- stale/partial mobile evidence
-- retry/resume/fallback behavior
-- concurrent worktree isolation
-- stack-specific feature flows
+```text
+state-forging attempts
+guard weakening
+stale/partial evidence
+retry/resume/fallback
+concurrent worktree isolation
+behavior-preserving refactor regressions
+stack-specific workflows
+```
 
-### Per-agent specialist evals
-
-Validate the specialist eval catalog and metrics plumbing:
+### Specialist evals
 
 ```bash
 npm run exam:subagents:check
 npm run exam:subagents:selftest
 ```
 
-Run the real specialist agents:
+Live specialist trials:
 
 ```bash
 npm run exam:subagents:live
 ```
 
-The live specialist suite includes seeded cases for:
+Live trials require authenticated local model tooling and consume model budget, so they are not run in normal CI.
 
-```text
-Architecture
-Security
-QA
-Performance
-Android
-iOS
-Flutter
-React Native
-API Contract
-Dependency Migration
-```
+### Metrics
 
-These live trials require an authenticated local Claude CLI and intentionally are not run in normal CI because they consume model budget.
-
-### Specialist quality metrics
-
-The eval/reporting layer tracks:
+The reporting layer can track:
 
 ```text
 precision
 recall
-false-positive count/rate
+false-positive rate
 severity-weighted misses
-agent/runtime version
-duration
-attempts
-retries
+latency
+attempt count
+retry count
 executor
 cost when available
 findings produced
 findings retained after synthesis
-findings not retained
-review findings
-resolved/unresolved review findings
+review resolution state
 ```
-
-Metrics can compare a current result set with a previous baseline and can enforce minimum precision/recall thresholds for scheduled eval runs.
-
-Generate a local report:
-
-```bash
-npm run workflow:subagents:report -- \
-  --state ai/runs/<RUN-ID>/state.json \
-  --results ai/evals/results/subagent/results.jsonl
-```
-
-The report supports Markdown by default and JSON with `--json`.
-
-Its operational comparison is advisory only. Quality/latency/cost statistics never override workflow gates or human decisions.
 
 See [docs/runtime-hardening-evals.md](docs/runtime-hardening-evals.md).
 
 ---
 
+## GitHub verification and merge enforcement
+
+After final verification, the runtime can publish a commit-bound GitHub status:
+
+```text
+agentic-workflow-verification
+```
+
+The verification is tied to the expected commit SHA and uses a sanitized allowlisted summary.
+
+It does not publish:
+
+```text
+prompts
+screenshots
+diff contents
+review prose
+logs
+secrets
+```
+
+Recommended required checks:
+
+```text
+validate
+agentic-workflow-verification
+```
+
+Repository-administration capability is separate from runtime correctness. Required-status enforcement still depends on repository/admin account capabilities.
+
+See:
+
+- [docs/github-verification.md](docs/github-verification.md)
+- [docs/github-merge-enforcement.md](docs/github-merge-enforcement.md)
+
+---
+
+## Configuration
+
+### Runtime workflow
+
+```text
+ai/workflows/feature.yaml
+```
+
+Defines:
+
+```text
+stages
+dependencies
+conditional roles
+execution policies
+human gates
+review stages
+verification flow
+```
+
+### Agent/executor configuration
+
+```text
+ai/agents.yaml
+```
+
+### Role contracts
+
+```text
+ai/subagents/contracts.yaml
+```
+
+### Guard policy
+
+```text
+ai/guard.yaml
+```
+
+### Project configuration
+
+Created by `agentic init`:
+
+```text
+.agentic/config.yaml
+.agentic/knowledge.yaml
+.agentic/guardrails.yaml
+```
+
+### MCP configuration
+
+Project-level:
+
+```text
+.mcp.json
+```
+
+The runtime also discovers supported user-level Claude/Codex MCP configuration where applicable.
+
+---
+
+## Updates
+
+Check:
+
+```bash
+agentic update --check
+```
+
+Machine-readable:
+
+```bash
+agentic update --check --json
+```
+
+Apply:
+
+```bash
+agentic update
+```
+
+Current clone + `npm link` update safety:
+
+```text
+fetch origin/main
+      ↓
+verify runtime clone is clean
+      ↓
+refuse custom/contributor branches
+      ↓
+require safe fast-forward
+      ↓
+update runtime
+      ↓
+npm ci
+      ↓
+npm link
+      ↓
+runtime version validation
+      ↓
+standalone CLI self-test
+      ↓
+external-project isolation self-test
+      ↓
+success
+```
+
+If post-update installation/verification fails, the updater restores the previous runtime commit and attempts to restore dependencies and linking.
+
+The updater modifies only the installed runtime clone, not the target application repository.
+
+---
+
 ## Versioning and releases
 
-Authoritative runtime version:
+Authoritative metadata:
 
 ```text
 ai/runtime-version.json
 ```
 
-Commands:
+Current:
+
+```text
+runtimeVersion         1.5.1
+workflowFormatVersion  1
+artifactSchemaVersion  1
+releaseChannel         stable
+```
+
+Validate:
 
 ```bash
 npm run workflow:version
-npm run workflow:version:json
 npm run workflow:version:check
+npm run workflow:release:check
 ```
 
-Version layers are intentionally separate:
-
-```text
-runtimeVersion         1.1.0
-workflowFormatVersion  1
-artifactSchemaVersion  1
-```
-
-Release tooling:
+Release helper:
 
 ```bash
-npm run workflow:release:check
 npm run workflow:release -- notes
 npm run workflow:release -- tag --dry-run
 npm run workflow:release -- tag
 npm run workflow:release -- tag --push
 ```
 
-A pushed `vX.Y.Z` tag can trigger the GitHub Release workflow.
+A pushed `vX.Y.Z` tag triggers the GitHub **Runtime Release** workflow, which validates runtime metadata and creates the GitHub Release.
 
-See [docs/releases.md](docs/releases.md) and [docs/migrations/1.1.0.md](docs/migrations/1.1.0.md).
+See:
+
+- [CHANGELOG.md](CHANGELOG.md)
+- [docs/releases.md](docs/releases.md)
+- [docs/migrations/](docs/migrations/)
 
 ---
 
-## Important files
+## Security
+
+Supported security-update versions and reporting guidance:
+
+[SECURITY.md](SECURITY.md)
+
+Security-sensitive areas include:
+
+```text
+human-gate bypass
+workflow-state forgery
+guardrail bypass
+unauthorized file writes
+secret/credential leakage
+prompt-injection escalation
+MCP capability escalation
+unsafe updater behavior
+worktree/path isolation failures
+forged/stale verification evidence
+wrong-build device evidence
+wrong-commit GitHub verification
+```
+
+Do not disclose vulnerability details in a public issue.
+
+---
+
+## Repository layout
+
+```text
+.
+├── ai/
+│   ├── cli/                 # standalone CLI + updater
+│   ├── evals/               # runtime/specialist evals
+│   ├── guard/               # guard engine and hooks
+│   ├── mcp/                 # MCP integrations
+│   ├── rag/                 # Hybrid RAG
+│   ├── subagents/           # role contracts
+│   ├── tasks/               # task adapters and evidence runners
+│   ├── workflow/            # engine, router, progress, verification, schemas
+│   └── workflows/           # deterministic workflow DAG
+│
+├── docs/                    # detailed documentation and migrations
+├── .github/workflows/       # CI and release automation
+├── SECURITY.md
+├── CHANGELOG.md
+├── AGENTS.md
+├── CLAUDE.md
+└── README.md
+```
+
+Important implementation files:
 
 | File | Purpose |
 |---|---|
-| `ai/workflows/feature.yaml` | Feature DAG, roles, stages, conditions, and execution policy references |
-| `ai/workflow/engine.js` | Deterministic workflow/stage runner |
-| `ai/workflow/router.js` | Resolves and executes configured roles |
-| `ai/workflow/subagent-selector.js` | Stack/risk/change-based specialist selection |
-| `ai/workflow/subagent-contracts.js` | Contract validation and required-MCP preflight |
-| `ai/workflow/subagent-context.js` | Minimal per-role context construction |
-| `ai/workflow/finding-synthesis.js` | Deterministic finding deduplication/provenance |
-| `ai/workflow/conflict-tracker.js` | Detects incompatible specialist recommendations |
-| `ai/workflow/conflicts.js` | Explicit conflict-resolution command |
-| `ai/workflow/subagent-telemetry.js` | Runtime specialist attempt telemetry |
-| `ai/workflow/subagent-report.js` | Local quality/telemetry report |
-| `ai/subagents/contracts.yaml` | Role inputs, outputs, permissions, and MCP declarations |
-| `ai/workflow/artifacts.js` | Structured artifact validation/rendering |
-| `ai/workflow/doctor.js` | Scope-aware prerequisite preflight |
-| `ai/workflow/worktree.js` | Per-run worktree lifecycle/isolation |
-| `ai/workflow/execution-policy.js` | Retry/timeout/fallback policy |
-| `ai/guard/engine.js` | Main guardrail policy engine |
-| `ai/guard/runner.js` | Fail-closed guard supervisor |
-| `ai/guard/subagent-capabilities.js` | Role-scoped capability enforcement |
-| `ai/tasks/feature/runs.js` | Controlled run state and approval/evidence gates |
-| `ai/tasks/feature/mobile-evidence.js` | Executable Appium evidence step |
-| `ai/tasks/feature/evidence-attestation.js` | Exact-build/device evidence attestation |
-| `ai/tasks/subagent/cases.yaml` | Isolated live specialist eval cases |
-| `ai/tasks/subagent/fixtures/` | Seeded specialist eval fixtures |
-| `ai/evals/subagent-metrics.js` | Precision/recall/false-positive/severity metrics |
-| `ai/evals/runtime-hardening-check.js` | Deterministic runtime-hardening regressions |
-| `ai/workflow/github-verification.js` | Commit-bound GitHub workflow status |
-| `ai/workflow/version.js` | Runtime/format version checks |
-| `ai/workflow/release.js` | Release metadata, notes, and tag helper |
+| `ai/cli/agentic.js` | standalone CLI |
+| `ai/cli/update.js` | safe runtime updater |
+| `ai/workflow/engine.js` | deterministic stage runner |
+| `ai/workflow/router.js` | role/executor routing |
+| `ai/workflow/doctor.js` | prerequisite preflight |
+| `ai/workflow/worktree.js` | run isolation |
+| `ai/workflow/subagent-selector.js` | dynamic specialist selection |
+| `ai/workflow/finding-synthesis.js` | finding deduplication/provenance |
+| `ai/workflow/conflict-tracker.js` | specialist conflict detection |
+| `ai/rag/hybrid-rag.js` | Hybrid RAG retrieval |
+| `ai/guard/engine.js` | guard policy engine |
+| `ai/tasks/feature/mobile-evidence.js` | Appium evidence execution |
+| `ai/tasks/feature/evidence-attestation.js` | exact-build evidence binding |
+| `ai/workflow/github-verification.js` | commit-bound GitHub status |
+| `ai/workflow/refactor-cli.js` | refactor/whole-app CLI flow |
+| `ai/workflow/version.js` | runtime compatibility/version checks |
+| `ai/workflow/release.js` | release/tag tooling |
+
+---
+
+## Documentation index
+
+### Runtime and execution
+
+- [Workflow doctor](docs/workflow-doctor.md)
+- [Execution policy](docs/execution-policy.md)
+- [Run isolation](docs/run-isolation.md)
+- [Structured artifacts](docs/structured-artifacts.md)
+- [Guard failure mode](docs/guard-failure-mode.md)
+
+### Mobile
+
+- [Flutter support](docs/flutter-support.md)
+- [Mobile evidence runner](docs/mobile-evidence-runner.md)
+- [Mobile evidence attestation](docs/mobile-evidence-attestation.md)
+
+### GitHub / CI
+
+- [GitHub verification](docs/github-verification.md)
+- [GitHub merge enforcement](docs/github-merge-enforcement.md)
+
+### Quality / evals
+
+- [Runtime hardening evals](docs/runtime-hardening-evals.md)
+
+### Releases
+
+- [Release process](docs/releases.md)
+- [Migration notes](docs/migrations/)
+
+### Additional internal references
+
+- [Agent instructions](AGENTS.md)
+- [Claude integration](CLAUDE.md)
+- [Runtime internals](ai/README.md)
+- [MCP integration](ai/mcp/README.md)
+- [Eval internals](ai/evals/README.md)
+
+---
+
+## Development and validation
+
+Install:
+
+```bash
+npm ci
+```
+
+Core validation:
+
+```bash
+npm run workflow:version:check
+npm run workflow:release:check
+npm run guard:check
+npm run guard:selftest
+npm run workflow:check
+npm run workflow:artifacts:check
+npm run workflow:subagents:check
+npm run agentic:selftest
+npm run exam:check
+npm run exam:subagents:check
+```
+
+Useful targeted checks:
+
+```bash
+npm run workflow:rag:selftest
+npm run workflow:subagents:select:selftest
+npm run workflow:subagents:synthesis:selftest
+npm run workflow:refactor:gates:selftest
+npm run workflow:refactor:equivalence:selftest
+```
+
+CI validates syntax, release metadata, executable CLI mode, guard behavior, workflow configuration, doctor behavior, evidence, hardening evals, routing, MCP imports, and standalone-project isolation.
 
 ---
 
@@ -1920,18 +1274,36 @@ Human approval remains a real gate.
 
 ---
 
-## Current repository status
+## Current status and known limits
 
-The deterministic runtime, subagent-quality roadmap, and behavior-preserving refactor safety workflow are implemented and passing CI.
-
-One repository-administration item remains open:
+Implemented and CI-covered:
 
 ```text
-#40 — Make private-repo merge enforcement operational
+standalone CLI
+external-project execution
+Hybrid RAG
+specialist role contracts
+guardrails
+human plan gate
+behavior-preserving refactor
+whole-app architecture/C4 flow
+Appium evidence
+structured verification artifacts
+runtime/specialist evals
+GitHub verification publishing
+safe runtime updater
+version/release tooling
+security policy
 ```
 
-That issue concerns GitHub repository protection/account capabilities, not the workflow engine, subagent runtime, guardrails, evals, or evidence implementation.
+Current distribution is still **Git clone + npm link**. Native installers/Homebrew/WinGet packaging are not yet the default distribution path.
+
+Hybrid RAG's semantic embedding channel is optional; the runtime does not automatically provision an external vector database or embedding provider.
+
+Repository-level required-status enforcement depends on GitHub repository/account administration capabilities and must be configured separately from the runtime.
 
 ---
+
+## License
 
 MIT · Mohamed Elsdody
