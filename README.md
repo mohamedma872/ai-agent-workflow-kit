@@ -42,6 +42,7 @@ Security reporting and supported security-update versions are documented in [SEC
 - [Guardrails and human authority](#guardrails-and-human-authority)
 - [Run isolation](#run-isolation)
 - [Structured artifacts and evidence](#structured-artifacts-and-evidence)
+- [Review and observability model](#review-and-observability-model)
 - [Behavior-preserving refactoring](#behavior-preserving-refactoring)
 - [Whole-application refactor and architecture](#whole-application-refactor-and-architecture)
 - [Mobile verification with Appium](#mobile-verification-with-appium)
@@ -668,6 +669,486 @@ Invalid, missing, stale, wrong-run, or semantically failing artifacts block stag
 See [docs/structured-artifacts.md](docs/structured-artifacts.md).
 
 ---
+
+## Review and observability model
+
+The next review layer should be **evidence-first and multi-domain**, not a single generic "review agent".
+
+The recommended model is:
+
+```mermaid
+flowchart TD
+    IMP[Implementation] --> BT[Build + Tests]
+
+    BT --> AR[Architecture Review]
+    BT --> SR[Security Review]
+    BT --> QR[Code Quality Review]
+    BT --> STD[Coding Standards Review]
+    BT --> PR[Performance Profiling]
+
+    PR --> INST[Local Instruments / Benchmarks]
+
+    AR --> N[Normalized Findings]
+    SR --> N
+    QR --> N
+    STD --> N
+    INST --> N
+
+    N --> HS[Holistic Engineering Synthesis]
+    HS --> X[Cross-domain root causes + trade-offs]
+    X --> G{Deterministic Gates}
+
+    G -->|blocking| B[BLOCKED]
+    G -->|non-blocking risk| C[CONDITIONAL]
+    G -->|all required gates pass| P[PASS]
+```
+
+The domain reviewers discover problems independently. The **holistic reviewer** should then reason across domains and identify shared root causes, interactions, and trade-offs.
+
+### Architecture review
+
+Architecture review should compare the **observed architecture** with the expected architecture contract.
+
+Evidence can come from:
+
+```text
+module/dependency graph
+imports
+Gradle modules
+Swift packages
+npm/package boundaries
+DI graph
+navigation graph
+API interfaces
+database ownership
+architecture docs / ADRs
+target architecture contract
+```
+
+Typical checks:
+
+```text
+dependency direction
+layer violations
+cyclic dependencies
+feature ownership
+domain boundaries
+data ownership
+coupling / cohesion
+state ownership
+testability
+observability
+architecture fitness functions
+```
+
+Example finding:
+
+```text
+ARCH-014
+
+Expected:
+presentation → domain → data
+
+Observed:
+presentation → data
+
+Evidence:
+feature/login/LoginViewModel.kt:84
+imports UserRepositoryImpl directly
+
+Impact:
+presentation depends on infrastructure implementation
+
+Recommendation:
+depend on the domain-owned repository abstraction
+```
+
+For whole-application refactors, architecture fitness rules should be machine-checkable where possible.
+
+Examples:
+
+```text
+feature modules cannot depend on another feature implementation
+UI cannot depend directly on network/database implementation
+domain modules cannot depend on Android/iOS UI frameworks
+dependency cycles must equal 0
+forbidden dependency count must equal 0
+```
+
+### Security review
+
+Security review should combine AI reasoning with local/static evidence rather than relying on model opinion alone.
+
+Recommended evidence sources include:
+
+```text
+Semgrep / custom rules
+dependency audit
+secret scanning
+Android manifest / network security config
+iOS entitlements / URL schemes
+secure-storage configuration
+TLS / certificate-pinning configuration
+source-level auth/session analysis
+runtime/device checks where appropriate
+```
+
+Review areas:
+
+```text
+authentication / authorization
+credential and token storage
+session lifecycle / rotation
+TLS / pinning
+WebView usage
+deep links / URL schemes
+Android exported components
+iOS privacy / entitlements
+biometric flows
+sensitive logging
+cryptography
+PII handling
+API validation
+trust boundaries
+```
+
+Security frameworks can be used as review references, for example OWASP MASVS for mobile and OWASP ASVS / Top 10 for web/backend.
+
+### Local performance review
+
+Performance conclusions should be grounded in **measured local evidence**.
+
+The target approach is:
+
+```text
+code inspection
+      +
+local profiler / benchmark
+      +
+before-vs-after baseline
+      ↓
+performance reviewer
+      ↓
+source-correlated findings
+```
+
+Recommended local instruments:
+
+| Stack | Instruments / evidence |
+|---|---|
+| Android | Perfetto, Android Studio Profiler, Macrobenchmark, Benchmark, JankStats, memory/CPU/network traces |
+| iOS | Xcode Instruments: Time Profiler, Allocations, Leaks, Memory Graph, Network, Core Animation, Energy Log |
+| React Native | native Android/iOS instruments, Hermes profiling, React DevTools/Profiler, bundle metrics |
+| Flutter | DevTools CPU/Memory/Performance, frame timing, shader/build metrics |
+| Frontend | Lighthouse, Chrome Performance traces, Core Web Vitals, bundle analyzer, React profiler |
+| Backend | k6, wrk/autocannon/JMeter, JFR/async-profiler/pprof, OpenTelemetry traces, DB EXPLAIN/slow-query logs |
+
+Useful measured metrics include:
+
+```text
+cold / warm startup
+P50 / P95 / P99 latency
+frame time / jank
+CPU
+memory / allocations / GC
+bundle size
+network latency
+DB latency
+throughput
+error rate
+energy / battery where relevant
+```
+
+A performance finding should connect the metric to the source:
+
+```text
+PERF-004
+
+Observed:
+Login → Home transition P95 = 720 ms
+
+Trace:
+312 ms JSON parsing
+205 ms database query
+143 ms main-thread image work
+
+Evidence:
+Perfetto trace
+ProfileRepository.kt:118
+HomeViewModel.kt:74
+
+Recommendation:
+move parsing off the main thread,
+optimize/index the query,
+remove synchronous image decoding
+```
+
+### Baseline and regression budgets
+
+Performance and behavior-sensitive changes should be compared against a baseline.
+
+Example:
+
+```text
+                    Before      After       Change
+Cold startup        1.41 s      1.53 s      +8.5%
+P95 frame time      15 ms       18 ms       +20%
+Peak memory         183 MB      197 MB      +7.6%
+API P95             222 ms      220 ms      -0.9%
+```
+
+Recommended project configuration can define explicit budgets:
+
+```yaml
+performance:
+  startup:
+    regression_max_percent: 5
+  memory:
+    regression_max_percent: 10
+  frame_time:
+    p95_max_ms: 16.7
+```
+
+The runtime should treat budget breaches as deterministic gates instead of asking the AI to decide whether a regression is "acceptable".
+
+### Code quality review
+
+Code quality review should combine static analysis with contextual AI review.
+
+Typical concerns:
+
+```text
+complexity
+duplication
+large functions/classes
+dead code
+responsibility size
+coupling / cohesion
+error handling
+testability
+maintainability
+abstraction quality
+dependency direction
+naming / readability
+```
+
+Recommended local tools:
+
+| Stack | Tools |
+|---|---|
+| Kotlin | Detekt, ktlint |
+| Java | SpotBugs, Checkstyle, PMD |
+| Swift | SwiftLint |
+| TypeScript / JavaScript | ESLint |
+| Python | Ruff, mypy |
+| Dart / Flutter | dart analyze |
+| Cross-stack | SonarQube / SonarScanner |
+
+The AI reviewer should consume tool findings and repository context rather than re-inventing static-analysis rules in prose.
+
+### Coding standards review
+
+Project-specific engineering standards should be first-class input.
+
+Recommended project layout:
+
+```text
+.agentic/
+├── config.yaml
+├── knowledge.yaml
+├── guardrails.yaml
+└── standards/
+    ├── architecture.md
+    ├── security.md
+    ├── testing.md
+    ├── kotlin.md
+    ├── swift.md
+    ├── react-native.md
+    └── backend.md
+```
+
+A standards reviewer should compare changed code against these local rules and produce evidence-backed violations.
+
+Example:
+
+```text
+STD-004
+
+Rule:
+ViewModels must not depend directly on Retrofit services.
+
+Observed:
+ProfileViewModel.kt:73 → ProfileApi
+
+Expected:
+ViewModel → UseCase → Repository
+```
+
+### Normalized review findings
+
+All review domains should emit the same structured finding model so synthesis is deterministic.
+
+Example:
+
+```json
+{
+  "id": "PERF-004",
+  "domain": "performance",
+  "severity": "high",
+  "confidence": 0.97,
+  "title": "Main-thread JSON parsing delays startup",
+  "evidence": [
+    {
+      "type": "instrument",
+      "source": "perfetto",
+      "metric": "mainThreadBlockedMs",
+      "value": 312
+    },
+    {
+      "type": "source",
+      "file": "ProfileRepository.kt",
+      "line": 118
+    }
+  ],
+  "impact": ["startup", "responsiveness"],
+  "recommendation": "Move parsing off the main thread.",
+  "verification": "Re-run startup benchmark and require budget pass."
+}
+```
+
+### Holistic engineering reviewer
+
+The holistic reviewer should not simply concatenate specialist output.
+
+It should identify cross-domain relationships such as:
+
+```text
+Architecture:
+SessionManager is a global dependency used by many modules.
+
+Security:
+SessionManager persists credentials insecurely.
+
+Performance:
+SessionManager performs synchronous disk work during startup.
+
+Holistic root cause:
+session management is a cross-cutting infrastructure dependency with
+architecture, security, and startup-performance impact.
+```
+
+A holistic report should include:
+
+```text
+blocking findings
+high-risk findings
+cross-domain root causes
+architecture impact
+security impact
+performance impact
+code-quality / maintainability impact
+standards violations
+testing gaps
+measured baseline regressions
+recommended remediation order
+required reverification
+```
+
+The AI is responsible for synthesis and explanation; deterministic runtime rules remain responsible for the final gate.
+
+### Review outcome
+
+Avoid a cosmetic overall score such as `83/100` as the primary decision.
+
+Prefer deterministic outcomes:
+
+```text
+PASS
+CONDITIONAL
+BLOCKED
+```
+
+Examples:
+
+```text
+critical security finding
+    → BLOCKED
+
+unexpected behavior regression
+    → BLOCKED
+
+required performance budget exceeded
+    → BLOCKED
+
+high maintainability issue with accepted debt
+    → CONDITIONAL
+
+all required gates/evidence pass
+    → PASS
+```
+
+### Target review pipeline
+
+The target post-implementation flow is:
+
+```text
+Implementation
+      ↓
+Build + Tests
+      ↓
+Static Analysis
+      ↓
+┌─────────────────────────────────────────────┐
+│ Architecture Review                        │
+│ Security Review                            │
+│ Code Quality Review                        │
+│ Coding Standards Review                    │
+│ Performance Profiling + Local Instruments  │
+│ Platform-specific Runtime Review           │
+└─────────────────────────────────────────────┘
+      ↓
+Normalized Evidence-backed Findings
+      ↓
+Holistic Engineering Synthesis
+      ↓
+Cross-domain Root Causes + Trade-offs
+      ↓
+Fixes
+      ↓
+Reverification
+      ↓
+Deterministic PASS / CONDITIONAL / BLOCKED
+      ↓
+Final Verification
+```
+
+### Current implementation status
+
+The runtime already includes several pieces of this model:
+
+```text
+architecture/security/performance specialists
+independent code/security/performance reviewers
+stack-specific reviewers
+architecture compliance review
+behavior regression review
+structured evidence-backed findings
+finding synthesis / conflict tracking
+runtime and specialist evals
+Appium exact-build evidence
+final verification
+```
+
+The following are the recommended next layer and should not yet be treated as fully automated runtime capabilities:
+
+```text
+first-class adapters for Perfetto / Instruments / Lighthouse / k6 / profiler output
+project-local .agentic/standards/ review pipeline
+automatic before/after performance-baseline capture
+generic performance-budget enforcement
+dedicated code-quality / coding-standards reviewer stages
+final holistic-engineering-review artifact and deterministic gate
+```
 
 ## Behavior-preserving refactoring
 
@@ -1297,6 +1778,8 @@ security policy
 ```
 
 Current distribution is still **Git clone + npm link**. Native installers/Homebrew/WinGet packaging are not yet the default distribution path.
+
+The full Review & Observability layer described above is a roadmap/target architecture where explicitly marked; local profiler adapters and holistic review gating are not yet fully automated.
 
 Hybrid RAG's semantic embedding channel is optional; the runtime does not automatically provision an external vector database or embedding provider.
 
