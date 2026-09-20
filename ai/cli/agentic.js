@@ -116,6 +116,38 @@ function addHook(file, entry) {
   return !exists;
 }
 
+function hasAnyMcpServer(data, names) {
+  const configured = new Set(Object.keys(data.mcpServers || {}).map(x => String(x).toLowerCase()));
+  return names.some(name => configured.has(String(name).toLowerCase()));
+}
+
+function ensureMcpConfig(project, stacks) {
+  const file = path.join(project, '.mcp.json');
+  const data = loadJson(file);
+  data.mcpServers ||= {};
+
+  if (!data.mcpServers['codex-delegate']) {
+    data.mcpServers['codex-delegate'] = { command: 'agentic', args: ['mcp', 'codex-delegate'] };
+  }
+  if (!data.mcpServers.context7) {
+    data.mcpServers.context7 = { command: 'npx', args: ['-y', '@upstash/context7-mcp'] };
+  }
+
+  const mobile = ['android', 'ios', 'flutter', 'react-native'].some(stack => stacks.includes(stack));
+  if (mobile && !hasAnyMcpServer(data, ['appium', 'appium-mcp', 'mcp-appium'])) {
+    data.mcpServers['appium-mcp'] = {
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', 'appium-mcp@latest'],
+      timeout: 100,
+    };
+  }
+
+  ensureDir(file);
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  return data;
+}
+
 function detectProject(project) {
   const exists = x => fs.existsSync(path.join(project, x));
   let pkg = {};
@@ -210,12 +242,7 @@ project:
     '',
   ].join('\\n'));
 
-  writeIfMissing(path.join(project, '.mcp.json'), JSON.stringify({
-    mcpServers: {
-      'codex-delegate': { command: 'agentic', args: ['mcp', 'codex-delegate'] },
-      context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] }
-    }
-  }, null, 2) + '\n');
+  ensureMcpConfig(project, stacks);
 
   appendGitignore(project, ['.agentic-runs/', '.ai-worktrees/', '.mcp.json']);
 
@@ -272,6 +299,8 @@ function selftest() {
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.mcp.json'));
   const mcp = loadJson(path.join(temp, '.mcp.json'));
   assert.strictEqual(mcp.mcpServers['codex-delegate'].command, 'agentic');
+  assert.strictEqual(mcp.mcpServers['appium-mcp'].command, 'npx');
+  assert(mcp.mcpServers['appium-mcp'].args.includes('appium-mcp@latest'));
   assert(fs.existsSync(path.join(RUNTIME_ROOT, 'ai', 'cli', 'claude-settings.json')));
   const codex = loadJson(path.join(temp, '.codex', 'hooks.json'));
   assert(codex.hooks.PreToolUse.some(x => x.hooks.some(h => h.command.includes('--agent codex'))));
@@ -371,5 +400,7 @@ module.exports = {
   detectProject,
   appendGitignore,
   addHook,
+  hasAnyMcpServer,
+  ensureMcpConfig,
   initProject,
 };
