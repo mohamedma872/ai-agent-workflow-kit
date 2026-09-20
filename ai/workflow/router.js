@@ -124,6 +124,7 @@ function execute(workflow, agents, roleName, args) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `ai-workflow-${workflow.name}-${roleName}-`));
   const lastMessageFile = path.join(tempDir, 'last-message.txt');
   const argv = (resolved.agent.command || []).map(a => fill(a, { prompt, budget, cwd, last_message_file: lastMessageFile }));
+  if (process.env.AI_AGENTIC_CLI === '1' && resolved.agentName === 'claude') argv.push('--settings', path.join(ROOT, 'ai', 'cli', 'claude-settings.json'));
   if (!argv.length) throw new Error(`executor "${resolved.agentName}" has no command`);
   const summary = { workflow: workflow.name, role: roleName, executor: resolved.agentName, runId, command: argv.map(a => /\s/.test(a) ? JSON.stringify(a.length > 120 ? `${a.slice(0, 117)}…` : a) : a).join(' ') };
   if (args['dry-run']) { console.log(args.json ? JSON.stringify(summary, null, 2) : `${workflow.name}/${roleName} → ${resolved.agentName}${runId ? ` [run ${runId}]` : ''}\n${summary.command}`); return 0; }
