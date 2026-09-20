@@ -4,6 +4,16 @@
 
 - No unreleased runtime changes.
 
+## 1.5.0 — 2026-09-20
+
+- Added `agentic update` for clone + `npm link` installations.
+- Added `agentic update --check` and JSON update-status output without modifying the runtime working tree.
+- Updates fetch the validated `origin/main` runtime, require a clean runtime clone, refuse custom/contributor branches, and only fast-forward local `main`.
+- The updater runs `npm ci`, refreshes the global `npm link`, validates runtime metadata, and executes standalone CLI/external-project self-tests before declaring success.
+- Failed post-update installation or verification triggers rollback to the exact previous runtime commit and attempts to restore dependencies/linking.
+- Runtime update logic operates only on the installed Agentic runtime clone; project repositories and `.agentic-runs/` are never modified by the updater.
+- Added a local bare-Git updater regression test covering update discovery, dirty-clone refusal, and safe fast-forward application.
+
 ## 1.4.1 — 2026-09-20
 
 - Fixed standalone doctor false negatives for Appium MCP when the server is configured globally or named `appium-mcp` instead of `appium`.

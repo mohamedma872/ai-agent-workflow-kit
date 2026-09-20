@@ -18,6 +18,7 @@ const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
 const VERSION = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'version.js');
 const GUARD_RUNNER = path.join(RUNTIME_ROOT, 'ai', 'guard', 'runner.js');
 const CODEX_MCP = path.join(RUNTIME_ROOT, 'ai', 'mcp', 'codex-delegate.mjs');
+const UPDATE = path.join(RUNTIME_ROOT, 'ai', 'cli', 'update.js');
 
 function fail(message, code = 1) {
   console.error('✗ ' + message);
@@ -279,6 +280,7 @@ Usage:
   agentic worktree <run-id>
   agentic cleanup <run-id> [--force]
   agentic version
+  agentic update [--check] [--json]
   agentic mcp codex-delegate   # internal MCP entry point
 
 Global:
@@ -341,6 +343,7 @@ function main() {
   if (command === 'init') return initProject(project);
   if (command === 'doctor') return runNode(DOCTOR, args.slice(1), project);
   if (command === 'version') return runNode(VERSION, ['version', ...args.slice(1)], project);
+  if (command === 'update') return runNode(UPDATE, args.slice(1), project, { cwd: RUNTIME_ROOT });
   if (command === 'feature') {
     if (!args[1]) throw new Error('feature requires a run id');
     return runNode(ENGINE, ['start', ...args.slice(1)], project);

@@ -28,6 +28,7 @@ jobs:
           node --check ai/workflow/paths.js
           node --check ai/workflow/mcp-discovery.js
           node --check ai/cli/agentic.js
+          node --check ai/cli/update.js
           node --check ai/cli/external-project-selftest.js
           node --check ai/rag/hybrid-rag.js
           node --check ai/workflow/subagent-context-selftest.js
@@ -101,6 +102,7 @@ jobs:
           node ai/rag/hybrid-rag.js --selftest
           node ai/workflow/mcp-discovery.js --selftest
           node ai/cli/agentic.js selftest
+          node ai/cli/update.js --selftest
           node ai/cli/external-project-selftest.js
           node ai/workflow/subagent-selector.js --selftest
           node ai/workflow/finding-synthesis.js --selftest

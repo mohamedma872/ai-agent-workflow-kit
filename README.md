@@ -1,6 +1,6 @@
 # AI Agent Workflow Runtime
 
-**Runtime version: 1.4.1**
+**Runtime version: 1.5.0**
 
 A deterministic engineering runtime for **Claude Code, Codex, and specialist subagents**.
 
@@ -824,14 +824,87 @@ are rejected by the workflow guard. Those commands must be run directly by the h
 
 ### Current distribution state
 
-Runtime 1.4.0 provides the standalone command and external-project architecture. During repository development, expose the command with:
+Runtime 1.5.0 provides the standalone command, external-project architecture, and a safe updater for the current clone + `npm link` distribution.
+
+Initial installation:
 
 ```bash
+git clone https://github.com/mohamedma872/ai-agent-workflow-kit
+cd ai-agent-workflow-kit
 npm ci
 npm link
 ```
 
-Then `agentic` is available globally on that machine. Native single-file installers/Homebrew/WinGet packaging can be added on top of this CLI without changing the workflow core.
+Then `agentic` is available globally on that machine.
+
+### Updating an existing installation
+
+Check without changing the runtime:
+
+```bash
+agentic update --check
+```
+
+Example:
+
+```text
+Current: 1.5.0  abc1234567
+Latest:  1.6.0  def9876543
+
+Update available. Run:
+  agentic update
+```
+
+Apply the update:
+
+```bash
+agentic update
+```
+
+The updater:
+
+```text
+fetch origin/main
+      ↓
+verify runtime clone is clean
+      ↓
+refuse custom/contributor branches
+      ↓
+fast-forward local main only
+      ↓
+npm ci
+      ↓
+npm link
+      ↓
+runtime version check
+      ↓
+standalone CLI self-test
+      ↓
+external-project isolation self-test
+      ↓
+success
+```
+
+If dependency installation or verification fails after Git has moved, the updater restores the exact previous runtime commit and attempts to restore its dependencies/link.
+
+The updater modifies **only the Agentic runtime clone**. It does not update or reset the Android/iOS/RN/Flutter/frontend/backend project where you happen to run the command.
+
+If a user is still on 1.4.1 or older, that older CLI does not contain `agentic update` yet. Bootstrap once:
+
+```bash
+cd /path/to/ai-agent-workflow-kit
+git pull --ff-only
+npm ci
+npm link
+```
+
+After that, future updates use:
+
+```bash
+agentic update
+```
+
+Native single-file installers/Homebrew/WinGet packaging can later use the same updater/version-check contract without changing the workflow core.
 
 ---
 
