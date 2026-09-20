@@ -209,10 +209,6 @@ Runtime state is stored in `.agentic-runs/` and isolated worktrees in `.ai-workt
 
   appendGitignore(project, ['.agentic-runs/', '.ai-worktrees/']);
 
-  addHook(path.join(project, '.claude', 'settings.local.json'), {
-    matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Agent|mcp__.*',
-    hooks: [{ type: 'command', command: 'agentic guard-hook', timeout: 20 }],
-  });
   addHook(path.join(project, '.codex', 'hooks.json'), {
     matcher: '',
     hooks: [{ type: 'command', command: 'agentic guard-hook --agent codex', statusMessage: 'agentic: applying workflow guardrails' }],
@@ -221,7 +217,7 @@ Runtime state is stored in `.agentic-runs/` and isolated worktrees in `.ai-workt
   console.log('Agentic project initialized');
   console.log('Project: ' + project);
   console.log('Detected: ' + (stacks.join(', ') || 'generic Git repository'));
-  console.log('Created/verified: .agentic/, .agentic-runs ignore, .ai-worktrees ignore, Claude/Codex guard hook adapters');
+  console.log('Created/verified: .agentic/, .agentic-runs ignore, .ai-worktrees ignore, Codex guard hook adapter');
   console.log('');
   console.log('Next:');
   console.log('  agentic doctor');
@@ -262,8 +258,7 @@ function selftest() {
   initProject(temp);
   assert(fs.existsSync(path.join(temp, '.agentic', 'config.yaml')));
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.agentic-runs/'));
-  const claude = loadJson(path.join(temp, '.claude', 'settings.local.json'));
-  assert(claude.hooks.PreToolUse.some(x => x.hooks.some(h => h.command === 'agentic guard-hook')));
+  assert(fs.existsSync(path.join(RUNTIME_ROOT, 'ai', 'cli', 'claude-settings.json')));
   const codex = loadJson(path.join(temp, '.codex', 'hooks.json'));
   assert(codex.hooks.PreToolUse.some(x => x.hooks.some(h => h.command.includes('--agent codex'))));
   assert(detectProject(temp).includes('android'));
