@@ -35,15 +35,21 @@ function parse(argv) {
   return out;
 }
 
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); }
+  catch { return resolved; }
+}
+
 function gitRoot(cwd) {
   const r = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', timeout: 10000 });
-  return r.status === 0 && String(r.stdout || '').trim() ? path.resolve(String(r.stdout).trim()) : null;
+  return r.status === 0 && String(r.stdout || '').trim() ? canonicalPath(String(r.stdout).trim()) : null;
 }
 
 function resolveProject(explicit, cwd = process.cwd()) {
-  if (explicit) return path.resolve(explicit);
-  if (process.env.AI_WORKFLOW_PROJECT_ROOT) return path.resolve(process.env.AI_WORKFLOW_PROJECT_ROOT);
-  return gitRoot(cwd) || path.resolve(cwd);
+  if (explicit) return canonicalPath(explicit);
+  if (process.env.AI_WORKFLOW_PROJECT_ROOT) return canonicalPath(process.env.AI_WORKFLOW_PROJECT_ROOT);
+  return gitRoot(cwd) || canonicalPath(cwd);
 }
 
 function stateRoot(project) { return path.join(project, '.agentic-runs'); }
@@ -169,7 +175,7 @@ function detectProject(project) {
 
 function initProject(project) {
   const git = gitRoot(project);
-  if (!git || path.resolve(git) !== path.resolve(project)) throw new Error('agentic init must run at a Git repository root (or use --project <repo>)');
+  if (!git || canonicalPath(git) !== canonicalPath(project)) throw new Error('agentic init must run at a Git repository root (or use --project <repo>)');
 
   const stacks = detectProject(project);
   const agentic = path.join(project, '.agentic');
@@ -308,6 +314,17 @@ function selftest() {
   assert(codex.hooks.PreToolUse.some(x => x.hooks.some(h => h.command.includes('--agent codex'))));
   assert(detectProject(temp).includes('android'));
   assert.strictEqual(stateRoot(temp), path.join(temp, '.agentic-runs'));
+
+  const symlinkRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-cli-symlink-'));
+  const realProject = path.join(symlinkRoot, 'real-project');
+  const aliasProject = path.join(symlinkRoot, 'alias-project');
+  fs.mkdirSync(realProject, { recursive: true });
+  spawnSync('git', ['init', '-q'], { cwd: realProject });
+  fs.symlinkSync(realProject, aliasProject, process.platform === 'win32' ? 'junction' : 'dir');
+  initProject(aliasProject);
+  assert.strictEqual(gitRoot(aliasProject), canonicalPath(realProject));
+  fs.rmSync(symlinkRoot, { recursive: true, force: true });
+
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('standalone CLI selftest OK');
 }
@@ -396,6 +413,7 @@ if (require.main === module) {
 
 module.exports = {
   parse,
+  canonicalPath,
   gitRoot,
   resolveProject,
   stateRoot,

@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.5.2 — 2026-09-20
+
+- Fixed standalone CLI project-root checks on macOS when temporary or symlinked paths resolve differently (for example `/var/...` vs `/private/var/...`).
+- Added canonical real-path handling for CLI project resolution and a symlink-path regression self-test.
+- Changed `agentic update` so stable updates are driven by an increased runtime SemVer, not by unrelated newer commits on `main`.
+- Added updater regression coverage proving same-version documentation commits do not trigger reinstall/self-test.
+- Added `sourceDiffers` to JSON update status so tooling can distinguish a newer source commit from an actual runtime-version update.
+
 ## 1.5.1 — 2026-09-20
 
 - Fixed the Git executable bit for `ai/cli/agentic.js` so clone + `npm link` installations can execute the global `agentic` command on macOS/Linux.
