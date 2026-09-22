@@ -4,6 +4,11 @@
 
 - No unreleased runtime changes.
 
+## 1.6.1 — 2026-09-22
+
+- Fixed the optional `ios:xcode-select` warning not appearing under `agentic doctor`. The CLI injects `DEVELOPER_DIR` before the doctor runs, which hid the warning. Agentic now marks the injected value (`AGENTIC_XCODE_DISCOVERED=1`) so the doctor still reports that the system `xcode-select` needs fixing. A `DEVELOPER_DIR` you set yourself still suppresses the warning.
+- The doctor now reads the system `xcode-select` path with `DEVELOPER_DIR` removed from the environment, because `xcode-select -p` returns `DEVELOPER_DIR` whenever it is set.
+
 ## 1.6.0 — 2026-09-22
 
 - Fixed `agentic doctor` reporting `ios:simulator` as missing (and `ios:xcodebuild` as available when it could not run) when a full Xcode is installed but `xcode-select` points at the Command Line Tools. The doctor now finds Xcode in `/Applications`, `~/Applications`, `~/Desktop`, `~/Downloads`, or anywhere Spotlight finds it, runs `xcodebuild`/`simctl` through it, and shows an optional `ios:xcode-select` warning with the exact `sudo xcode-select -s …` fix.

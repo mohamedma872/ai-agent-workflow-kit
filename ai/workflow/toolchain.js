@@ -225,9 +225,14 @@ function resolveXcode(options = {}) {
   if (useCache && xcodeCache !== undefined) return xcodeCache;
 
   let result = null;
-  const selectedRun = run('xcode-select', ['-p'], { timeout: 3000 });
+  // xcode-select -p echoes DEVELOPER_DIR when set; ask for the system selection.
+  const systemEnv = { ...process.env };
+  delete systemEnv.DEVELOPER_DIR;
+  const selectedRun = run('xcode-select', ['-p'], { timeout: 3000, env: systemEnv });
   const selected = selectedRun.ok ? firstLine(selectedRun.stdout) : null;
-  if (env.DEVELOPER_DIR) result = { developerDir: env.DEVELOPER_DIR, source: 'DEVELOPER_DIR', selected, valid: isFullXcodeDeveloperDir(env.DEVELOPER_DIR) };
+  // A DEVELOPER_DIR that agentic itself injected still counts as discovered.
+  if (env.DEVELOPER_DIR && env.AGENTIC_XCODE_DISCOVERED === '1') result = { developerDir: env.DEVELOPER_DIR, source: 'discovered', selected, valid: isFullXcodeDeveloperDir(env.DEVELOPER_DIR) };
+  else if (env.DEVELOPER_DIR) result = { developerDir: env.DEVELOPER_DIR, source: 'DEVELOPER_DIR', selected, valid: isFullXcodeDeveloperDir(env.DEVELOPER_DIR) };
   else if (isFullXcodeDeveloperDir(selected)) result = { developerDir: selected, source: 'xcode-select', selected, valid: true };
   else {
     const apps = candidateXcodeApps(home)
@@ -247,7 +252,7 @@ function resolveXcode(options = {}) {
 function toolchainEnv(env = process.env) {
   if (env.DEVELOPER_DIR || process.platform !== 'darwin') return {};
   const xcode = resolveXcode();
-  return xcode && xcode.source === 'discovered' ? { DEVELOPER_DIR: xcode.developerDir } : {};
+  return xcode && xcode.source === 'discovered' ? { DEVELOPER_DIR: xcode.developerDir, AGENTIC_XCODE_DISCOVERED: '1' } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +312,8 @@ function selftest() {
     const explicit = resolveXcode({ env: { DEVELOPER_DIR: '/nonexistent/Xcode.app/Contents/Developer' }, home: os.tmpdir() });
     assert.strictEqual(explicit.source, 'DEVELOPER_DIR');
     assert.strictEqual(explicit.valid, false);
+    const injected = resolveXcode({ env: { DEVELOPER_DIR: '/nonexistent/Xcode.app/Contents/Developer', AGENTIC_XCODE_DISCOVERED: '1' }, home: os.tmpdir() });
+    assert.strictEqual(injected.source, 'discovered', 'a DEVELOPER_DIR injected by agentic keeps the xcode-select warning');
   }
   assert.deepStrictEqual(toolchainEnv({ DEVELOPER_DIR: '/x' }), {}, 'explicit DEVELOPER_DIR is never overridden');
   console.log('toolchain selftest OK');
