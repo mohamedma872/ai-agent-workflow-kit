@@ -3,11 +3,13 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { runtimeRoot, projectRoot } = require('./paths');
 const { discoverMcps, hasMcp } = require('./mcp-discovery');
+const { APPIUM_MIN_NODE, appiumRuntime, findNode, isAppiumLauncher, launcherSpecFor, resolveXcode } = require('./toolchain');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -31,9 +33,9 @@ function commandExists(command) {
   return spawnSync(finder, [command], { stdio: 'ignore', timeout: 3000 }).status === 0;
 }
 
-function run(command, args = [], timeout = 5000) {
+function run(command, args = [], timeout = 5000, env = process.env) {
   try {
-    const res = spawnSync(command, args, { encoding: 'utf8', timeout, env: process.env });
+    const res = spawnSync(command, args, { encoding: 'utf8', timeout, env });
     return { ok: !res.error && res.status === 0, status: res.status, stdout: String(res.stdout || ''), stderr: String(res.stderr || ''), error: res.error || null };
   } catch (error) { return { ok: false, status: null, stdout: '', stderr: '', error }; }
 }
@@ -67,9 +69,11 @@ function detectStacks(root = PROJECT_ROOT) {
   if (fs.existsSync(path.join(root, 'ios'))) stacks.push('ios');
   if (fs.existsSync(path.join(root, 'pubspec.yaml'))) stacks.push('flutter');
   if (deps['react-native']) stacks.push('react-native');
+  // React Native apps depend on react too; like engine.js, only a web dependency
+  // outside React Native (or a web app directory) makes the repo a frontend.
   const frontendDeps = ['react', 'next', 'vite', 'vue', '@angular/core', 'svelte'];
   const frontendDirs = ['frontend', 'web', path.join('apps', 'web')];
-  if (frontendDeps.some(d => deps[d]) || frontendDirs.some(d => fs.existsSync(path.join(root, d)))) stacks.push('frontend');
+  if ((!deps['react-native'] && frontendDeps.some(d => deps[d])) || frontendDirs.some(d => fs.existsSync(path.join(root, d)))) stacks.push('frontend');
   const nodeBackendDeps = ['express', 'fastify', 'koa', '@nestjs/core', 'hapi'];
   const backendDirs = ['backend', 'server', 'api', path.join('apps', 'api')];
   const pythonBackend = ['requirements.txt', 'pyproject.toml', 'manage.py'].some(f => fs.existsSync(path.join(root, f)));
@@ -133,6 +137,62 @@ function agentChecks(name, command, required) {
   return checks;
 }
 
+function tildify(p) { const h = os.homedir(); return p && p.startsWith(h + path.sep) ? '~' + p.slice(h.length) : p; }
+
+// Xcode tools are resolved through the same developer directory agentic exports
+// to its runs, so a full Xcode that is installed but not selected still counts.
+function iosChecks(xcodeRequired) {
+  const checks = [];
+  if (process.platform !== 'darwin') {
+    checks.push(result('ios:xcodebuild', 'mobile', xcodeRequired, false, 'iOS tooling requires macOS', 'Run iOS build/device stages on macOS'));
+    return checks;
+  }
+  const xcode = resolveXcode();
+  if (!xcode.developerDir || !xcode.valid) {
+    const detail = xcode.source === 'DEVELOPER_DIR'
+      ? `DEVELOPER_DIR=${xcode.developerDir} is not a full Xcode developer directory`
+      : `no full Xcode found (xcode-select points to ${xcode.selected || 'nothing'})`;
+    checks.push(result('ios:xcodebuild', 'mobile', xcodeRequired, false, detail, xcode.source === 'DEVELOPER_DIR' ? 'Point DEVELOPER_DIR at <Xcode.app>/Contents/Developer or unset it' : 'Install Xcode from the App Store or developer.apple.com'));
+    return checks;
+  }
+  const env = { ...process.env, DEVELOPER_DIR: xcode.developerDir };
+  const where = tildify(xcode.app);
+  const version = run('xcodebuild', ['-version'], 15000, env);
+  const versionText = version.ok ? firstLine(version.stdout).replace(/\s+/g, ' ') : null;
+  checks.push(result('ios:xcodebuild', 'mobile', xcodeRequired, version.ok, version.ok ? `${versionText} at ${where}` : `xcodebuild failed: ${firstLine(version.stderr) || 'no output'}`, 'Open Xcode once to finish installing components, then accept the license (sudo xcodebuild -license accept)'));
+  if (xcode.source === 'discovered') {
+    checks.push(incompatible('ios:xcode-select', 'mobile', false, `xcode-select points to ${xcode.selected || 'nothing'}; agentic runs use DEVELOPER_DIR=${tildify(xcode.developerDir)}, but Xcode tools run outside agentic will fail`, `sudo xcode-select -s "${xcode.developerDir}"`));
+  }
+  const simctl = run('xcrun', ['--find', 'simctl'], 10000, env);
+  checks.push(result('ios:simctl', 'mobile', false, simctl.ok, simctl.ok ? 'xcrun/simctl available' : `simctl not found: ${firstLine(simctl.stderr) || 'xcrun failed'}`, 'Install Xcode (simctl ships with Xcode, not the Command Line Tools)'));
+  if (simctl.ok) {
+    const sims = run('xcrun', ['simctl', 'list', 'devices', 'available'], 30000, env);
+    const count = sims.ok ? sims.stdout.split(/\r?\n/).filter(l => /\([0-9A-F-]{8,}\).*\((?:Booted|Shutdown)\)/i.test(l)).length : 0;
+    checks.push(result('ios:simulator', 'mobile', false, sims.ok && count > 0, sims.ok ? `${count} available simulator device(s)` : `could not enumerate simulators: ${firstLine(sims.stderr) || 'simctl timed out'}`, 'Install an iOS Simulator runtime (Xcode → Settings → Components)'));
+  }
+  return checks;
+}
+
+// Checks the Node that will actually execute appium-mcp for the configured
+// entry, not the Node that happens to run doctor.
+function appiumNodeCheck(entry, required) {
+  const runtime = appiumRuntime(entry?.spec);
+  const node = runtime.node;
+  if (node && node.major >= APPIUM_MIN_NODE) {
+    const how = runtime.via === 'launcher' ? `via agentic launcher (${node.source === 'installed' ? tildify(node.binDir) : node.source})` : `via ${runtime.label}`;
+    return result('appium:node', 'mobile', required, true, `appium-mcp runs on Node ${node.version} ${how}`);
+  }
+  const installed = findNode({ minMajor: APPIUM_MIN_NODE, requireNpx: true });
+  const current = runtime.via === 'launcher'
+    ? `agentic launcher found no Node ${APPIUM_MIN_NODE}+`
+    : `appium-mcp starts via "${runtime.label}" on ${node ? `Node ${node.version}` : 'an unknown Node'}`;
+  if (!installed) return incompatible('appium:node', 'mobile', required, `${current}; appium-mcp requires Node ${APPIUM_MIN_NODE}+ and none is installed`, `Install Node ${APPIUM_MIN_NODE}+ (e.g. nvm install ${APPIUM_MIN_NODE}); the agentic launcher picks it up without changing your default Node`);
+  const fixable = entry && !isAppiumLauncher(entry.spec) && launcherSpecFor(entry.spec);
+  return incompatible('appium:node', 'mobile', required, `${current}; Node ${installed.version} is installed at ${tildify(installed.binDir)} but not used`, fixable
+    ? 'Run agentic init to switch appium-mcp to the agentic launcher (agentic mcp appium), which runs it on the installed Node 22+'
+    : `Point the ${entry?.name || 'appium'} MCP entry at "agentic" with args ["mcp", "appium"], or at ${tildify(path.join(installed.binDir, 'npx'))}`);
+}
+
 function runChecks(options = {}) {
   const scope = String(options.scope || 'auto').toLowerCase();
   if (!VALID_SCOPES.has(scope)) throw new Error(`invalid doctor scope "${scope}"; use auto, mobile, frontend, backend, or all`);
@@ -185,18 +245,7 @@ function runChecks(options = {}) {
       const flutter = commandExists('flutter');
       checks.push(result('flutter', 'mobile', mobileRequired, flutter, flutter ? commandOutput('flutter', ['--version']) || 'flutter available' : 'flutter not found', 'Install Flutter SDK and add flutter to PATH'));
     }
-    if (iosRelevant) {
-      const isMac = process.platform === 'darwin';
-      const xcode = isMac && commandExists('xcodebuild');
-      checks.push(result('ios:xcodebuild', 'mobile', mobileRequired && stacks.includes('ios'), xcode, xcode ? commandOutput('xcodebuild', ['-version']) || 'xcodebuild available' : isMac ? 'xcodebuild not found' : 'iOS tooling requires macOS', isMac ? 'Install Xcode command-line tools' : 'Run iOS build/device stages on macOS'));
-      const simctl = isMac && commandExists('xcrun');
-      checks.push(result('ios:simctl', 'mobile', false, simctl, simctl ? 'xcrun/simctl available' : 'xcrun unavailable', 'Install Xcode command-line tools'));
-      if (simctl) {
-        const sims = run('xcrun', ['simctl', 'list', 'devices', 'available']);
-        const count = sims.ok ? sims.stdout.split(/\r?\n/).filter(l => /\([0-9A-F-]{8,}\).*\((?:Booted|Shutdown)\)/i.test(l)).length : 0;
-        checks.push(result('ios:simulator', 'mobile', false, sims.ok && count > 0, sims.ok ? `${count} available simulator device(s)` : 'could not enumerate simulators', 'Install an iOS Simulator runtime'));
-      }
-    }
+    if (iosRelevant) checks.push(...iosChecks(mobileRequired && stacks.includes('ios')));
     const appiumConfigured = hasMcp(discoveredMcps, 'appium');
     const appiumInstalled = discoveredMcps.installed.appiumMcp;
     const appiumDetail = appiumConfigured
@@ -208,7 +257,7 @@ function runChecks(options = {}) {
       ? 'Run agentic init again to add the project MCP entry, or configure appium-mcp in Claude/Codex'
       : 'Run agentic init to add Appium MCP for this mobile project';
     checks.push(result('mcp:appium', 'mobile', mobileRequired, appiumConfigured, appiumDetail, appiumRemediation));
-    if ((appiumConfigured || appiumInstalled) && nodeMajor < 22) checks.push(incompatible('appium:node', 'mobile', mobileRequired, `current Node ${process.versions.node}; appium-mcp requires Node 22+`, 'Use a Node 22+ environment for Appium MCP execution'));
+    if (appiumConfigured || appiumInstalled) checks.push(appiumNodeCheck(discoveredMcps.specs.get('appium'), mobileRequired));
   } else checks.push(notApplicable('mobile:project', 'mobile', 'no mobile stack detected'));
 
   const pkg = readJson(path.join(PROJECT_ROOT, 'package.json')) || {};
@@ -266,6 +315,23 @@ function selftest() {
   assert.strictEqual(majorFrom('v22.14.0'), 22);
   assert.strictEqual(sanitizeUrl('https://user:secret@example.com/mcp?token=abc#x'), 'https://example.com/mcp');
   assert.throws(() => runChecks({ scope: 'desktop' }), /invalid doctor scope/);
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-stacks-'));
+  const writePkg = deps => fs.writeFileSync(path.join(temp, 'package.json'), JSON.stringify({ dependencies: deps }));
+  fs.mkdirSync(path.join(temp, 'ios'));
+  writePkg({ react: '19.0.0', 'react-native': '0.80.0' });
+  assert(!detectStacks(temp).includes('frontend'), 'a React Native app is not a web frontend');
+  assert(detectStacks(temp).includes('react-native'));
+  fs.mkdirSync(path.join(temp, 'web'));
+  assert(detectStacks(temp).includes('frontend'), 'a web/ app inside a React Native repo is a frontend');
+  fs.rmSync(path.join(temp, 'web'), { recursive: true });
+  writePkg({ react: '19.0.0', 'react-dom': '19.0.0' });
+  assert(detectStacks(temp).includes('frontend'), 'a React web app is a frontend');
+  fs.rmSync(temp, { recursive: true, force: true });
+
+  const launcher = appiumNodeCheck({ name: 'appium-mcp', spec: { command: 'agentic', args: ['mcp', 'appium'] } }, true);
+  if (findNode({ minMajor: APPIUM_MIN_NODE, requireNpx: true })) assert.strictEqual(launcher.status, 'available', 'launcher entry passes when any Node 22+ is installed');
+  else assert.strictEqual(launcher.status, 'incompatible');
   console.log('workflow doctor selftest OK');
 }
 

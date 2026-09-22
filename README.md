@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.5.3-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.6.0-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.5.3
+1.6.0
 ```
 
 ### 2. Initialize a project
@@ -1322,7 +1322,7 @@ appium-mcp
 mcp-appium
 ```
 
-For Appium MCP execution, Node 22+ may be required. The core runtime itself supports Node 20+.
+Appium MCP requires Node 22+. The core runtime itself supports Node 20+. The standard entry `agentic mcp appium` runs Appium MCP on an installed Node 22+ (nvm, fnm, Volta, asdf, n or Homebrew) even when your default Node is 20, and `agentic init` migrates older `npx appium-mcp` entries to it.
 
 See:
 
@@ -1552,7 +1552,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.5.3
+runtimeVersion         1.6.0
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

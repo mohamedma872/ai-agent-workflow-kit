@@ -72,9 +72,30 @@ The initializer preserves existing MCP servers and adds the standard project ent
 {
   "appium-mcp": {
     "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "appium-mcp@latest"],
+    "command": "agentic",
+    "args": ["mcp", "appium"],
     "timeout": 100
   }
 }
 ```
+
+## Appium MCP and Node 22+
+
+`appium-mcp` requires Node 22+. The doctor checks the Node that will actually run the configured entry, not the Node that runs the doctor:
+
+- `agentic mcp appium` (the standard entry) runs `npx -y appium-mcp@latest` on a Node 22+ install. It tries, in order: `AGENTIC_APPIUM_NODE`, the current process, the `node` on `PATH`, and then the newest Node 22+ found under nvm, fnm, Volta, asdf, n or Homebrew. Your default Node is not changed.
+- A plain `npx`/`node` entry runs on the `node` found on `PATH`, including a `PATH` set in the entry's own `env`.
+
+When the configured entry would start on Node < 22 while a Node 22+ install exists, the check reports both versions. Re-running `agentic init` switches a standard `npx -y appium-mcp…` entry to the launcher and keeps its `env`, `timeout`, pinned package version and extra arguments. Custom commands are left unchanged.
+
+The launcher also sets `npm_config_legacy_peer_deps=false`. React Native projects often set `legacy-peer-deps=true` in `.npmrc`, and with that setting npx installs the Appium drivers without their required `appium` peer, so the server crashes with `ERR_MODULE_NOT_FOUND`.
+
+## Xcode selection
+
+If `xcode-select` points at the Command Line Tools but a full Xcode is installed (in `/Applications`, `~/Applications`, `~/Desktop`, `~/Downloads`, or anywhere Spotlight finds it), the doctor runs `xcodebuild`, `simctl` and the simulator listing through that Xcode. It also reports an optional `ios:xcode-select` warning with the exact `sudo xcode-select -s …` fix.
+
+`agentic` exports `DEVELOPER_DIR` for its own runs in this case, so workflow agents and Appium can use Xcode before the system default is fixed. An explicit `DEVELOPER_DIR` is never overridden.
+
+## Stack detection
+
+A React Native app depends on `react`, but that alone does not make it a web frontend. Like the workflow engine, the doctor treats a React Native repository as a frontend only when it also contains a web app directory (`frontend/`, `web/`, `apps/web/`).

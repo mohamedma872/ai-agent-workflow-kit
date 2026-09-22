@@ -57,13 +57,20 @@ function runtimeVersion(root = DEFAULT_ROOT) {
   return readJson(path.join(root, VERSION_REL)).runtimeVersion;
 }
 
+// Physical path, so macOS /var vs /private/var aliases compare equal.
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); }
+  catch { return resolved; }
+}
+
 function gitState(root = DEFAULT_ROOT) {
   const inside = git(root, ['rev-parse', '--is-inside-work-tree'], { allowFailure: true });
   if (inside.status !== 0 || String(inside.stdout || '').trim() !== 'true') {
     throw new Error('agentic update requires a Git clone installation');
   }
-  const top = path.resolve(git(root, ['rev-parse', '--show-toplevel']));
-  if (top !== path.resolve(root)) throw new Error(`runtime root is not the Git repository root: ${root}`);
+  const top = canonicalPath(git(root, ['rev-parse', '--show-toplevel']));
+  if (top !== canonicalPath(root)) throw new Error(`runtime root is not the Git repository root: ${root}`);
   const sha = git(root, ['rev-parse', 'HEAD']);
   const branch = git(root, ['branch', '--show-current']);
   const dirty = git(root, ['status', '--porcelain']);

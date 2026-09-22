@@ -50,6 +50,25 @@ function namesFromJsonConfig(file) {
   return names;
 }
 
+// Server entries by logical name, so callers can see how a server is launched.
+// Claude's precedence: local (per-project in ~/.claude.json) > project .mcp.json > user.
+function specsFromJsonFiles(projectRoot, runtimeRoot, home) {
+  const specs = new Map();
+  const add = (servers, source) => {
+    for (const [name, spec] of Object.entries(servers || {})) {
+      const key = normalizeMcpName(name);
+      if (!specs.has(key) && spec && typeof spec === 'object') specs.set(key, { name, spec, source });
+    }
+  };
+  const userConfig = path.join(home, '.claude.json');
+  const user = readJson(userConfig) || {};
+  add(user.projects?.[projectRoot]?.mcpServers, `${userConfig} (local)`);
+  add(readJson(path.join(projectRoot, '.mcp.json'))?.mcpServers, path.join(projectRoot, '.mcp.json'));
+  add(user.mcpServers, userConfig);
+  if (runtimeRoot) add(readJson(path.join(runtimeRoot, '.mcp.json'))?.mcpServers, path.join(runtimeRoot, '.mcp.json'));
+  return specs;
+}
+
 function namesFromCodexToml(file) {
   const names = new Set();
   let text = '';
@@ -146,6 +165,7 @@ function discoverMcps(options = {}) {
   return {
     names,
     sources,
+    specs: specsFromJsonFiles(projectRoot, runtimeRoot, home),
     installed: {
       appiumMcp: globalPackageInstalled('appium-mcp'),
     },
@@ -171,6 +191,8 @@ function selftest() {
   assert.strictEqual(hasMcp(d, 'appium'), true);
   assert.strictEqual(hasMcp(d, 'appium-mcp'), true);
   assert.strictEqual(hasMcp(d, 'context7'), true);
+  assert.strictEqual(d.specs.get('appium').spec.command, 'npx');
+  assert.strictEqual(d.specs.get('appium').name, 'appium-mcp');
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('MCP discovery selftest OK');
 }
@@ -179,7 +201,8 @@ if (require.main === module) {
   if (process.argv.includes('--selftest')) selftest();
   else {
     const d = discoverMcps();
-    console.log(JSON.stringify({ names: [...d.names].sort(), sources: d.sources, installed: d.installed }, null, 2));
+    const launchers = Object.fromEntries([...d.specs].map(([key, v]) => [key, { command: v.spec.command || null, source: v.source }]));
+    console.log(JSON.stringify({ names: [...d.names].sort(), sources: d.sources, launchers, installed: d.installed }, null, 2));
   }
 }
 

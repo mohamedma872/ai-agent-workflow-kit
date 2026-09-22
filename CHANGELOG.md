@@ -4,6 +4,18 @@
 
 - No unreleased runtime changes.
 
+## 1.6.0 — 2026-09-22
+
+- Fixed `agentic doctor` reporting `ios:simulator` as missing (and `ios:xcodebuild` as available when it could not run) when a full Xcode is installed but `xcode-select` points at the Command Line Tools. The doctor now finds Xcode in `/Applications`, `~/Applications`, `~/Desktop`, `~/Downloads`, or anywhere Spotlight finds it, runs `xcodebuild`/`simctl` through it, and shows an optional `ios:xcode-select` warning with the exact `sudo xcode-select -s …` fix.
+- `agentic` now exports `DEVELOPER_DIR` for its own runs when Xcode is installed but not selected, so workflow agents and Appium can use Xcode. An explicit `DEVELOPER_DIR` is never overridden.
+- Fixed `appium:node` checking the Node that runs the doctor instead of the Node that will run `appium-mcp`. The check now reads the configured MCP entry, reports the Node that entry will actually use, and names any installed Node 22+ that is not being used.
+- Added `agentic mcp appium`, an MCP entry point that runs `appium-mcp` on an installed Node 22+ (`AGENTIC_APPIUM_NODE`, the `PATH` node, then the newest version from nvm, fnm, Volta, asdf, n or Homebrew) without changing the default Node.
+- `agentic init` writes the launcher for new mobile projects and migrates existing standard `npx -y appium-mcp…` entries, keeping their `env`, `timeout`, pinned version and extra arguments. Custom commands are left unchanged.
+- The Appium launcher forces `npm_config_legacy_peer_deps=false`. With `legacy-peer-deps=true` in a React Native project's `.npmrc`, npx installed the Appium drivers without their `appium` peer, and the server crashed at startup with `ERR_MODULE_NOT_FOUND`.
+- Fixed the doctor treating every React Native app as a web frontend (it reported `frontend:build-script` as missing). As in the workflow engine, a React Native repository counts as a frontend only when it also contains a web app directory.
+- Doctor iOS messages now include the underlying `xcrun`/`xcodebuild` error, and the simulator listing gets a longer timeout for the first CoreSimulator start.
+- Fixed the `agentic update` Git-root check and its self-test on macOS by comparing canonical physical paths (`/var` vs `/private/var`).
+
 ## 1.5.3 — 2026-09-20
 
 - Fixed the external-project runtime self-test on macOS by comparing canonical physical paths instead of raw `/var` vs `/private/var` path strings.

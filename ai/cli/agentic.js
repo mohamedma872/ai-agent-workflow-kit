@@ -5,7 +5,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const { appiumLaunchPlan, launcherSpecFor, toolchainEnv } = require('../workflow/toolchain');
 
 const RUNTIME_ROOT = path.resolve(__dirname, '..', '..');
 const ENGINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine.js');
@@ -68,7 +69,7 @@ function runtimeEnv(project, extra = {}) {
 function runNode(file, args, project, options = {}) {
   const r = spawnSync(process.execPath, [file, ...args], {
     cwd: options.cwd || project,
-    env: runtimeEnv(project, options.env || {}),
+    env: runtimeEnv(project, { ...toolchainEnv(), ...(options.env || {}) }),
     encoding: options.capture ? 'utf8' : undefined,
     stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     timeout: options.timeout || 0,
@@ -77,6 +78,22 @@ function runNode(file, args, project, options = {}) {
   if (options.capture) return r;
   if (r.status !== 0) process.exit(r.status == null ? 1 : r.status);
   return r;
+}
+
+// `agentic mcp appium`: stdio MCP entry point that runs appium-mcp on a Node 22+
+// install even when the default Node is older. Only appium-mcp writes to stdout.
+function runAppiumMcp(argv, project) {
+  const plan = appiumLaunchPlan(argv);
+  if (plan.error) fail(plan.error);
+  const child = spawn(plan.command, plan.args, {
+    cwd: project,
+    env: { ...plan.env, ...toolchainEnv(plan.env) },
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+  child.on('error', e => fail(`appium-mcp failed to start with Node ${plan.node.version}: ${e.message}`));
+  child.on('exit', code => { process.exitCode = code == null ? 1 : code; });
 }
 
 function ensureDir(file) { fs.mkdirSync(path.dirname(file), { recursive: true }); }
@@ -140,14 +157,23 @@ function ensureMcpConfig(project, stacks) {
     data.mcpServers.context7 = { command: 'npx', args: ['-y', '@upstash/context7-mcp'] };
   }
 
+  // appium-mcp needs Node 22+; the agentic launcher finds one even when the
+  // default Node is older. Existing standard `npx appium-mcp` entries migrate.
   const mobile = ['android', 'ios', 'flutter', 'react-native'].some(stack => stacks.includes(stack));
-  if (mobile && !hasAnyMcpServer(data, ['appium', 'appium-mcp', 'mcp-appium'])) {
+  const appiumKey = Object.keys(data.mcpServers).find(k => ['appium', 'appium-mcp', 'mcp-appium'].includes(k.toLowerCase()));
+  if (mobile && !appiumKey) {
     data.mcpServers['appium-mcp'] = {
       type: 'stdio',
-      command: 'npx',
-      args: ['-y', 'appium-mcp@latest'],
+      command: 'agentic',
+      args: ['mcp', 'appium'],
       timeout: 100,
     };
+  } else if (appiumKey) {
+    const migrated = launcherSpecFor(data.mcpServers[appiumKey]);
+    if (migrated) {
+      data.mcpServers[appiumKey] = migrated;
+      console.log(`Updated MCP server "${appiumKey}" to run via the agentic Node 22+ launcher (agentic mcp appium)`);
+    }
   }
 
   ensureDir(file);
@@ -288,6 +314,7 @@ Usage:
   agentic version
   agentic update [--check] [--json]
   agentic mcp codex-delegate   # internal MCP entry point
+  agentic mcp appium           # Appium MCP on Node 22+ (internal MCP entry point)
 
 Global:
   --project <repo>   Target an existing repository without changing directory.
@@ -307,8 +334,19 @@ function selftest() {
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.mcp.json'));
   const mcp = loadJson(path.join(temp, '.mcp.json'));
   assert.strictEqual(mcp.mcpServers['codex-delegate'].command, 'agentic');
-  assert.strictEqual(mcp.mcpServers['appium-mcp'].command, 'npx');
-  assert(mcp.mcpServers['appium-mcp'].args.includes('appium-mcp@latest'));
+  assert.strictEqual(mcp.mcpServers['appium-mcp'].command, 'agentic');
+  assert.deepStrictEqual(mcp.mcpServers['appium-mcp'].args, ['mcp', 'appium']);
+
+  // Re-running init migrates a standard npx entry and keeps its other fields.
+  mcp.mcpServers['appium-mcp'] = { type: 'stdio', command: 'npx', args: ['-y', 'appium-mcp@latest'], timeout: 100, env: { APPIUM_HOME: '/x' } };
+  fs.writeFileSync(path.join(temp, '.mcp.json'), JSON.stringify(mcp));
+  initProject(temp);
+  const migrated = loadJson(path.join(temp, '.mcp.json')).mcpServers['appium-mcp'];
+  assert.deepStrictEqual(migrated, { type: 'stdio', command: 'agentic', args: ['mcp', 'appium'], timeout: 100, env: { APPIUM_HOME: '/x' } });
+  const custom = { command: '/opt/custom/appium-wrapper', args: [] };
+  fs.writeFileSync(path.join(temp, '.mcp.json'), JSON.stringify({ mcpServers: { appium: custom } }));
+  initProject(temp);
+  assert.deepStrictEqual(loadJson(path.join(temp, '.mcp.json')).mcpServers.appium, custom, 'custom Appium commands are left alone');
   assert(fs.existsSync(path.join(RUNTIME_ROOT, 'ai', 'cli', 'claude-settings.json')));
   const codex = loadJson(path.join(temp, '.codex', 'hooks.json'));
   assert(codex.hooks.PreToolUse.some(x => x.hooks.some(h => h.command.includes('--agent codex'))));
@@ -353,7 +391,8 @@ function main() {
   }
 
   if (command === 'mcp') {
-    if (args[1] !== 'codex-delegate') throw new Error('mcp requires: codex-delegate');
+    if (args[1] === 'appium') return runAppiumMcp(args.slice(2), project);
+    if (args[1] !== 'codex-delegate') throw new Error('mcp requires: codex-delegate | appium');
     return runNode(CODEX_MCP, args.slice(2), project);
   }
 
