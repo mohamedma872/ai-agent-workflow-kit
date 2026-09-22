@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.6.1-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.6.2-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.6.1
+1.6.2
 ```
 
 ### 2. Initialize a project
@@ -1552,7 +1552,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.6.1
+runtimeVersion         1.6.2
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

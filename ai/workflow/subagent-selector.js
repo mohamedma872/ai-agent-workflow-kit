@@ -11,7 +11,9 @@ function detectStacks(root){
    flutter: exists('pubspec.yaml'),
    android: exists('android') || exists('build.gradle') || exists('build.gradle.kts'),
    ios: exists('ios') || exists('Podfile'),
-   frontend: !!(deps.react||deps.next||deps.vue||deps['@angular/core']),
+   // React Native apps depend on react too; like engine.js and doctor.js, they are a
+   // web frontend only when they also contain a web app directory.
+   frontend: (!deps['react-native'] && !!(deps.react||deps.next||deps.vue||deps['@angular/core'])) || exists('frontend')||exists('web')||exists('apps/web'),
    backend: exists('manage.py')||exists('server')||exists('backend')||exists('api')||!!(deps.express||deps.fastify||deps['@nestjs/core'])
  };
 }
@@ -64,6 +66,17 @@ function selftest(){
  a=selectAnalysis({allowedRoles:['architect','qa-plan','security','performance','backend'],request:'Add queue',root:back,scope:'backend'});assert(a.roles.includes('backend'));
  const r=selectReviews({allowedRoles:['code-review','security-review','performance-review','android-review','react-native-review'],changedFiles:['android/app/src/main/Foo.kt'],root:rn});
  assert(r.roles.includes('android-review'));assert(r.roles.includes('react-native-review'));
+ // React Native is not a web frontend: no frontend analyst or reviewer for RN screens...
+ const allAnalysis=['architect','qa-plan','security','performance','react-native','frontend'], allReviews=['code-review','security-review','performance-review','react-native-review','frontend-review'];
+ a=selectAnalysis({allowedRoles:allAnalysis,request:'Add settings screen',root:rn,scope:'auto'});
+ assert(a.roles.includes('react-native'));assert(!a.roles.includes('frontend'),'RN app must not route to the web frontend analyst');
+ let rv=selectReviews({allowedRoles:allReviews,changedFiles:['src/screens/Settings.tsx'],root:rn});
+ assert(rv.roles.includes('react-native-review'));assert(!rv.roles.includes('frontend-review'),'RN screen change must not route to the web frontend reviewer');
+ // ...but an RN repo that also ships a web app, and a plain React web app, still are.
+ const rnWeb=mk('rn-web',['android/x','ios/x','web/index.html'],{dependencies:{'react-native':'0.81.0',react:'19.0.0'}});
+ assert(selectAnalysis({allowedRoles:allAnalysis,request:'Add settings screen',root:rnWeb,scope:'auto'}).roles.includes('frontend'));
+ rv=selectReviews({allowedRoles:allReviews,changedFiles:['src/pages/Settings.tsx'],root:web});
+ assert(rv.roles.includes('frontend-review'));
  fs.rmSync(tmp,{recursive:true,force:true});console.log('subagent-selector selftest OK');
 }
 if(require.main===module){if(process.argv.includes('--selftest')) selftest();}

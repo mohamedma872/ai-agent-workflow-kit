@@ -4,6 +4,11 @@
 
 - No unreleased runtime changes.
 
+## 1.6.2 — 2026-09-22
+
+- Fixed specialist routing for React Native apps. Because they depend on `react`, the subagent selector counted them as web frontends. Every React Native feature ran the web `frontend` analyst, and every `.ts`/`.tsx` change ran `frontend-review` alongside `react-native-review`. React Native repositories now route to web frontend specialists only when they also contain a web app directory (`frontend/`, `web/`, `apps/web/`), matching the workflow engine and the doctor.
+- Added selector self-tests in both directions: React Native app → no frontend analyst or reviewer; React Native + `web/` → frontend analyst; React web app → frontend reviewer.
+
 ## 1.6.1 — 2026-09-22
 
 - Fixed the optional `ios:xcode-select` warning not appearing under `agentic doctor`. The CLI injects `DEVELOPER_DIR` before the doctor runs, which hid the warning. Agentic now marks the injected value (`AGENTIC_XCODE_DISCOVERED=1`) so the doctor still reports that the system `xcode-select` needs fixing. A `DEVELOPER_DIR` you set yourself still suppresses the warning.
