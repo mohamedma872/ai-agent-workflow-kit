@@ -566,15 +566,26 @@ try {
     case 'close': {
       const id = resolveId(rest[0]);
       if (!id) { console.log('no active run'); break; }
+      // Without this, closing a mistyped id would create the run it closes.
+      if (!fs.existsSync(stateFile(id))) throw new Error(`unknown run ${id}: no ${path.join(id, 'state.json')} in ${RUNS}`);
       const state = ensureShape(load(id), id);
       reconcileState(id, state);
-      if (phaseStatus(state, 'verification') !== 'pass' && process.env.AI_WORKFLOW_ADMIN !== '1') throw new Error(`cannot close ${id}: verification=${phaseStatus(state, 'verification')}`);
+      const verified = phaseStatus(state, 'verification') === 'pass';
+      if (!verified && process.env.AI_WORKFLOW_ADMIN !== '1') throw new Error(`cannot close ${id}: verification=${phaseStatus(state, 'verification')}`);
+      // A run closed before verification is abandoned, not completed; say so in
+      // the state and the history instead of leaving it to look finished.
+      const reason = rest.slice(1).join(' ').trim() || null;
       state.status = 'done';
       state.closedAt = now();
-      record(state, { kind: 'run', action: 'close', to: 'done' });
+      if (!verified) {
+        state.abandoned = true;
+        state.abandonedAt = state.closedAt;
+      }
+      if (reason) state.closedReason = reason;
+      record(state, { kind: 'run', action: verified ? 'close' : 'abandon', to: 'done', ...(reason ? { reason } : {}) });
       atomicSave(id, state);
       if (activeId() === id && fs.existsSync(ACTIVE)) fs.unlinkSync(ACTIVE);
-      console.log(`${id}: closed`);
+      console.log(`${id}: ${verified ? 'closed' : 'abandoned before verification'}`);
       break;
     }
     case 'set': {

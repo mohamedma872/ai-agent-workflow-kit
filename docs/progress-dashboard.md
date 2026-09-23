@@ -39,12 +39,35 @@ The left pane lists features, the right pane shows the highlighted run's stages 
 |---|---|
 | `↑` `↓` / `k` `j` / `tab` | move between features (wraps) |
 | `enter` / `space` | make the highlighted feature the active run |
+| `c` | close the highlighted feature (asks first) |
 | `a` | toggle finished runs |
 | `r` | refresh now |
 | `home` / `end` | first / last feature |
 | `q` / `esc` / `ctrl-c` | quit |
 
-Selecting is the only thing that writes: `enter` updates the `_active` pointer in the state directory. Highlighting alone changes nothing.
+Two keys write: `enter` updates the `_active` pointer, and `c` closes a run after you confirm. Highlighting alone changes nothing.
+
+## Closing a run
+
+`c` asks before doing anything. Only `y` goes through; any other key cancels, and `ctrl-c` still quits.
+
+```text
+ Close FEAT-002 at 43% — verification has not passed, so it is recorded as
+ abandoned.  y = confirm · any other key = cancel
+```
+
+What happens depends on the run:
+
+| Run | Result |
+|---|---|
+| verification passed | closed normally, exactly like `runs.js close` |
+| verification not passed | closed and recorded as **abandoned**: `state.json` gets `abandoned: true` and `closedReason`, and the run history gets an `abandon` entry with the reason |
+
+Closing clears the `_active` pointer if it pointed at that run, and the feature leaves the in-progress list (still visible under `a` / `--all`, listed as `abandoned` rather than `done`).
+
+Closing an unverified run is a human decision, so it needs admin mode, which the dashboard supplies only for a confirmed keypress on a real terminal. Agents cannot reach it: without a TTY the dashboard prints one frame and exits, and `runs.js close` still refuses an unverified run unless `AI_WORKFLOW_ADMIN=1`. There is no CLI flag that bypasses the verification gate.
+
+There is no reopen: closing is recorded in the run history and a closed run stays closed.
 
 ## Which run opens
 

@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.8.0 — 2026-09-23
+
+- Added `c` in the dashboard to close the highlighted feature, so abandoned runs can leave the in-progress list without hand-editing state. It always asks first: only `y` confirms, any other key cancels, and `ctrl-c` still quits.
+- Closing a run before verification passes is now recorded as an abandon: `state.json` gets `abandoned: true` and `closedReason`, and the run history gets an `abandon` entry with the reason and actor. A verified run closes exactly as before.
+- `agentic runs --all` and the dashboard now show abandoned runs as `abandoned` instead of `done`.
+- The verification gate is unchanged: `runs.js close` still refuses an unverified run without `AI_WORKFLOW_ADMIN=1`, no CLI flag bypasses it, and the dashboard supplies admin mode only for a confirmed keypress on a real terminal (without a TTY it prints one frame and exits).
+- Fixed `runs.js close <unknown-id>` creating the run directory it was asked to close; it now fails with `unknown run <id>`.
+
 ## 1.7.0 — 2026-09-23
 
 - Added a terminal dashboard for `/feature` runs: in-progress features on the left, the highlighted run's stages and specialist roles on the right, refreshing every second.

@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.7.0-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.8.0-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.7.0
+1.8.0
 ```
 
 ### 2. Initialize a project
@@ -355,7 +355,9 @@ agentic switch FEAT-002       # make a feature the active run
  ↑↓ select · enter set active · a all runs · r refresh · q quit
 ```
 
-`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+
+Closing a feature whose verification has not passed records it as abandoned rather than complete, so an unfinished run never reads as done.
 
 A single run still renders on its own, and piping or redirecting any of these prints one frame instead of taking over the terminal:
 
@@ -1587,7 +1589,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.7.0
+runtimeVersion         1.8.0
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

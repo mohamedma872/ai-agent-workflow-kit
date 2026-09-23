@@ -67,6 +67,7 @@ function runEntry(id, root, active = activeId(root)) {
     ...summary,
     title: runTitle(id, root),
     inProgress: (state.status || 'active') !== 'done',
+    abandoned: !!state.abandoned,
     active: id === active,
     dir: runDir(id, root),
   };
@@ -116,7 +117,7 @@ function renderList(runs, options = {}) {
   const lines = [`${'  '}${'RUN'.padEnd(idWidth)}  ${'PROG'.padStart(4)}  ${'STATE'.padEnd(9)}  ${'CURRENT'.padEnd(30)}  UPDATED`];
   for (const run of runs) {
     const marker = run.active ? '▸ ' : '  ';
-    const state = run.inProgress ? (run.planApproved ? 'approved' : 'plan-gate') : 'done';
+    const state = run.inProgress ? (run.planApproved ? 'approved' : 'plan-gate') : run.abandoned ? 'abandoned' : 'done';
     const current = String(run.current || '').slice(0, 30);
     lines.push(`${marker}${String(run.id).padEnd(idWidth)}  ${String(run.percent).padStart(3)}%  ${state.padEnd(9)}  ${current.padEnd(30)}  ${ago(run.updatedAt)}`);
   }
@@ -165,6 +166,12 @@ function selftest() {
   assert.strictEqual(activeId(temp), 'FEAT-1', 'a stale pointer survives until the directory goes');
   fs.rmSync(path.join(temp, 'FEAT-1'), { recursive: true });
   assert.strictEqual(activeId(temp), null, 'a pointer to a deleted run resolves to nothing');
+
+  write('FEAT-GAVEUP', { id: 'FEAT-GAVEUP', status: 'done', abandoned: true, updatedAt: '2026-09-04T10:00:00.000Z', phases: { request: at('2026-09-04T10:00:00.000Z') } });
+  const withAbandoned = listRuns({ root: temp, all: true });
+  assert.strictEqual(withAbandoned.find(r => r.id === 'FEAT-GAVEUP').abandoned, true);
+  assert.strictEqual(withAbandoned.find(r => r.id === 'FEAT-DONE').abandoned, false);
+  assert.match(renderList(withAbandoned, { all: true }), /abandoned/, 'an abandoned run does not read as done');
 
   assert.match(renderList([], {}), /No features in progress/);
   const table = renderList(listRuns({ root: temp }), {});

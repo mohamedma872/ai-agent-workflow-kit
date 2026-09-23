@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const { spawnSync } = require('child_process');
 const { PHASES, ICONS, buildSummary, demoState } = require('./progress');
 const { listRuns, focusIndex, setActive, ago, runsRoot } = require('./runs-index');
 
@@ -17,6 +18,9 @@ const { listRuns, focusIndex, setActive, ago, runsRoot } = require('./runs-index
 // text-presentation symbols render one column in some terminals and two in
 // others, which would drift the box borders by a character.
 const DASH_ICONS = { ...ICONS, skipped: '➖' };
+
+const RUNS_CLI = path.join(__dirname, '..', 'tasks', 'feature', 'runs.js');
+const ABANDON_REASON = 'closed from the dashboard before verification';
 
 const MIN_SPLIT_WIDTH = 78;
 const LIST_MIN = 18;
@@ -117,7 +121,7 @@ function detailLines(run, rows, color) {
   const head = [
     paint(run.id, COLORS.bold, color) + (run.title ? paint(` · ${run.title}`, COLORS.dim, color) : ''),
     `${bar(run.percent, 24)} ${String(run.percent).padStart(3)}%`,
-    `${run.planApproved ? '✅ plan approved' : '🔒 plan gate: waiting for human approval'}${run.inProgress ? '' : '  · closed'}`,
+    `${run.planApproved ? '✅ plan approved' : '🔒 plan gate: waiting for human approval'}${run.inProgress ? '' : run.abandoned ? '  · abandoned' : '  · closed'}`,
     '',
   ];
   const foot = [
@@ -198,12 +202,59 @@ function renderFrame(view) {
     lines.push(`╰${'─'.repeat(inner)}╯`);
   }
 
-  const hint = view.notice
-    ? paint(view.notice, COLORS.green, color)
-    : paint(`↑↓ select · enter set active · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`, COLORS.dim, color);
+  const hint = view.confirm
+    ? paint(confirmPrompt(run), isVerified(run) ? COLORS.yellow : COLORS.red, color)
+    : view.notice
+      ? paint(view.notice, view.notice.startsWith('✗') ? COLORS.red : COLORS.green, color)
+      : paint(`↑↓ select · enter set active · c close · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`, COLORS.dim, color);
   lines.push(` ${hint}`);
   if (!runs.length) lines.push(paint(` No ${view.all ? 'runs' : 'features in progress'}. Start one: agentic feature <run-id> --request "..."`, COLORS.dim, color));
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Closing a run
+
+function isVerified(run) {
+  return (run?.phases || []).some(phase => phase.id === 'verification' && phase.status === 'pass');
+}
+
+// Closing a verified run is the ordinary close every caller may do. Closing one
+// before verification is an abandon, which runs.js allows only in admin mode —
+// here that means a human pressing the key and confirming on a real terminal.
+function closeCommand(run) {
+  const verified = isVerified(run);
+  return {
+    verified,
+    admin: !verified,
+    args: [RUNS_CLI, 'close', run.id, ...(verified ? [] : [ABANDON_REASON])],
+  };
+}
+
+function confirmPrompt(run) {
+  if (!run) return 'Nothing to close.';
+  const verified = isVerified(run);
+  return verified
+    ? `Close ${run.id} (verified, ${run.percent}%)?  y = confirm · any other key = cancel`
+    : `Close ${run.id} at ${run.percent}% — verification has not passed, so it is recorded as abandoned.  y = confirm · any other key = cancel`;
+}
+
+function closeRun(run) {
+  const { args, admin, verified } = closeCommand(run);
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    timeout: 20000,
+    env: { ...process.env, ...(admin ? { AI_WORKFLOW_ADMIN: '1' } : {}) },
+  });
+  const output = `${result.stdout || ''}${result.stderr || ''}`.trim().split(/\r?\n/).filter(Boolean).pop() || '';
+  const ok = !result.error && result.status === 0;
+  return {
+    ok,
+    verified,
+    message: ok
+      ? `✔ ${run.id} ${verified ? 'closed' : 'abandoned'} — ${verified ? 'run complete' : 'recorded as abandoned before verification'}`
+      : `✗ could not close ${run.id}: ${output || result.error?.message || 'unknown error'}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +264,14 @@ function handleKey(view, key = {}) {
   const name = key.name || '';
   const count = view.count || 0;
   const move = delta => ({ view: { ...view, index: count ? (view.index + delta + count) % count : 0 }, action: null });
-  if (key.ctrl && (name === 'c' || name === 'd')) return { view, action: 'quit' };
+  if (key.ctrl && (name === 'c' || name === 'd')) return { view: { ...view, confirm: false }, action: 'quit' };
+  // While confirming a close, only y goes through; every other key cancels.
+  if (view.confirm) {
+    return name === 'y'
+      ? { view: { ...view, confirm: false }, action: 'close-confirm' }
+      : { view: { ...view, confirm: false }, action: 'close-cancel' };
+  }
+  if (name === 'c') return count ? { view: { ...view, confirm: true }, action: 'close-request' } : { view, action: null };
   if (name === 'q' || name === 'escape') return { view, action: 'quit' };
   if (name === 'down' || name === 'j' || name === 'tab') return move(1);
   if (name === 'up' || name === 'k') return move(-1);
@@ -257,7 +315,7 @@ function run(options = {}) {
   const parent = path.dirname(root);
   const label = options.label || (options.demo ? 'demo' : path.basename(path.basename(root) === 'runs' ? path.dirname(parent) : parent));
 
-  let view = { all: !!options.all, index: 0, notice: null };
+  let view = { all: !!options.all, index: 0, notice: null, confirm: false };
   let runs = load({ demo: options.demo, all: view.all });
   view.index = Math.max(0, focusIndex(runs, options.run));
   let focusedId = runs[view.index]?.id || null;
@@ -268,6 +326,7 @@ function run(options = {}) {
     all: view.all,
     demo: options.demo,
     notice: view.notice,
+    confirm: view.confirm,
     label,
     color,
     width: out.columns || 100,
@@ -312,22 +371,35 @@ function run(options = {}) {
   };
   const quit = code => { cleanup(); process.exit(code || 0); };
 
+  const flash = message => {
+    view.notice = message;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => { view.notice = null; draw(); }, 4000);
+  };
+
   process.stdin.on('keypress', (_str, key) => {
     const result = handleKey({ ...view, count: runs.length }, key || {});
-    view = { ...view, index: result.view.index, all: result.view.all };
+    view = { ...view, index: result.view.index, all: result.view.all, confirm: result.view.confirm };
     focusedId = runs[view.index]?.id || focusedId;
     if (result.action === 'quit') return quit(0);
     if (result.action === 'reload') return reload();
+    if (result.action === 'close-request') { view.notice = null; return draw(); }
+    if (result.action === 'close-cancel') { flash('close cancelled'); return draw(); }
+    if (result.action === 'close-confirm') {
+      const target = runs[view.index];
+      if (!target) flash('nothing to close');
+      else if (options.demo) flash(`demo mode: ${target.id} not closed`);
+      else flash(closeRun(target).message);
+      return reload();
+    }
     if (result.action === 'set-active') {
       const target = runs[view.index];
       if (target && !options.demo) {
         try {
           setActive(target.id);
-          view.notice = `▸ ${target.id} is now the active run (agentic resume/approve/progress use it)`;
-        } catch (error) { view.notice = `✗ ${error.message}`; }
-      } else if (target) view.notice = `demo mode: ${target.id} not written`;
-      if (noticeTimer) clearTimeout(noticeTimer);
-      noticeTimer = setTimeout(() => { view.notice = null; draw(); }, 4000);
+          flash(`▸ ${target.id} is now the active run (agentic resume/approve/progress use it)`);
+        } catch (error) { flash(`✗ ${error.message}`); }
+      } else if (target) flash(`demo mode: ${target.id} not written`);
       return reload();
     }
     draw();
@@ -406,6 +478,39 @@ function selftest() {
   assert.strictEqual(handleKey(view, { name: 'a' }).view.all, true);
   assert.strictEqual(handleKey(view, { name: 'a' }).action, 'reload');
   assert.strictEqual(handleKey(view, { name: 'x' }).action, null);
+
+  // Closing asks first: c arms the prompt, y closes, anything else cancels.
+  const armed = handleKey(view, { name: 'c' });
+  assert.strictEqual(armed.action, 'close-request');
+  assert.strictEqual(armed.view.confirm, true);
+  assert.strictEqual(handleKey(armed.view, { name: 'y' }).action, 'close-confirm');
+  assert.strictEqual(handleKey(armed.view, { name: 'y' }).view.confirm, false, 'the prompt clears after confirming');
+  for (const key of [{ name: 'n' }, { name: 'escape' }, { name: 'return' }, { name: 'q' }, { name: 'down' }]) {
+    const cancelled = handleKey(armed.view, key);
+    assert.strictEqual(cancelled.action, 'close-cancel', `${key.name} must cancel, not close`);
+    assert.strictEqual(cancelled.view.confirm, false);
+  }
+  assert.strictEqual(handleKey(armed.view, { name: 'c', ctrl: true }).action, 'quit', 'ctrl-c still quits while confirming');
+  assert.strictEqual(handleKey({ index: 0, count: 0, all: false }, { name: 'c' }).action, null, 'nothing to close with no runs');
+
+  // Only an unverified run needs admin mode; a verified one closes normally.
+  const verifiedRun = { id: 'FEAT-V', percent: 100, phases: [{ id: 'verification', status: 'pass' }] };
+  const unverifiedRun = { id: 'FEAT-U', percent: 43, phases: [{ id: 'verification', status: 'pending' }] };
+  assert.deepStrictEqual(closeCommand(verifiedRun), { verified: true, admin: false, args: [RUNS_CLI, 'close', 'FEAT-V'] });
+  const abandon = closeCommand(unverifiedRun);
+  assert.strictEqual(abandon.admin, true);
+  assert.deepStrictEqual(abandon.args, [RUNS_CLI, 'close', 'FEAT-U', ABANDON_REASON]);
+  assert.match(confirmPrompt(unverifiedRun), /abandoned/);
+  assert.match(confirmPrompt(verifiedRun), /verified/);
+  assert.strictEqual(confirmPrompt(null), 'Nothing to close.');
+
+  // The prompt replaces the key hints and still fits the frame.
+  const confirming = renderFrame({ runs, index: 0, width: 100, height: 24, color: false, confirm: true });
+  assert(confirming.includes('y = confirm'), 'the confirmation prompt is shown');
+  assert(confirming.includes(runs[0].id));
+  assert(!confirming.includes('c close'), 'key hints give way to the prompt');
+  for (const line of confirming.split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100);
+  assert(renderFrame({ runs, index: 0, width: 100, height: 24, color: false }).includes('c close'), 'the close key is advertised');
   assert.strictEqual(handleKey({ index: 0, count: 0, all: false }, { name: 'down' }).view.index, 0, 'no runs, no crash');
 
   // Non-interactive rendering writes one frame and returns it.
@@ -426,6 +531,47 @@ function selftest() {
   assert(live.join('').includes('FEAT-9'));
   if (previous === undefined) delete process.env.AI_WORKFLOW_STATE_ROOT; else process.env.AI_WORKFLOW_STATE_ROOT = previous;
   fs.rmSync(temp, { recursive: true, force: true });
+
+  // Closing for real, through runs.js, against a throwaway state root.
+  const closeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-close-'));
+  const seed = (id, verification) => {
+    fs.mkdirSync(path.join(closeRoot, id), { recursive: true });
+    fs.writeFileSync(path.join(closeRoot, id, 'state.json'), JSON.stringify({
+      id, status: 'active', startedAt: new Date().toISOString(),
+      phases: { request: { status: 'pass' }, verification: { status: verification } },
+      roles: {}, selectedRoles: {},
+    }));
+  };
+  seed('FEAT-VERIFIED', 'pass');
+  seed('FEAT-OPEN', 'pending');
+  fs.writeFileSync(path.join(closeRoot, '_active'), 'FEAT-OPEN\n');
+  const before = process.env.AI_WORKFLOW_STATE_ROOT;
+  process.env.AI_WORKFLOW_STATE_ROOT = closeRoot;
+  const stateOf = id => JSON.parse(fs.readFileSync(path.join(closeRoot, id, 'state.json'), 'utf8'));
+
+  const done = closeRun({ id: 'FEAT-VERIFIED', percent: 100, phases: [{ id: 'verification', status: 'pass' }] });
+  assert.strictEqual(done.ok, true, done.message);
+  assert.strictEqual(stateOf('FEAT-VERIFIED').status, 'done');
+  assert.strictEqual(stateOf('FEAT-VERIFIED').abandoned, undefined, 'a verified run is closed, not abandoned');
+
+  const abandoned = closeRun({ id: 'FEAT-OPEN', percent: 43, phases: [{ id: 'verification', status: 'pending' }] });
+  assert.strictEqual(abandoned.ok, true, abandoned.message);
+  assert.match(abandoned.message, /abandoned/);
+  const openState = stateOf('FEAT-OPEN');
+  assert.strictEqual(openState.status, 'done');
+  assert.strictEqual(openState.abandoned, true, 'closing before verification records an abandon');
+  assert.strictEqual(openState.closedReason, ABANDON_REASON);
+  assert.strictEqual(openState.history.slice(-1)[0].action, 'abandon', 'the run history keeps the reason');
+  assert.strictEqual(fs.existsSync(path.join(closeRoot, '_active')), false, 'closing clears the active pointer');
+  assert.deepStrictEqual(listRuns({ root: closeRoot }), [], 'closed runs leave the in-progress list');
+  assert.strictEqual(listRuns({ root: closeRoot, all: true }).length, 2);
+
+  const missing = closeRun({ id: 'FEAT-GONE', percent: 0, phases: [] });
+  assert.strictEqual(missing.ok, false, 'a failed close is reported, not swallowed');
+  assert.match(missing.message, /could not close FEAT-GONE/);
+
+  if (before === undefined) delete process.env.AI_WORKFLOW_STATE_ROOT; else process.env.AI_WORKFLOW_STATE_ROOT = before;
+  fs.rmSync(closeRoot, { recursive: true, force: true });
 
   console.log('dashboard selftest OK');
 }
@@ -449,4 +595,4 @@ if (require.main === module) {
   else run(parseArgs(process.argv.slice(2)));
 }
 
-module.exports = { width, pad, truncate, bar, listLines, detailLines, renderFrame, handleKey, demoRuns, run, parseArgs };
+module.exports = { width, pad, truncate, bar, listLines, detailLines, renderFrame, handleKey, isVerified, closeCommand, confirmPrompt, closeRun, demoRuns, run, parseArgs };
