@@ -237,8 +237,8 @@ function progressBar(percent, width = 28) {
   return `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`;
 }
 
-function planApproved(id) {
-  return id !== 'DEMO-123' && fs.existsSync(path.join(RUNS, id, 'plan.approved'));
+function planApproved(id, root = RUNS) {
+  return id !== 'DEMO-123' && fs.existsSync(path.join(root, id, 'plan.approved'));
 }
 
 function buildSummary(id, state, options = {}) {
@@ -248,7 +248,7 @@ function buildSummary(id, state, options = {}) {
     status: state.status || 'active',
     percent,
     current: currentWork(state),
-    planApproved: options.demo ? false : planApproved(id),
+    planApproved: options.demo ? false : planApproved(id, options.root || RUNS),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
     warnings: consistencyIssues(state),

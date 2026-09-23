@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.6.2-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.7.0-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.6.2
+1.7.0
 ```
 
 ### 2. Initialize a project
@@ -254,8 +254,10 @@ agentic feature FEAT-001 \
 ### 5. Watch progress
 
 ```bash
-agentic progress FEAT-001 --watch
+agentic progress
 ```
+
+Opens the terminal dashboard on the active feature, with every other in-progress feature listed beside it. See [Progress](#progress).
 
 ### 6. Approve the generated plan
 
@@ -328,11 +330,42 @@ backend runtime/build/test tooling
 
 ### Progress
 
+Several features can be in progress at once. `agentic progress` with no run id opens a live terminal dashboard focused on the active feature:
+
+```bash
+agentic progress              # dashboard, focused on the active run
+agentic dashboard --all       # include finished runs
+agentic runs                  # list in-progress features (▸ marks the active one)
+agentic runs --all --json     # every run, machine-readable
+agentic switch FEAT-002       # make a feature the active run
+```
+
+```text
+╭ AGENTIC · my-app ───────────────────────────────── 3 in progress ╮
+├────────────────────┬─────────────────────────────────────────────┤
+│ ▸ FEAT-002 *  43%  │ FEAT-002 · Payments retry on timeout        │
+│   FEAT-007    12%  │ ██████████░░░░░░░░░░░░░░  43%               │
+│   FEAT-011    88%  │ 🔒 plan gate: waiting for human approval    │
+│                    │ ✅ Repository Inspection    pass            │
+│                    │ 🔄 Specialist Analysis      in_progress     │
+│                    │    ✅ architect            pass · claude    │
+│                    │    🔄 security             in_progress      │
+│                    │ Current: Specialist Analysis → security     │
+╰────────────────────┴─────────────────────────────────────────────╯
+ ↑↓ select · enter set active · a all runs · r refresh · q quit
+```
+
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+
+A single run still renders on its own, and piping or redirecting any of these prints one frame instead of taking over the terminal:
+
 ```bash
 agentic progress FEAT-001
 agentic progress FEAT-001 --watch
 agentic progress FEAT-001 --json
 ```
+
+Details: [docs/progress-dashboard.md](docs/progress-dashboard.md).
 
 ### Resume
 
@@ -374,7 +407,9 @@ agentic --project ~/projects/payment-backend \
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
 | `agentic approve <id>` | human approval of the implementation plan |
-| `agentic progress <id> [--watch]` | inspect workflow progress |
+| `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
+| `agentic runs [--all] [--json]` | list features and which one is active |
+| `agentic switch <id>` | make a feature the active run |
 | `agentic refactor <id> --request "..."` | start a behavior-preserving refactor |
 | `agentic refactor-app <id> --request "..."` | start a whole-app architecture refactor |
 | `agentic architecture <id> <option>` | record the human architecture choice |
@@ -1552,7 +1587,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.6.2
+runtimeVersion         1.7.0
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable
@@ -1665,6 +1700,7 @@ Important implementation files:
 ### Runtime and execution
 
 - [Workflow doctor](docs/workflow-doctor.md)
+- [Progress dashboard](docs/progress-dashboard.md)
 - [Execution policy](docs/execution-policy.md)
 - [Run isolation](docs/run-isolation.md)
 - [Structured artifacts](docs/structured-artifacts.md)

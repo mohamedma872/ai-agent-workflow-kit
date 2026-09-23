@@ -57,6 +57,8 @@ jobs:
           node --check ai/workflow/attempts.js
           node --check ai/workflow/worktree.js
           node --check ai/workflow/progress.js
+          node --check ai/workflow/dashboard.js
+          node --check ai/workflow/runs-index.js
           node --check ai/workflow/progress-selftest.js
           node --check ai/workflow/github-progress.js
           node --check ai/workflow/github-verification.js
@@ -140,6 +142,10 @@ jobs:
           node ai/tasks/feature/mobile-evidence.js selftest
           node ai/tasks/feature/evidence-attestation-selftest.js
           node ai/workflow/progress-selftest.js
+          node ai/workflow/dashboard.js --selftest
+          node ai/workflow/runs-index.js --selftest
+          node ai/workflow/dashboard.js --demo --once > /dev/null
+          node ai/workflow/runs-index.js --json > /dev/null
           node ai/workflow/progress.js --demo
           node ai/workflow/progress.js --demo --json > /dev/null
           node ai/workflow/progress.js --demo --markdown > /dev/null

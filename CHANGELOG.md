@@ -4,6 +4,18 @@
 
 - No unreleased runtime changes.
 
+## 1.7.0 — 2026-09-23
+
+- Added a terminal dashboard for `/feature` runs: in-progress features on the left, the highlighted run's stages and specialist roles on the right, refreshing every second.
+- `agentic progress` with no run id now opens the dashboard focused on the active feature instead of failing with "progress requires a run id". A run id, `--json`, `--markdown` or `--watch` keep the existing single-run output.
+- Added `agentic dashboard [--all] [--run <id>]`, and `agentic ui` as an alias.
+- Added `agentic runs [--all] [--json]`, listing every feature with progress, current stage, plan gate and which one is active.
+- Added `agentic switch <run-id>` (alias `agentic use`) to make a feature the active run, so `agentic resume`, `approve` and `progress` default to it. In the dashboard, `enter` does the same for the highlighted feature.
+- Dashboard keys: `↑↓`/`j k`/`tab` to move, `enter`/`space` to set active, `a` for finished runs, `r` to refresh, `home`/`end`, `q`/`esc`/`ctrl-c` to quit.
+- The detail pane adapts to the terminal: it drops pending stages before the roles of a running stage, and terminals under 78 columns stack the panes instead of splitting them.
+- Without a TTY the dashboard prints one frame and exits, so piping, redirection and CI capture keep working.
+- Added `npm run workflow:dashboard` and `npm run workflow:runs`.
+
 ## 1.6.2 — 2026-09-22
 
 - Fixed specialist routing for React Native apps. Because they depend on `react`, the subagent selector counted them as web frontends. Every React Native feature ran the web `frontend` analyst, and every `.ts`/`.tsx` change ran `frontend-review` alongside `react-native-review`. React Native repositories now route to web frontend specialists only when they also contain a web app directory (`frontend/`, `web/`, `apps/web/`), matching the workflow engine and the doctor.

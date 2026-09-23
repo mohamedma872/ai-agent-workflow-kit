@@ -13,6 +13,8 @@ const ENGINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine.js');
 const RUNS = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const PROGRESS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'progress.js');
+const DASHBOARD = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'dashboard.js');
+const RUNS_INDEX = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'runs-index.js');
 const REFACTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-cli.js');
 const REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-report.js');
 const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
@@ -303,7 +305,11 @@ Usage:
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
   agentic approve <run-id>
+  agentic progress                 Terminal dashboard for in-progress features
   agentic progress <run-id> [--watch|--json|--markdown]
+  agentic dashboard [--all] [--run <id>]
+  agentic runs [--all] [--json]    List features and which one is active
+  agentic switch <run-id>          Make a feature the active run
   agentic refactor <run-id> --request "..."
   agentic refactor-app <run-id> --request "..."
   agentic architecture <run-id> <option-id> [note]
@@ -413,9 +419,21 @@ function main() {
     runNode(RUNS, ['approve', args[1]], project);
     return runNode(ENGINE, ['resume', args[1]], project);
   }
+  // `agentic progress` with no run id opens the dashboard on the active run;
+  // a run id, or any output flag, keeps the single-run renderer.
   if (command === 'progress' || command === 'status') {
-    if (!args[1]) throw new Error(command + ' requires a run id');
-    return runNode(PROGRESS, ['--run', args[1], ...args.slice(2)], project);
+    const rest = args.slice(1);
+    const runId = rest.find(arg => !arg.startsWith('--')) || null;
+    const textOutput = rest.some(arg => ['--json', '--markdown', '--watch'].includes(arg));
+    if (!runId && !textOutput) return runNode(DASHBOARD, rest, project);
+    if (!runId) return runNode(PROGRESS, rest, project);
+    return runNode(PROGRESS, ['--run', runId, ...rest.filter(arg => arg !== runId)], project);
+  }
+  if (command === 'dashboard' || command === 'ui') return runNode(DASHBOARD, args.slice(1), project);
+  if (command === 'runs' || command === 'features') return runNode(RUNS_INDEX, args.slice(1), project);
+  if (command === 'switch' || command === 'use') {
+    if (!args[1]) throw new Error('switch requires a run id (see: agentic runs)');
+    return runNode(RUNS_INDEX, ['--switch', args[1]], project);
   }
   if (command === 'refactor') {
     if (!args[1]) throw new Error('refactor requires a run id');
