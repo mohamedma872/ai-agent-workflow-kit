@@ -15,6 +15,8 @@ agentic switch FEAT-002       # make a feature the active run
 
 The left pane lists features, the right pane shows the highlighted run's stages and specialist roles. Both refresh every second.
 
+![Agentic progress dashboard](images/dashboard.png)
+
 ```text
 ╭ AGENTIC · my-app ───────────────────────────────── 3 in progress ╮
 ├────────────────────┬─────────────────────────────────────────────┤
@@ -50,6 +52,8 @@ Two keys write: `enter` updates the `_active` pointer, and `c` closes a run afte
 ## Closing a run
 
 `c` asks before doing anything. Only `y` goes through; any other key cancels, and `ctrl-c` still quits.
+
+![Agentic close confirmation](images/dashboard-close.png)
 
 ```text
  Close FEAT-002 at 43% — verification has not passed, so it is recorded as

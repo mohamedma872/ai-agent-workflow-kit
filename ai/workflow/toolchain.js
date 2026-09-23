@@ -193,6 +193,60 @@ function appiumLaunchPlan(argv, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Flutter
+
+function flutterBin(binDir) {
+  const bin = path.join(binDir, IS_WIN ? 'flutter.bat' : 'flutter');
+  return fs.existsSync(bin) ? bin : null;
+}
+
+const flutterVersionCache = new Map();
+// Only the doctor needs this: `flutter --version` can compile the tool on first
+// run, so it is far too slow for the per-command environment setup.
+function flutterVersion(bin) {
+  if (!flutterVersionCache.has(bin)) {
+    const r = run(bin, ['--version', '--suppress-analytics'], { timeout: 90000 });
+    const m = `${r.stdout}${r.stderr}`.match(/Flutter\s+(\d+\.\d+\.\d+)/);
+    flutterVersionCache.set(bin, r.ok && m ? m[1] : null);
+  }
+  return flutterVersionCache.get(bin);
+}
+
+function flutterCandidates(env, home) {
+  const dirs = [];
+  if (env.FLUTTER_ROOT) dirs.push(path.join(env.FLUTTER_ROOT, 'bin'));
+  for (const base of ['develop/flutter', 'flutter', 'sdk/flutter', 'Development/flutter', 'src/flutter',
+    'fvm/default', 'Library/flutter', 'Applications/flutter', 'tools/flutter']) {
+    dirs.push(path.join(home, ...base.split('/'), 'bin'));
+  }
+  dirs.push(...listDirs(path.join(home, '.puro', 'envs')).map(d => path.join(d, 'flutter', 'bin')));
+  dirs.push(...listDirs(path.join(home, 'fvm', 'versions')).map(d => path.join(d, 'bin')));
+  for (const prefix of ['/opt/homebrew', '/usr/local', '/opt']) dirs.push(path.join(prefix, 'flutter', 'bin'));
+  return [...new Set(dirs)];
+}
+
+// Flutter is commonly unpacked into a home directory and never added to PATH.
+// `source` is PATH when the user's own shell finds it, otherwise discovered.
+// Filesystem only, so it is cheap enough to run for every command.
+function locateFlutter(options = {}) {
+  const env = options.env || process.env;
+  const home = options.home || os.homedir();
+  const onPath = whichIn(IS_WIN ? 'flutter.bat' : 'flutter', env.PATH);
+  // PATH may be one agentic injected itself; the user's shell still cannot find it.
+  if (onPath) return { bin: onPath, binDir: path.dirname(onPath), source: env.AGENTIC_FLUTTER_DISCOVERED === '1' ? 'discovered' : 'PATH' };
+  for (const dir of flutterCandidates(env, home)) {
+    const bin = flutterBin(dir);
+    if (bin) return { bin, binDir: dir, source: 'discovered' };
+  }
+  return null;
+}
+
+function resolveFlutter(options = {}) {
+  const found = locateFlutter(options);
+  return found ? { ...found, version: flutterVersion(found.bin) } : null;
+}
+
+// ---------------------------------------------------------------------------
 // Xcode
 
 function isFullXcodeDeveloperDir(dir) {
@@ -249,10 +303,22 @@ function resolveXcode(options = {}) {
 
 // Extra environment for runtime subprocesses so Xcode tools work when a full
 // Xcode is installed but not selected. Never overrides an explicit DEVELOPER_DIR.
-function toolchainEnv(env = process.env) {
-  if (env.DEVELOPER_DIR || process.platform !== 'darwin') return {};
-  const xcode = resolveXcode();
-  return xcode && xcode.source === 'discovered' ? { DEVELOPER_DIR: xcode.developerDir, AGENTIC_XCODE_DISCOVERED: '1' } : {};
+function toolchainEnv(env = process.env, options = {}) {
+  const extra = {};
+  if (!env.DEVELOPER_DIR && process.platform === 'darwin') {
+    const xcode = resolveXcode();
+    if (xcode && xcode.source === 'discovered') {
+      extra.DEVELOPER_DIR = xcode.developerDir;
+      extra.AGENTIC_XCODE_DISCOVERED = '1';
+    }
+  }
+  // An installed but unlisted Flutter SDK is put on PATH for agentic's own runs.
+  const flutter = locateFlutter({ env, home: options.home });
+  if (flutter && flutter.source === 'discovered') {
+    extra.PATH = [flutter.binDir, env.PATH].filter(Boolean).join(path.delimiter);
+    extra.AGENTIC_FLUTTER_DISCOVERED = '1';
+  }
+  return extra;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +381,29 @@ function selftest() {
     const injected = resolveXcode({ env: { DEVELOPER_DIR: '/nonexistent/Xcode.app/Contents/Developer', AGENTIC_XCODE_DISCOVERED: '1' }, home: os.tmpdir() });
     assert.strictEqual(injected.source, 'discovered', 'a DEVELOPER_DIR injected by agentic keeps the xcode-select warning');
   }
-  assert.deepStrictEqual(toolchainEnv({ DEVELOPER_DIR: '/x' }), {}, 'explicit DEVELOPER_DIR is never overridden');
+  // Flutter: a fake SDK in a home directory is found without being on PATH.
+  if (!IS_WIN) {
+    const fhome = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-flutter-'));
+    const sdkBin = path.join(fhome, 'develop', 'flutter', 'bin');
+    fs.mkdirSync(sdkBin, { recursive: true });
+    fs.writeFileSync(path.join(sdkBin, 'flutter'), '#!/bin/sh\necho "Flutter 3.47.5 • channel stable"\n', { mode: 0o755 });
+    const bare = { PATH: '/nonexistent-bin' };
+    const found = resolveFlutter({ env: bare, home: fhome });
+    assert.strictEqual(found.version, '3.47.5');
+    assert.strictEqual(found.source, 'discovered');
+    assert.strictEqual(found.binDir, sdkBin);
+    const env = toolchainEnv(bare, { home: fhome });
+    assert.strictEqual(resolveFlutter({ env: { PATH: sdkBin }, home: fhome }).source, 'PATH', 'an SDK already on PATH is left alone');
+    assert.strictEqual(resolveFlutter({ env: { PATH: sdkBin, AGENTIC_FLUTTER_DISCOVERED: '1' }, home: fhome }).source, 'discovered', 'a PATH agentic injected keeps the warning');
+    assert.strictEqual(env.PATH.split(path.delimiter)[0], sdkBin, 'the discovered SDK leads PATH for agentic runs');
+    assert.strictEqual(env.AGENTIC_FLUTTER_DISCOVERED, '1');
+    assert.strictEqual(resolveFlutter({ env: bare, home: path.join(fhome, 'empty') }), null, 'no SDK, no result');
+    fs.rmSync(fhome, { recursive: true, force: true });
+    assert.ok(env, 'toolchainEnv tolerates a home without an SDK');
+  }
+
+  const explicitXcode = toolchainEnv({ DEVELOPER_DIR: '/x', PATH: process.env.PATH });
+  assert.strictEqual(explicitXcode.DEVELOPER_DIR, undefined, 'explicit DEVELOPER_DIR is never overridden');
   console.log('toolchain selftest OK');
 }
 
@@ -334,5 +422,7 @@ module.exports = {
   appiumRuntime,
   appiumLaunchPlan,
   resolveXcode,
+  locateFlutter,
+  resolveFlutter,
   toolchainEnv,
 };

@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.8.0-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.0-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.8.0
+1.9.0
 ```
 
 ### 2. Initialize a project
@@ -332,6 +332,8 @@ backend runtime/build/test tooling
 
 Several features can be in progress at once. `agentic progress` with no run id opens a live terminal dashboard focused on the active feature:
 
+![Agentic progress dashboard](docs/images/dashboard.png)
+
 ```bash
 agentic progress              # dashboard, focused on the active run
 agentic dashboard --all       # include finished runs
@@ -339,6 +341,8 @@ agentic runs                  # list in-progress features (▸ marks the active 
 agentic runs --all --json     # every run, machine-readable
 agentic switch FEAT-002       # make a feature the active run
 ```
+
+![Agentic runs list](docs/images/runs-list.png)
 
 ```text
 ╭ AGENTIC · my-app ───────────────────────────────── 3 in progress ╮
@@ -1589,7 +1593,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.8.0
+runtimeVersion         1.9.0
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

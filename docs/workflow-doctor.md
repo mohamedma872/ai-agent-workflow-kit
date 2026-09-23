@@ -2,6 +2,8 @@
 
 `workflow:doctor` validates runtime prerequisites before agentic work begins. The deterministic engine runs it automatically before a new feature run and re-checks it on resume/run/run-next.
 
+![Agentic doctor Flutter report](images/doctor-flutter.png)
+
 ## Scopes
 
 ```bash

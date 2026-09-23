@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-workflow-runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Deterministic agentic engineering runtime with Hybrid RAG, guarded stage progression, evidence, evals, and Claude/Codex execution.",
   "license": "MIT",
   "author": "Mohamed Elsdody",

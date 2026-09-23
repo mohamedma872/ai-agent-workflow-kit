@@ -583,6 +583,8 @@ function parseArgs(argv) {
     if (arg === '--all') options.all = true;
     else if (arg === '--demo') options.demo = true;
     else if (arg === '--once') options.once = true;
+    else if (arg === '--color') options.color = true;
+    else if (arg === '--no-color') options.color = false;
     else if (arg === '--run') options.run = argv[++i];
     else if (arg === '--interval') options.interval = Math.max(250, Number(argv[++i]) || 1000);
     else if (!arg.startsWith('--') && !options.run) options.run = arg;

@@ -9,7 +9,7 @@ const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { runtimeRoot, projectRoot } = require('./paths');
 const { discoverMcps, hasMcp } = require('./mcp-discovery');
-const { APPIUM_MIN_NODE, appiumRuntime, findNode, isAppiumLauncher, launcherSpecFor, resolveXcode } = require('./toolchain');
+const { APPIUM_MIN_NODE, appiumRuntime, findNode, isAppiumLauncher, launcherSpecFor, resolveFlutter, resolveXcode } = require('./toolchain');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -61,6 +61,13 @@ function majorFrom(text) {
   return m ? Number(m[1]) : null;
 }
 
+// A web app directory only counts with its own package.json: Flutter's web/ is a
+// build target, not a JavaScript app.
+const WEB_APP_DIRS = ['frontend', 'web', path.join('apps', 'web')];
+function hasWebAppDir(root) {
+  return WEB_APP_DIRS.some(dir => fs.existsSync(path.join(root, dir, 'package.json')));
+}
+
 function detectStacks(root = PROJECT_ROOT) {
   const pkg = readJson(path.join(root, 'package.json')) || {};
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
@@ -72,8 +79,7 @@ function detectStacks(root = PROJECT_ROOT) {
   // React Native apps depend on react too; like engine.js, only a web dependency
   // outside React Native (or a web app directory) makes the repo a frontend.
   const frontendDeps = ['react', 'next', 'vite', 'vue', '@angular/core', 'svelte'];
-  const frontendDirs = ['frontend', 'web', path.join('apps', 'web')];
-  if ((!deps['react-native'] && frontendDeps.some(d => deps[d])) || frontendDirs.some(d => fs.existsSync(path.join(root, d)))) stacks.push('frontend');
+  if ((!deps['react-native'] && frontendDeps.some(d => deps[d])) || hasWebAppDir(root)) stacks.push('frontend');
   const nodeBackendDeps = ['express', 'fastify', 'koa', '@nestjs/core', 'hapi'];
   const backendDirs = ['backend', 'server', 'api', path.join('apps', 'api')];
   const pythonBackend = ['requirements.txt', 'pyproject.toml', 'manage.py'].some(f => fs.existsSync(path.join(root, f)));
@@ -173,6 +179,19 @@ function iosChecks(xcodeRequired) {
   return checks;
 }
 
+// A Flutter SDK unpacked into a home directory counts as installed: agentic puts
+// it on PATH for its own runs and says how to make the shell find it too.
+function flutterChecks(required) {
+  const flutter = resolveFlutter();
+  if (!flutter) return [result('flutter', 'mobile', required, false, 'flutter not found on PATH or in the usual SDK locations', 'Install the Flutter SDK (flutter.dev/docs/get-started/install) and add its bin directory to PATH')];
+  const label = flutter.version ? `Flutter ${flutter.version}` : 'flutter available';
+  const checks = [result('flutter', 'mobile', required, true, `${label} at ${tildify(path.dirname(flutter.binDir))}`)];
+  if (flutter.source === 'discovered') {
+    checks.push(incompatible('flutter:path', 'mobile', false, `${flutter.binDir.includes(os.homedir()) ? tildify(flutter.binDir) : flutter.binDir} is not on PATH; agentic adds it for its own runs, but flutter commands you run yourself will fail`, `export PATH="${flutter.binDir}:$PATH"  # add to ~/.zshrc`));
+  }
+  return checks;
+}
+
 // Checks the Node that will actually execute appium-mcp for the configured
 // entry, not the Node that happens to run doctor.
 function appiumNodeCheck(entry, required) {
@@ -241,10 +260,7 @@ function runChecks(options = {}) {
         checks.push(result('android:device', 'mobile', false, count > 0, count ? `${count} connected/ready Android device(s)` : 'no ready Android device currently connected', 'Start/connect an emulator/device before mobile evidence'));
       }
     }
-    if (stacks.includes('flutter')) {
-      const flutter = commandExists('flutter');
-      checks.push(result('flutter', 'mobile', mobileRequired, flutter, flutter ? commandOutput('flutter', ['--version']) || 'flutter available' : 'flutter not found', 'Install Flutter SDK and add flutter to PATH'));
-    }
+    if (stacks.includes('flutter')) checks.push(...flutterChecks(mobileRequired));
     if (iosRelevant) checks.push(...iosChecks(mobileRequired && stacks.includes('ios')));
     const appiumConfigured = hasMcp(discoveredMcps, 'appium');
     const appiumInstalled = discoveredMcps.installed.appiumMcp;
@@ -323,7 +339,10 @@ function selftest() {
   assert(!detectStacks(temp).includes('frontend'), 'a React Native app is not a web frontend');
   assert(detectStacks(temp).includes('react-native'));
   fs.mkdirSync(path.join(temp, 'web'));
-  assert(detectStacks(temp).includes('frontend'), 'a web/ app inside a React Native repo is a frontend');
+  fs.writeFileSync(path.join(temp, 'web', 'index.html'), '<html></html>');
+  assert(!detectStacks(temp).includes('frontend'), "Flutter's web/ build target is not a JavaScript frontend");
+  fs.writeFileSync(path.join(temp, 'web', 'package.json'), '{}');
+  assert(detectStacks(temp).includes('frontend'), 'a web/ app with its own package.json is a frontend');
   fs.rmSync(path.join(temp, 'web'), { recursive: true });
   writePkg({ react: '19.0.0', 'react-dom': '19.0.0' });
   assert(detectStacks(temp).includes('frontend'), 'a React web app is a frontend');

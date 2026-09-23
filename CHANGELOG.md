@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.9.0 — 2026-09-23
+
+- Fixed `flutter` being reported as missing when the Flutter SDK is installed but not on PATH — the common case of unpacking it into a home directory. The doctor now finds it (`FLUTTER_ROOT`, `~/develop/flutter`, `~/flutter`, `~/sdk/flutter`, fvm, puro, Homebrew and similar), reports the version and location, and `agentic` puts its `bin` directory on PATH for its own runs so workflow agents can call `flutter`.
+- Added an optional `flutter:path` check with the exact `export PATH=…` line, because flutter commands run outside agentic still fail until the shell can find it.
+- Fixed Flutter projects being treated as JavaScript frontends. Flutter's `web/` build target made the doctor ask for npm build and test scripts, and made the subagent selector route Flutter features to the web frontend specialist. A web app directory (`frontend/`, `web/`, `apps/web/`) now counts only when it has its own `package.json`.
+- Added `--color` / `--no-color` to the dashboard so a colored frame can be captured without a TTY.
+- Added dashboard and CLI screenshots to the README and docs.
+
 ## 1.8.0 — 2026-09-23
 
 - Added `c` in the dashboard to close the highlighted feature, so abandoned runs can leave the in-progress list without hand-editing state. It always asks first: only `y` confirms, any other key cancels, and `ctrl-c` still quits.

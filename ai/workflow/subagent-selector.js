@@ -12,8 +12,9 @@ function detectStacks(root){
    android: exists('android') || exists('build.gradle') || exists('build.gradle.kts'),
    ios: exists('ios') || exists('Podfile'),
    // React Native apps depend on react too; like engine.js and doctor.js, they are a
-   // web frontend only when they also contain a web app directory.
-   frontend: (!deps['react-native'] && !!(deps.react||deps.next||deps.vue||deps['@angular/core'])) || exists('frontend')||exists('web')||exists('apps/web'),
+   // web frontend only when they also contain a web app directory. That directory
+   // needs its own package.json — Flutter's web/ is a build target, not a JS app.
+   frontend: (!deps['react-native'] && !!(deps.react||deps.next||deps.vue||deps['@angular/core'])) || ['frontend','web','apps/web'].some(d=>exists(path.join(d,'package.json'))),
    backend: exists('manage.py')||exists('server')||exists('backend')||exists('api')||!!(deps.express||deps.fastify||deps['@nestjs/core'])
  };
 }
@@ -73,8 +74,13 @@ function selftest(){
  let rv=selectReviews({allowedRoles:allReviews,changedFiles:['src/screens/Settings.tsx'],root:rn});
  assert(rv.roles.includes('react-native-review'));assert(!rv.roles.includes('frontend-review'),'RN screen change must not route to the web frontend reviewer');
  // ...but an RN repo that also ships a web app, and a plain React web app, still are.
- const rnWeb=mk('rn-web',['android/x','ios/x','web/index.html'],{dependencies:{'react-native':'0.81.0',react:'19.0.0'}});
+ const rnWeb=mk('rn-web',['android/x','ios/x','web/package.json'],{dependencies:{'react-native':'0.81.0',react:'19.0.0'}});
  assert(selectAnalysis({allowedRoles:allAnalysis,request:'Add settings screen',root:rnWeb,scope:'auto'}).roles.includes('frontend'));
+ // Flutter's web/ build target is not a web app: no frontend specialist for it.
+ const flutterWeb=mk('flutter-web',['pubspec.yaml','android/x','ios/x','web/index.html','lib/main.dart']);
+ const flutterRoles=selectAnalysis({allowedRoles:[...allAnalysis,'flutter'],request:'Add settings screen',root:flutterWeb,scope:'auto'});
+ assert(flutterRoles.roles.includes('flutter'));
+ assert(!flutterRoles.roles.includes('frontend'),'a Flutter app is not a web frontend');
  rv=selectReviews({allowedRoles:allReviews,changedFiles:['src/pages/Settings.tsx'],root:web});
  assert(rv.roles.includes('frontend-review'));
  fs.rmSync(tmp,{recursive:true,force:true});console.log('subagent-selector selftest OK');
