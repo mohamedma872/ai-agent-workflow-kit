@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.1-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.2-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.1
+1.9.2
 ```
 
 ### 2. Initialize a project
@@ -1510,13 +1510,24 @@ ai/guard.yaml
 
 ### Project configuration
 
-Created by `agentic init`:
+`agentic init` creates three files under `.agentic/` in the target project. Each generated
+file is commented with which of its own fields are actually enforced — read those comments
+before editing; they are the authoritative statement of what a given field does, and this
+table is a summary of the same thing:
 
-```text
-.agentic/config.yaml
-.agentic/knowledge.yaml
-.agentic/guardrails.yaml
-```
+| File | Field | Enforced? | Effect |
+|---|---|---|---|
+| `config.yaml` | `project.*` | No | Informational project fingerprint only |
+| `config.yaml` | `runtime.state_dir` / `worktree_dir` | No | These paths are fixed at `.agentic-runs/` / `.ai-worktrees/`; the field has no effect |
+| `config.yaml` | `workflow.require_plan_approval` / `require_architecture_selection` | No | Both gates are always on (`ai/workflows/feature.yaml`) — a project file cannot disable a fence guarantee; edit the protected workflow file directly if you understand the implications |
+| `config.yaml` | `rag.enabled` | **Yes** | `false` disables Hybrid RAG context for every specialist role in this project |
+| `config.yaml` | `rag.mode` | **Yes** | `hybrid` (default) or `off` — any other value behaves like `off` |
+| `config.yaml` | `rag.top_k` | **Yes** | Max retrieved chunks per query; overrides the `ai/subagents/contracts.yaml` default |
+| `config.yaml` | `rag.context_budget` | **Yes** | Max characters of retrieved context per role |
+| `knowledge.yaml` | `include` | **Yes** | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
+| `knowledge.yaml` | `exclude` | **Yes** | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
+| `knowledge.yaml` | `prioritize` | **Yes** | Matched chunks get a small relevance boost (ADRs, schemas, etc.) |
+| `guardrails.yaml` | *(all fields)* | No | No loader wires this file into the guard engine yet — `ai/guard.yaml` is the only file that actually gates tool calls today |
 
 ### MCP configuration
 
@@ -1593,7 +1604,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.1
+runtimeVersion         1.9.2
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

@@ -14,4 +14,14 @@ assert(ctx.includes('Refactor authentication token storage'));assert(ctx.include
 const dep=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['dependency_versions'],tools:['repository_read']},excludeArtifact:null,roleName:'docs',stageId:'analysis'});assert(dep.includes('package.json'));assert(dep.includes('react'));
 const rag=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request'],tools:['repository_read'],defaults:{retrieval:{mode:'hybrid_rag',top_k:4}}},excludeArtifact:null,roleName:'security',stageId:'analysis'});
 assert(rag.includes('Hybrid RAG retrieved evidence'));assert(rag.includes('ADR-auth.md')||rag.includes('AuthRepository.js'));assert(fs.existsSync(path.join(run,'engine','rag-context','analysis-security.json')));
+
+// .agentic/config.yaml rag: settings override contracts.yaml defaults, and rag.enabled:false is a hard kill switch.
+fs.mkdirSync(path.join(product,'.agentic'),{recursive:true});
+fs.writeFileSync(path.join(product,'.agentic','config.yaml'),'version: 1\nrag:\n  top_k: 1\n');
+assert.strictEqual(require('./subagent-context').retrievalSettings({defaults:{retrieval:{mode:'hybrid_rag',top_k:4}}},require('../rag/hybrid-rag').loadRagConfig(product)).topK,1,'project rag.top_k overrides the contract default');
+fs.writeFileSync(path.join(product,'.agentic','config.yaml'),'version: 1\nrag:\n  enabled: false\n');
+const disabledRag=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request'],tools:['repository_read'],defaults:{retrieval:{mode:'hybrid_rag',top_k:4}}},excludeArtifact:null,roleName:'security',stageId:'analysis'});
+assert(!disabledRag.includes('Hybrid RAG retrieved evidence'),'rag.enabled: false disables retrieval regardless of the contract default');
+fs.rmSync(path.join(product,'.agentic'),{recursive:true,force:true});
+
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');
