@@ -114,12 +114,14 @@ function renderList(runs, options = {}) {
       : 'No features in progress. Start one with: agentic feature <run-id> --request "..."\nSee finished runs with: agentic runs --all';
   }
   const idWidth = Math.max(6, ...runs.map(run => String(run.id).length));
-  const lines = [`${'  '}${'RUN'.padEnd(idWidth)}  ${'PROG'.padStart(4)}  ${'STATE'.padEnd(9)}  ${'CURRENT'.padEnd(30)}  UPDATED`];
+  const featureWidth = Math.min(40, Math.max(7, ...runs.map(run => String(run.title || '—').length)));
+  const lines = [`${'  '}${'RUN'.padEnd(idWidth)}  ${'FEATURE'.padEnd(featureWidth)}  ${'PROG'.padStart(4)}  ${'STATE'.padEnd(9)}  ${'CURRENT'.padEnd(30)}  UPDATED`];
   for (const run of runs) {
     const marker = run.active ? '▸ ' : '  ';
     const state = run.inProgress ? (run.planApproved ? 'approved' : 'plan-gate') : run.abandoned ? 'abandoned' : 'done';
     const current = String(run.current || '').slice(0, 30);
-    lines.push(`${marker}${String(run.id).padEnd(idWidth)}  ${String(run.percent).padStart(3)}%  ${state.padEnd(9)}  ${current.padEnd(30)}  ${ago(run.updatedAt)}`);
+    const feature = String(run.title || '—').slice(0, featureWidth);
+    lines.push(`${marker}${String(run.id).padEnd(idWidth)}  ${feature.padEnd(featureWidth)}  ${String(run.percent).padStart(3)}%  ${state.padEnd(9)}  ${current.padEnd(30)}  ${ago(run.updatedAt)}`);
   }
   lines.push('');
   lines.push(`${runs.filter(r => r.inProgress).length} in progress · ▸ = active run · open the GUI with: agentic progress`);
@@ -151,6 +153,10 @@ function selftest() {
   assert.strictEqual(inProgress[0].title, null, 'a run without a request file has no title');
   assert.strictEqual(inProgress[0].planApproved, true, 'plan.approved is read from the run directory, not the runtime');
   assert.strictEqual(inProgress[1].planApproved, false);
+  const withTitlesTable = renderList(inProgress, {});
+  assert.match(withTitlesTable, /FEATURE/, 'the listing has a FEATURE column header');
+  assert.match(withTitlesTable, /Payments retry/, 'the FEATURE column shows the real run title');
+  assert.match(withTitlesTable, /—/, 'a run without a title falls back to a placeholder');
 
   assert.strictEqual(activeId(temp), null);
   assert.strictEqual(focusIndex(inProgress), 0, 'with no active run the newest is focused');

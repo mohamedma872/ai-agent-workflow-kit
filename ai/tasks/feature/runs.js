@@ -7,6 +7,7 @@
  */
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
@@ -33,7 +34,7 @@ const ICONS = { pass: '✓', fail: '✗', blocked: '⛔', skipped: '~', in_progr
 
 const [cmd, ...rest] = process.argv.slice(2);
 const usage = () => {
-  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | architecture-select <id> <option-id> [note] | approve [id] | close [id] | set/set-role (admin only) | selftest');
+  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | retry <id> [role...] | architecture-select <id> <option-id> [note] | approve [id] | close [id] | set/set-role (admin only) | selftest');
   process.exit(1);
 };
 
@@ -248,11 +249,12 @@ function roleArtifactProblem(id, group, role) {
   return errors.length ? `${group}/${role} structured artifact invalid: ${errors.join('; ')}` : null;
 }
 
-function transitionProblem(state, phase, action, reason) {
+function transitionProblem(state, phase, action, reason, executor) {
   const s = stage(phase);
   const current = phaseStatus(state, phase);
+  const engineSkip = action === 'skip' && executor === 'workflow-engine';
   if (phase === 'approval') return 'approval is a human gate; use runs.js approve <id>';
-  if (phase === 'architecture-selection') return 'architecture-selection is a human gate; use runs.js architecture-select <id> <option-id>';
+  if (phase === 'architecture-selection' && !engineSkip) return 'architecture-selection is a human gate; use runs.js architecture-select <id> <option-id>';
   if (action === 'begin') {
     const deps = dependencyProblems(phase, state);
     if (deps.length) return `dependencies are incomplete: ${deps.join(', ')}`;
@@ -284,7 +286,7 @@ function transitionProblem(state, phase, action, reason) {
 
 function transitionPhase(id, state, phase, action, executor, reason) {
   reconcileState(id, state);
-  const problem = transitionProblem(state, phase, action, reason);
+  const problem = transitionProblem(state, phase, action, reason, executor);
   if (problem) throw new Error(`${phase}: ${problem}`);
   const from = phaseStatus(state, phase);
   let to;
@@ -380,6 +382,10 @@ function selftest() {
   selected.roles.analysis.security.status = 'pass';
   assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'pass');
 
+  const archGate = ensureShape({ phases: { 'architecture-options': { status: 'skipped' } }, roles: {}, selectedRoles: {} }, 'TEST');
+  assert.throws(() => transitionPhase('TEST', archGate, 'architecture-selection', 'skip', 'human', 'not a whole-app refactor'), /human gate/);
+  assert.strictEqual(transitionPhase('TEST', archGate, 'architecture-selection', 'skip', 'workflow-engine', 'not a whole-app refactor'), 'skipped');
+
   const evidence = ensureShape({}, 'TEST');
   assert.ok(verificationEvidenceProblem('TEST', evidence, { evalMode: false }).includes('unclassified'));
   evidence.evidence.mobileScreenshots = { requirement: 'not-required', reason: 'backend-only' };
@@ -387,6 +393,54 @@ function selftest() {
   evidence.evidence.mobileScreenshots = { requirement: 'required', execution: { status: 'blocked', attemptId: 'x', platforms: ['android'] } };
   assert.ok(verificationEvidenceProblem('TEST', evidence, { evalMode: false }).includes('blocked'));
   assert.strictEqual(verificationEvidenceProblem('TEST', evidence, { evalMode: true }), null);
+
+  const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'runs-retry-'));
+  const runEnv = { ...process.env, AI_WORKFLOW_STATE_ROOT: retryRoot };
+  const runCli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: runEnv, encoding: 'utf8' });
+  runCli(['start', 'RETRY-TEST']);
+  for (const p of ['request', 'requirements', 'acceptance-criteria', 'definition-of-done', 'inspection', 'behavior-baseline', 'refactor-invariants', 'architecture-assessment', 'architecture-options']) {
+    runCli(['skip', p, 'claude', 'test']);
+  }
+  runCli(['skip', 'architecture-selection', 'workflow-engine', 'test']);
+  for (const p of ['target-architecture', 'c4-model', 'architecture-migration', 'refactor-coverage']) {
+    runCli(['skip', p, 'claude', 'test']);
+  }
+  runCli(['select-roles', 'analysis', 'architect', 'security']);
+  runCli(['role-begin', 'analysis', 'architect', 'claude']);
+  runCli(['role-fail', 'analysis', 'architect', 'claude', 'boom']);
+  const rejected = runCli(['retry', 'RETRY-TEST', 'nonexistent-role']);
+  assert.notStrictEqual(rejected.status, 0);
+  assert.ok(/no failed\/blocked\/in-progress role/.test(rejected.stderr), rejected.stderr);
+  const retried = runCli(['retry', 'RETRY-TEST', 'architect']);
+  assert.strictEqual(retried.status, 0, retried.stderr);
+  assert.ok(retried.stdout.includes('analysis/architect'), retried.stdout);
+  const afterRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
+  assert.strictEqual(afterRetry.roles.analysis.architect.status, 'pending');
+  assert.strictEqual(afterRetry.phases.analysis.status, 'in_progress');
+
+  // A role or phase interrupted mid-run (stuck at in_progress, never reaching
+  // fail/blocked) must also be recoverable, or `begin` rejects it forever.
+  runCli(['role-begin', 'analysis', 'security', 'claude']);
+  const retriedStuckRole = runCli(['retry', 'RETRY-TEST']);
+  assert.strictEqual(retriedStuckRole.status, 0, retriedStuckRole.stderr);
+  assert.ok(retriedStuckRole.stdout.includes('analysis/security'), retriedStuckRole.stdout);
+  const afterStuckRoleRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
+  assert.strictEqual(afterStuckRoleRetry.roles.analysis.security.status, 'pending');
+
+  runCli(['start', 'RETRY-PHASE-TEST']);
+  for (const p of ['request', 'requirements', 'acceptance-criteria', 'definition-of-done']) runCli(['skip', p, 'claude', 'test']);
+  runCli(['begin', 'inspection', 'claude']);
+  const stuckPhase = runCli(['begin', 'inspection', 'claude']);
+  assert.notStrictEqual(stuckPhase.status, 0, 'cannot begin an already in_progress phase without retry');
+  const retriedStuckPhase = runCli(['retry', 'RETRY-PHASE-TEST']);
+  assert.strictEqual(retriedStuckPhase.status, 0, retriedStuckPhase.stderr);
+  assert.ok(retriedStuckPhase.stdout.includes('inspection'), retriedStuckPhase.stdout);
+  const afterStuckPhaseRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-PHASE-TEST', 'state.json'), 'utf8'));
+  assert.strictEqual(afterStuckPhaseRetry.phases.inspection.status, 'pending');
+  assert.strictEqual(runCli(['begin', 'inspection', 'claude']).status, 0, 'inspection is beginnable again after retry');
+
+  fs.rmSync(retryRoot, { recursive: true, force: true });
+
   console.log('runs.js selftest OK');
 }
 
@@ -503,6 +557,39 @@ try {
       if (changed) atomicSave(id, state);
       console.log(`${id}: ${changed ? 'state reconciled' : 'state already consistent'}`);
       render(id, state);
+      break;
+    }
+    case 'retry': {
+      const [id, ...roles] = rest;
+      if (!id || !safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('retry requires a valid run id');
+      if (roles.some(role => !safeRole(role))) throw new Error('retry requires valid role names');
+      const state = ensureShape(load(id), id);
+      reconcileState(id, state);
+      const retried = [];
+      const RETRYABLE = ['fail', 'blocked', 'in_progress'];
+      for (const group of ROLE_GROUPS) {
+        for (const [role, roleState] of Object.entries(state.roles?.[group] || {})) {
+          if (roles.length ? !roles.includes(role) : false) continue;
+          if (!RETRYABLE.includes(roleState.status)) continue;
+          state.roles[group][role] = { status: 'pending', updatedAt: now() };
+          record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
+          retried.push(`${group}/${role}`);
+        }
+      }
+      if (!roles.length) {
+        for (const phaseId of PHASES) {
+          if (ROLE_GROUPS.includes(phaseId)) continue;
+          const from = phaseStatus(state, phaseId);
+          if (!RETRYABLE.includes(from)) continue;
+          state.phases[phaseId] = { ...(state.phases[phaseId] || {}), status: 'pending', updatedAt: now() };
+          record(state, { kind: 'phase', phase: phaseId, action: 'retry', from, to: 'pending', reason: 'retry requested' });
+          retried.push(phaseId);
+        }
+      }
+      if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
+      reconcileState(id, state);
+      atomicSave(id, state);
+      console.log(`${id}: retried ${retried.join(', ')}`);
       break;
     }
     case 'architecture-select': {

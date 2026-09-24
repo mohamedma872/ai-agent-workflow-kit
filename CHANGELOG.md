@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.9.1 — 2026-09-24
+
+- Fixed every non-refactor `/feature` run stalling at `architecture-selection`. The stage is `when: whole_app_refactor`, so the engine tries to skip it on a normal run, but `runs.js` treated `architecture-selection` as an unconditional human gate and rejected the engine's own skip transition, throwing "architecture-selection is a human gate" instead of moving on. The gate now only blocks manual transitions; an engine-driven skip (executor `workflow-engine`) is allowed through.
+- Fixed every specialist (`subagent-findings`) artifact being rejected during validation. Its Markdown-rendering code lived inside `semanticProblems`, which is supposed to return an array of error strings; instead it unconditionally returned a rendered Markdown string, which then got spread character-by-character into the caller's error array — so any specialist artifact produced dozens of spurious one-character "errors". The renderer now lives in `renderMarkdown` where it belongs, and `validateArtifactData` throws immediately if a `semanticProblems` branch ever again returns something other than an array, instead of silently corrupting the error list.
+- Added `agentic retry <run-id> [role...]`. It resets failed/blocked analysis or review role(s) — or, with no role given, every failed/blocked role plus any stuck non-parallel phase — back to `pending` and resumes the run, without touching roles that already passed.
+- `hybrid-rag.js` no longer indexes `.agentic-runs/`, `.ai-worktrees/`, or `.dart_tool/`, so retrieval doesn't surface runtime state, isolated worktree copies, or Flutter build output as if they were product source.
+- `agentic runs` / `agentic runs --all` now show a `FEATURE` column with each run's real title (from its request), instead of only the run id.
+
 ## 1.9.0 — 2026-09-23
 
 - Fixed `flutter` being reported as missing when the Flutter SDK is installed but not on PATH — the common case of unpacking it into a home directory. The doctor now finds it (`FLUTTER_ROOT`, `~/develop/flutter`, `~/flutter`, `~/sdk/flutter`, fvm, puro, Homebrew and similar), reports the version and location, and `agentic` puts its `bin` directory on PATH for its own runs so workflow agents can call `flutter`.

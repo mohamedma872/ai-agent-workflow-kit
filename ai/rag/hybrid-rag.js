@@ -5,7 +5,7 @@ const fs=require('fs'),os=require('os'),path=require('path'),assert=require('ass
 const D={topK:8,maxFiles:1600,maxChunks:6000,chunkLines:48,overlapLines:8,maxFileBytes:196608,maxExcerptChars:4200,maxContextChars:24000,maxPerFile:2};
 const EXT=new Set('.md .mdx .txt .json .yaml .yml .toml .properties .js .mjs .cjs .jsx .ts .tsx .kt .kts .java .swift .m .mm .dart .py .go .rs .rb .php .cs .gradle .xml .graphql .gql .proto .sql .sh'.split(' '));
 const BASE=new Set(['README','README.md','AGENTS.md','Podfile','Gemfile','Dockerfile','package.json','pubspec.yaml','gradle.properties','build.gradle','build.gradle.kts']);
-const IGNORE=new Set(['.git','node_modules','build','dist','coverage','vendor','Pods','DerivedData','.gradle','.next','.turbo','.cache','.idea','.vscode','tmp','temp']);
+const IGNORE=new Set(['.git','node_modules','build','dist','coverage','vendor','Pods','DerivedData','.gradle','.next','.turbo','.cache','.idea','.vscode','tmp','temp','.agentic-runs','.ai-worktrees','.dart_tool']);
 const SENSITIVE=[/(^|\/)\.env($|\.)/i,/(^|\/)(id_rsa|id_dsa|id_ed25519)(\.|$)/i,/\.(pem|p12|pfx|jks|keystore|key)$/i,/(^|\/)(credentials?|secrets?)(\.|\/|$)/i,/(^|\/)google-services\.json$/i,/(^|\/)GoogleService-Info\.plist$/i];
 const STOP=new Set('a an and are as at be by for from how in into is it of on or our that the their this to was we what when where which with without you your add change feature request should need needs'.split(' '));
 const HINTS={
@@ -87,8 +87,12 @@ function selftest(){
  put('src/auth/AuthRepository.js','class AuthRepository { refreshToken(){ return SecureStorage.get("refresh_token"); } }');
  put('src/profile/ProfileRepository.js','class ProfileRepository { loadProfile(){ return api.get("/profile"); } }');
  put('.env','PASSWORD=secret');put('credentials.json','{"secret":"hidden"}');
+ put('.agentic-runs/FEAT-001/state.json','{"runId":"FEAT-001 refreshToken auth"}');
+ put('.ai-worktrees/FEAT-001/src/auth/AuthRepository.js','class AuthRepository { refreshToken(){} }');
+ put('.dart_tool/package_config.json','{"refreshToken":"auth"}');
  const p=retrieve({root,query:'Where is authentication refreshToken stored and what owns session tokens?',role:'security',topK:5});
  assert(p.results.length&&p.results.some(x=>/AuthRepository|ADR-014/.test(x.source)));assert(!p.results.some(x=>/\.env|credentials/.test(x.source)));assert(formatContext(p).includes('untrusted evidence'));
+ assert(!p.results.some(x=>/^\.agentic-runs\/|^\.ai-worktrees\/|^\.dart_tool\//.test(x.source)));
  const ch=corpus(root),target=ch.find(x=>x.source==='src/profile/ProfileRepository.js'),idx={[target.id]:[1,0]};
  const sem=retrieve({root,query:'unrelated concept',role:'architect',topK:3,semanticIndex:idx,queryEmbedding:[1,0]});
  assert(sem.stats.semanticEnabled&&sem.results.some(x=>x.channels.includes('semantic-embedding')));
