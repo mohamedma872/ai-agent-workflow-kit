@@ -294,10 +294,11 @@ function renderMarkdown(name, data) {
     return lines.join('\n').trim()+'\n';
   }
   if (name === 'subagent-findings') {
+    const escapeCell = s => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
     const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
     for (const f of Array.isArray(data.findings) ? data.findings : []) {
-      const evidence = (Array.isArray(f.evidence) ? f.evidence : []).map(e => `${e.source}${e.line ? ':' + e.line : ''} — ${e.detail}`).join('<br>').replace(/\|/g, '\\|');
-      lines.push(`| ${f.id} | ${f.severity} | ${f.uncertainty} | ${f.confidence} | ${String(f.title || '').replace(/\|/g, '\\|')} | ${evidence} |`);
+      const evidence = escapeCell((Array.isArray(f.evidence) ? f.evidence : []).map(e => `${e.source}${e.line ? ':' + e.line : ''} — ${e.detail}`).join('<br>'));
+      lines.push(`| ${f.id} | ${f.severity} | ${f.uncertainty} | ${f.confidence} | ${escapeCell(f.title || '')} | ${evidence} |`);
     }
     return lines.join('\n').trim() + '\n';
   }
