@@ -91,14 +91,6 @@ function semanticProblems(name, data) {
     }
   }
   if (name === 'c4-model' && !/workspace\s*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace');
-  if (name === 'subagent-findings') {
-    const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
-    for (const f of data.findings || []) {
-      const evidence = (f.evidence || []).map(e => `${e.source}${e.line ? ':' + e.line : ''} — ${e.detail}`).join('<br>').replace(/\|/g, '\\|');
-      lines.push(`| ${f.id} | ${f.severity} | ${f.uncertainty} | ${f.confidence} | ${String(f.title || '').replace(/\|/g, '\\|')} | ${evidence} |`);
-    }
-    return lines.join('\n').trim() + '\n';
-  }
   if (name === 'subagent-findings' && data.status !== 'pass') errors.push('$.status: subagent findings artifact must be pass before the role can complete');
   if (name === 'review') {
     if (data.status !== 'pass') errors.push('$.status: review must be pass before the review role can complete');
@@ -301,6 +293,14 @@ function renderMarkdown(name, data) {
     lines.push('','## Unverified scenarios','');if(!(data.unverifiedScenarios||[]).length)lines.push('- None');else for(const x of data.unverifiedScenarios)lines.push('- '+x);
     return lines.join('\n').trim()+'\n';
   }
+  if (name === 'subagent-findings') {
+    const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
+    for (const f of Array.isArray(data.findings) ? data.findings : []) {
+      const evidence = (Array.isArray(f.evidence) ? f.evidence : []).map(e => `${e.source}${e.line ? ':' + e.line : ''} — ${e.detail}`).join('<br>').replace(/\|/g, '\\|');
+      lines.push(`| ${f.id} | ${f.severity} | ${f.uncertainty} | ${f.confidence} | ${String(f.title || '').replace(/\|/g, '\\|')} | ${evidence} |`);
+    }
+    return lines.join('\n').trim() + '\n';
+  }
   if (name === 'verification') {
     const lines = ['# Final verification', '', `Status: **${data.status.toUpperCase()}**`, '', '## Acceptance criteria', '', '| AC | status | evidence |', '|---|---|---|'];
     for (const ac of data.acceptanceCriteria || []) lines.push(`| ${ac.id} | ${ac.status} | ${(ac.evidence || []).join('<br>')} |`);
@@ -315,7 +315,11 @@ function renderMarkdown(name, data) {
 function validateArtifactData(name, data, expectedRunId, options = {}) {
   const errors = validate(name, data);
   if (expectedRunId && data.runId !== expectedRunId) errors.push(`$.runId: expected ${expectedRunId}, got ${data.runId || '(missing)'}`);
-  if (options.semantic !== false) errors.push(...semanticProblems(name, data));
+  if (options.semantic !== false) {
+    const semantic = semanticProblems(name, data);
+    if (!Array.isArray(semantic)) throw new Error(`${name}: semanticProblems must return an array of error strings, got ${typeof semantic}`);
+    errors.push(...semantic);
+  }
   return errors;
 }
 
@@ -367,6 +371,14 @@ function selftest() {
   const verification = { schemaVersion: 1, runId: 'TEST', status: 'pass', acceptanceCriteria: [{ id: 'AC-1', status: 'pass', evidence: ['test output'] }], definitionOfDone: [{ item: 'tests', status: 'pass' }] };
   assert.deepStrictEqual(validateArtifactData('verification', verification, 'TEST'), []);
   assert.ok(validateArtifactData('verification', { ...verification, acceptanceCriteria: [{ id: 'AC-1', status: 'blocked', evidence: [] }] }, 'TEST').length > 0);
+
+  const findingsJson = path.join(temp, '05-analysis', 'security.json');
+  const findingsMd = path.join(temp, '05-analysis', 'security.md');
+  const findings = { schemaVersion: 1, runId: 'TEST', agent: 'security', status: 'pass', findings: [{ id: 'F-1', title: 'Example finding', severity: 'low', uncertainty: 'confirmed', confidence: 0.9, evidence: [{ source: 'src/a.js', line: 3, detail: 'example' }], recommendation: 'fix it' }] };
+  materialize('subagent-findings', JSON.stringify(findings), findingsJson, findingsMd, 'TEST');
+  assert.deepStrictEqual(validateArtifactData('subagent-findings', findings, 'TEST'), []);
+  assert.ok(fs.readFileSync(findingsMd, 'utf8').includes('Example finding'));
+
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('structured artifact selftest OK');
 }

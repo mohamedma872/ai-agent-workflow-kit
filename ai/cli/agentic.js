@@ -305,6 +305,7 @@ Usage:
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
   agentic approve <run-id>
+  agentic retry <run-id> [role...] Reset failed/blocked role(s) (or the stuck phase) to pending and resume
   agentic progress                 Terminal dashboard for in-progress features
   agentic progress <run-id> [--watch|--json|--markdown]
   agentic dashboard [--all] [--run <id>]
@@ -417,6 +418,11 @@ function main() {
   if (command === 'approve') {
     if (!args[1]) throw new Error('approve requires a run id');
     runNode(RUNS, ['approve', args[1]], project);
+    return runNode(ENGINE, ['resume', args[1]], project);
+  }
+  if (command === 'retry') {
+    if (!args[1]) throw new Error('retry requires a run id (see: agentic runs)');
+    runNode(RUNS, ['retry', ...args.slice(1)], project);
     return runNode(ENGINE, ['resume', args[1]], project);
   }
   // `agentic progress` with no run id opens the dashboard on the active run;
