@@ -4,6 +4,12 @@
 
 - No unreleased runtime changes.
 
+## 1.9.2 — 2026-09-24
+
+- `.agentic/config.yaml`'s `rag:` section (`enabled`, `mode`, `top_k`, `context_budget`) and `.agentic/knowledge.yaml`'s `include`/`exclude`/`prioritize` globs are now actually read by `ai/rag/hybrid-rag.js` and `ai/workflow/subagent-context.js` — previously `agentic init` generated these files but nothing in the runtime ever read them back, so every field was a no-op. `rag.enabled: false` is a hard kill switch (overrides any role-specific retrieval setting); `knowledge.yaml`'s `include` narrows the retrieval corpus, `exclude` adds to the built-in ignore list, and `prioritize` boosts matching chunks' relevance score.
+- The generated `.agentic/config.yaml`, `knowledge.yaml`, and `guardrails.yaml` templates are now commented to state, per field, whether it's enforced. `workflow.require_plan_approval`/`require_architecture_selection` and all of `guardrails.yaml` remain intentionally not wired: honoring them from an unprotected project file would let an ordinary file edit disable the plan-approval gate or other fence guarantees, so they stay documentation-of-intent only unless `ai/workflows/feature.yaml`/`ai/guard.yaml` (protected files) are changed directly.
+- README's "Configuration" section documents every `.agentic/*.yaml` field's enforcement status instead of just naming the files.
+
 ## 1.9.1 — 2026-09-24
 
 - Fixed every non-refactor `/feature` run stalling at `architecture-selection`. The stage is `when: whole_app_refactor`, so the engine tries to skip it on a normal run, but `runs.js` treated `architecture-selection` as an unconditional human gate and rejected the engine's own skip transition, throwing "architecture-selection is a human gate" instead of moving on. The gate now only blocks manual transitions; an engine-driven skip (executor `workflow-engine`) is allowed through.

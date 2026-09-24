@@ -1,6 +1,6 @@
 "use strict";
 const fs=require('fs'); const path=require('path'); const {spawnSync}=require('child_process');
-const {retrieve,formatContext}=require('../rag/hybrid-rag');
+const {retrieve,formatContext,loadRagConfig}=require('../rag/hybrid-rag');
 
 const INPUT_FILES={
  request:['00-request.md'], acceptance_criteria:['02-acceptance-criteria.md'], definition_of_done:['03-definition-of-done.md'],
@@ -13,9 +13,15 @@ function dependencyVersions(productRoot){const out=[];for(const name of ['packag
 function reviewArtifacts(runDir){const d=path.join(runDir,'09-reviews');try{return fs.readdirSync(d).filter(f=>f.endsWith('.md')).sort().map(f=>`## 09-reviews/${f}\n${read(path.join(d,f)).slice(0,12000)}`).join('\n\n');}catch{return '';}}
 function broadArtifacts(runDir,exclude){try{return fs.readdirSync(runDir).filter(f=>/^\d\d-.*\.md$/.test(f)&&f!==exclude).sort().map(f=>`## ${f}\n${read(path.join(runDir,f)).slice(0,12000)}`).join('\n\n');}catch{return '';}}
 
-function retrievalSettings(contract){
- const specific=contract?.retrieval, defaults=contract?.defaults?.retrieval;
- const cfg=specific===false||specific==='none'?{mode:'off'}:(specific||defaults||{});
+// Precedence: contract's per-role `retrieval:` (if a role ever sets one) wins over
+// the project's `.agentic/config.yaml` rag: section, which wins over contracts.yaml's
+// global `defaults.retrieval`. `projectRag` keys already match contract key names
+// (see hybrid-rag.js loadRagConfig), so the three merge without translation.
+function retrievalSettings(contract,projectRag){
+ const specific=contract?.retrieval;
+ if(specific===false||specific==='none'||(projectRag&&projectRag.enabled===false))return {mode:'off',topK:8,maxContextChars:24000,maxExcerptChars:4200,maxPerFile:2};
+ const defaults=contract?.defaults?.retrieval||{};
+ const cfg={...defaults,...(projectRag||{}),...(typeof specific==='object'?specific:{})};
  return {mode:String(cfg.mode||'off').toLowerCase(),topK:Number(cfg.top_k||cfg.topK||8),maxContextChars:Number(cfg.max_context_chars||cfg.maxContextChars||24000),maxExcerptChars:Number(cfg.max_excerpt_chars||cfg.maxExcerptChars||4200),maxPerFile:Number(cfg.max_per_file||cfg.maxPerFile||2)};
 }
 function retrievalQuery(runDir,roleName,productRoot){
@@ -26,7 +32,8 @@ function retrievalQuery(runDir,roleName,productRoot){
 }
 function safeName(v){return String(v||'role').replace(/[^A-Za-z0-9._-]+/g,'-').slice(0,100);}
 function hybridRagContext({runDir,productRoot,contract,roleName,stageId}){
- const cfg=retrievalSettings(contract);
+ const projectRag=productRoot?loadRagConfig(productRoot):null;
+ const cfg=retrievalSettings(contract,projectRag);
  if(!['hybrid','hybrid_rag','hybrid-rag'].includes(cfg.mode))return '';
  if(!Array.isArray(contract?.tools)||!contract.tools.includes('repository_read')||!productRoot||!fs.existsSync(productRoot))return '';
  const pack=retrieve({root:productRoot,query:retrievalQuery(runDir,roleName,productRoot),role:roleName,topK:cfg.topK,maxContextChars:cfg.maxContextChars,maxExcerptChars:cfg.maxExcerptChars,maxPerFile:cfg.maxPerFile});

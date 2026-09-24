@@ -211,27 +211,46 @@ function initProject(project) {
 
   const name = path.basename(project);
   writeIfMissing(path.join(agentic, 'config.yaml'), `version: 1
+
+# Informational only — a project fingerprint for humans. Not read by the runtime;
+# changing these values has no effect.
 project:
   name: ${name}
   root: .
   detected_stacks: [${stacks.join(', ')}]
 
+# Informational only. Not read by the runtime — the state/worktree directory names
+# are fixed (.agentic-runs/, .ai-worktrees/); changing these values here has no effect.
 runtime:
   state_dir: .agentic-runs
   worktree_dir: .ai-worktrees
 
+# NOT enforced by this file. The plan-approval and architecture-selection human gates
+# are core, always-on guarantees of the runtime (ai/workflows/feature.yaml) and cannot
+# be turned off from project-level config — that would let an ordinary file edit bypass
+# the fence. These two lines record intent only; to change gate structure itself, edit
+# ai/workflows/feature.yaml (a protected file — only the user changes it).
 workflow:
   require_plan_approval: true
   require_architecture_selection: true
 
+# Enforced — read on every retrieval call by ai/rag/hybrid-rag.js and
+# ai/workflow/subagent-context.js for this project.
 rag:
-  enabled: true
-  mode: hybrid
-  top_k: 8
-  context_budget: 24000
+  enabled: true          # false disables Hybrid RAG context for every specialist role
+  mode: hybrid           # hybrid | off (any other value behaves like off)
+  top_k: 8               # max chunks returned per retrieval query
+  context_budget: 24000  # max characters of retrieved context per role
 `);
 
   writeIfMissing(path.join(agentic, 'knowledge.yaml'), `version: 1
+# Enforced — read by ai/rag/hybrid-rag.js on every retrieval call for this project.
+# Paths are relative to the project root; "**" matches any depth. Glob syntax only
+# (no negation, no regex). File-extension/name filtering in hybrid-rag.js still
+# applies on top of these lists.
+
+# If non-empty, ONLY files matching one of these globs are retrieval candidates —
+# this narrows scope, it does not add file types outside hybrid-rag.js's own list.
 include:
   - src/**
   - app/**
@@ -242,11 +261,17 @@ include:
   - tests/**
   - test/**
   - api/**
+
+# Chunks whose source path matches one of these get a small relevance boost, so they
+# rank above equally-relevant results (architecture decisions, API schemas, etc.).
 prioritize:
   - docs/adr/**
   - docs/architecture/**
   - openapi/**
   - graphql/**
+
+# Extra exclusions on top of hybrid-rag.js's own built-in ignore list
+# (node_modules, build, dist, .git, .agentic-runs, .ai-worktrees, .dart_tool, etc.).
 exclude:
   - node_modules/**
   - build/**
@@ -259,7 +284,10 @@ exclude:
 `);
 
   writeIfMissing(path.join(agentic, 'guardrails.yaml'), `version: 1
-# Project-level policy extension point. Runtime guardrails remain authoritative.
+# NOT currently enforced. There is no loader that reads this file into the guard
+# engine (ai/guard/engine.js only loads rule packs from ai/tasks/*/guard.yaml).
+# This is a declared record of project policy intent, not active configuration —
+# ai/guard.yaml is the only file that actually gates tool calls today.
 project:
   production_write_requires_plan_approval: true
   destructive_operations_require_confirmation: true
