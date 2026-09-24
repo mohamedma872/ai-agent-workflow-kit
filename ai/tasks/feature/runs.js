@@ -410,13 +410,35 @@ function selftest() {
   runCli(['role-fail', 'analysis', 'architect', 'claude', 'boom']);
   const rejected = runCli(['retry', 'RETRY-TEST', 'nonexistent-role']);
   assert.notStrictEqual(rejected.status, 0);
-  assert.ok(/no failed\/blocked role/.test(rejected.stderr), rejected.stderr);
+  assert.ok(/no failed\/blocked\/in-progress role/.test(rejected.stderr), rejected.stderr);
   const retried = runCli(['retry', 'RETRY-TEST', 'architect']);
   assert.strictEqual(retried.status, 0, retried.stderr);
   assert.ok(retried.stdout.includes('analysis/architect'), retried.stdout);
   const afterRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
   assert.strictEqual(afterRetry.roles.analysis.architect.status, 'pending');
   assert.strictEqual(afterRetry.phases.analysis.status, 'in_progress');
+
+  // A role or phase interrupted mid-run (stuck at in_progress, never reaching
+  // fail/blocked) must also be recoverable, or `begin` rejects it forever.
+  runCli(['role-begin', 'analysis', 'security', 'claude']);
+  const retriedStuckRole = runCli(['retry', 'RETRY-TEST']);
+  assert.strictEqual(retriedStuckRole.status, 0, retriedStuckRole.stderr);
+  assert.ok(retriedStuckRole.stdout.includes('analysis/security'), retriedStuckRole.stdout);
+  const afterStuckRoleRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
+  assert.strictEqual(afterStuckRoleRetry.roles.analysis.security.status, 'pending');
+
+  runCli(['start', 'RETRY-PHASE-TEST']);
+  for (const p of ['request', 'requirements', 'acceptance-criteria', 'definition-of-done']) runCli(['skip', p, 'claude', 'test']);
+  runCli(['begin', 'inspection', 'claude']);
+  const stuckPhase = runCli(['begin', 'inspection', 'claude']);
+  assert.notStrictEqual(stuckPhase.status, 0, 'cannot begin an already in_progress phase without retry');
+  const retriedStuckPhase = runCli(['retry', 'RETRY-PHASE-TEST']);
+  assert.strictEqual(retriedStuckPhase.status, 0, retriedStuckPhase.stderr);
+  assert.ok(retriedStuckPhase.stdout.includes('inspection'), retriedStuckPhase.stdout);
+  const afterStuckPhaseRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-PHASE-TEST', 'state.json'), 'utf8'));
+  assert.strictEqual(afterStuckPhaseRetry.phases.inspection.status, 'pending');
+  assert.strictEqual(runCli(['begin', 'inspection', 'claude']).status, 0, 'inspection is beginnable again after retry');
+
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
   console.log('runs.js selftest OK');
@@ -544,10 +566,11 @@ try {
       const state = ensureShape(load(id), id);
       reconcileState(id, state);
       const retried = [];
+      const RETRYABLE = ['fail', 'blocked', 'in_progress'];
       for (const group of ROLE_GROUPS) {
         for (const [role, roleState] of Object.entries(state.roles?.[group] || {})) {
           if (roles.length ? !roles.includes(role) : false) continue;
-          if (!['fail', 'blocked'].includes(roleState.status)) continue;
+          if (!RETRYABLE.includes(roleState.status)) continue;
           state.roles[group][role] = { status: 'pending', updatedAt: now() };
           record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
           retried.push(`${group}/${role}`);
@@ -557,13 +580,13 @@ try {
         for (const phaseId of PHASES) {
           if (ROLE_GROUPS.includes(phaseId)) continue;
           const from = phaseStatus(state, phaseId);
-          if (!['fail', 'blocked'].includes(from)) continue;
+          if (!RETRYABLE.includes(from)) continue;
           state.phases[phaseId] = { ...(state.phases[phaseId] || {}), status: 'pending', updatedAt: now() };
           record(state, { kind: 'phase', phase: phaseId, action: 'retry', from, to: 'pending', reason: 'retry requested' });
           retried.push(phaseId);
         }
       }
-      if (!retried.length) throw new Error(roles.length ? `no failed/blocked role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed or blocked phase/role');
+      if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
       reconcileState(id, state);
       atomicSave(id, state);
       console.log(`${id}: retried ${retried.join(', ')}`);
