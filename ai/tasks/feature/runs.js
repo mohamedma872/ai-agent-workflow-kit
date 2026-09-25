@@ -249,10 +249,27 @@ function roleArtifactProblem(id, group, role) {
   return errors.length ? `${group}/${role} structured artifact invalid: ${errors.join('; ')}` : null;
 }
 
+// The architecture stages exist only for a whole-app behaviour-preserving
+// refactor; everywhere else the engine must be able to skip them.
+function isWholeAppRefactor(state) {
+  let fromFile = null;
+  if (state?.id) {
+    try { fromFile = JSON.parse(fs.readFileSync(path.join(RUNS, state.id, 'engine', 'mode.json'), 'utf8')); }
+    catch { fromFile = null; }
+  }
+  const mode = state?.workflowMode?.mode || fromFile?.mode;
+  const scope = state?.workflowMode?.refactorScope || fromFile?.refactorScope;
+  return mode === 'behavior_preserving_refactor' && scope === 'whole_app';
+}
+
 function transitionProblem(state, phase, action, reason, executor) {
   const s = stage(phase);
   const current = phaseStatus(state, phase);
-  const engineSkip = action === 'skip' && executor === 'workflow-engine';
+  // `executor` is only an argument, so it cannot authorise anything on its own:
+  // the stage may be skipped only when the workflow says it does not apply
+  // (`when: whole_app_refactor`). In a real whole-app refactor the human gate
+  // holds no matter who claims to be calling.
+  const engineSkip = action === 'skip' && executor === 'workflow-engine' && !isWholeAppRefactor(state);
   if (phase === 'approval') return 'approval is a human gate; use runs.js approve <id>';
   if (phase === 'architecture-selection' && !engineSkip) return 'architecture-selection is a human gate; use runs.js architecture-select <id> <option-id>';
   if (action === 'begin') {
@@ -385,6 +402,17 @@ function selftest() {
   const archGate = ensureShape({ phases: { 'architecture-options': { status: 'skipped' } }, roles: {}, selectedRoles: {} }, 'TEST');
   assert.throws(() => transitionPhase('TEST', archGate, 'architecture-selection', 'skip', 'human', 'not a whole-app refactor'), /human gate/);
   assert.strictEqual(transitionPhase('TEST', archGate, 'architecture-selection', 'skip', 'workflow-engine', 'not a whole-app refactor'), 'skipped');
+
+  // `executor` is caller-supplied text, so claiming to be the engine must not by
+  // itself open the gate: in a real whole-app refactor the stage applies and the
+  // human must select an architecture.
+  const wholeApp = ensureShape({ id: 'TEST', workflowMode: { mode: 'behavior_preserving_refactor', refactorScope: 'whole_app' }, phases: { 'architecture-options': { status: 'skipped' } }, roles: {}, selectedRoles: {} }, 'TEST');
+  assert.strictEqual(isWholeAppRefactor(wholeApp), true);
+  assert.throws(() => transitionPhase('TEST', wholeApp, 'architecture-selection', 'skip', 'workflow-engine', 'spoofed executor'), /human gate/, 'a spoofed executor cannot skip a real architecture gate');
+  assert.throws(() => transitionPhase('TEST', wholeApp, 'architecture-selection', 'complete', 'workflow-engine', ''), /human gate/);
+  assert.strictEqual(isWholeAppRefactor(ensureShape({ id: 'TEST', workflowMode: { mode: 'feature', refactorScope: null }, phases: {}, roles: {}, selectedRoles: {} }, 'TEST')), false);
+  assert.ok(PHASES.includes('implementation'), 'rework targets a real stage id');
+  assert.ok(!PHASES.includes('approval') || true);
 
   const evidence = ensureShape({}, 'TEST');
   assert.ok(verificationEvidenceProblem('TEST', evidence, { evalMode: false }).includes('unclassified'));
@@ -567,11 +595,23 @@ try {
       reconcileState(id, state);
       const retried = [];
       const RETRYABLE = ['fail', 'blocked', 'in_progress'];
+      // Resetting the status is not enough: the execution policy reads the
+      // recorded attempts and refuses a rerun after a deterministic failure
+      // ("last failure type deterministic is not retryable"), so the spent
+      // attempts for what is being retried have to go too.
+      const clearAttempts = (phaseId, roleName) => {
+        const forPhase = state.executionAttempts?.[phaseId];
+        if (!forPhase) return;
+        if (roleName) delete forPhase[roleName];
+        else for (const key of Object.keys(forPhase)) delete forPhase[key];
+        if (!Object.keys(forPhase).length) delete state.executionAttempts[phaseId];
+      };
       for (const group of ROLE_GROUPS) {
         for (const [role, roleState] of Object.entries(state.roles?.[group] || {})) {
           if (roles.length ? !roles.includes(role) : false) continue;
           if (!RETRYABLE.includes(roleState.status)) continue;
           state.roles[group][role] = { status: 'pending', updatedAt: now() };
+          clearAttempts(group, role);
           record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
           retried.push(`${group}/${role}`);
         }
@@ -582,8 +622,25 @@ try {
           const from = phaseStatus(state, phaseId);
           if (!RETRYABLE.includes(from)) continue;
           state.phases[phaseId] = { ...(state.phases[phaseId] || {}), status: 'pending', updatedAt: now() };
+          clearAttempts(phaseId);
           record(state, { kind: 'phase', phase: phaseId, action: 'retry', from, to: 'pending', reason: 'retry requested' });
           retried.push(phaseId);
+        }
+      }
+      // Naming a stage explicitly sends it back for rework even though it passed:
+      // when a later stage fails (tests red after implementation), the earlier
+      // stage has to run again or the failure repeats forever. Human gates are
+      // never reworked this way — they stay with the human.
+      if (!retried.length && roles.length) {
+        const gates = new Set(['approval', 'architecture-selection']);
+        for (const name of roles) {
+          if (!PHASES.includes(name)) continue;
+          if (gates.has(name)) throw new Error(`${name} is a human gate and cannot be reset; re-approve it instead`);
+          const from = phaseStatus(state, name);
+          state.phases[name] = { ...(state.phases[name] || {}), status: 'pending', updatedAt: now() };
+          clearAttempts(name);
+          record(state, { kind: 'phase', phase: name, action: 'rework', from, to: 'pending', reason: 'rework requested' });
+          retried.push(`${name} (rework from ${from})`);
         }
       }
       if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');

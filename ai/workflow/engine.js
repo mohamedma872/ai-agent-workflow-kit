@@ -21,7 +21,7 @@ const { materialize, sidecarForMarkdown, schemaContract } = require('./artifacts
 const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('./execution-policy');
 const { attemptsFor, recordAttempt } = require('./attempts');
 const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree } = require('./worktree');
-const { runtimeRoot, projectRoot, stateRoot } = require('./paths');
+const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('./paths');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -363,7 +363,15 @@ function executeRole(id, wf, stage, roleName, output) {
       refreshWorktree(RUNTIME_ROOT, id);
       return { ok: true, value: { executor, attemptId }, attemptId };
     } catch (error) {
-      return { ok: false, exitType: 'deterministic', reason: `artifact/worktree validation failed: ${error.message}`, attemptId };
+      // Keep what the agent actually produced. Without it a rejected artifact is
+      // undiagnosable: you cannot tell a failing build from malformed output.
+      let kept = null;
+      if (rawOutput && fs.existsSync(rawOutput)) {
+        const target = path.join(engineDir(id), `${stage.id}-${roleName}.rejected`);
+        try { fs.copyFileSync(rawOutput, target); kept = target; } catch { kept = null; }
+      }
+      const where = kept ? ` — agent output kept at ${path.relative(PROJECT_ROOT, kept)}` : '';
+      return { ok: false, exitType: 'deterministic', reason: `artifact/worktree validation failed: ${error.message}${where}`, attemptId };
     } finally { if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* best effort */ } } }
   }, entry => recordAttempt(RUNTIME_ROOT, id, stage.id, roleName, entry));
 
@@ -454,10 +462,17 @@ function executeStage(id, wf, stage, args = {}) {
   if (stage.type === 'human_gate') {
     const marker = path.join(runDir(id), stage.marker || 'plan.approved');
     if (!fs.existsSync(marker) || phaseStatus(loadState(id), stage.id) !== 'pass') {
+      // Point at the run's real location and the command this install actually
+      // uses: a standalone project keeps runs in .agentic-runs/ and drives them
+      // with `agentic`, not the runtime's own paths and npm scripts.
+      const cli = process.env.AI_AGENTIC_CLI === '1';
+      const artifact = file => (cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`);
       if (stage.id === 'architecture-selection') {
-        console.log(`${id}: waiting for architecture selection — review ai/runs/${id}/05-architecture-assessment.md and 05-architecture-options.md then run: npm run refactor:architecture -- ${id} <option-id>`);
+        const command = cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
+        console.log(`${id}: waiting for architecture selection — review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')} then run: ${command}`);
       } else {
-        console.log(`${id}: waiting for human approval — review ai/runs/${id}/06-plan.md then run: node ai/tasks/feature/runs.js approve ${id}`);
+        const command = cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id}`;
+        console.log(`${id}: waiting for human approval — review ${artifact('06-plan.md')} then run: ${command}`);
       }
       return 'waiting';
     }

@@ -4,6 +4,19 @@
 
 - No unreleased runtime changes.
 
+## 1.9.3 — 2026-09-25
+
+Found by running a real `/feature` workflow end to end against a Flutter app.
+
+- Hardened the `architecture-selection` gate. The 1.9.1 exception trusted the `executor` argument, so any caller passing the literal string `workflow-engine` could skip the stage — including in a whole-app refactor, where selecting an architecture is a human decision. The skip now also requires the stage not to apply to the run (`when: whole_app_refactor`), which no argument can fake.
+- Fixed `agentic retry` not actually retrying. It reset role and phase statuses but left the recorded attempts, so the execution policy still refused with `last failure type deterministic is not retryable`. Retrying now clears the spent attempts for exactly what is being retried.
+- Added stage rework: `agentic retry <run-id> <stage>` sends a stage that already passed back to `pending`. When a later stage fails — tests red after implementation — the earlier stage has to run again, otherwise the failing stage repeats against unchanged code forever. `approval` and `architecture-selection` are refused; they stay human gates.
+- Added `agentic conflicts <run-id>` and `agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."`. Unresolved specialist conflicts block the plan stage, but nothing in the CLI could list or resolve them, and the stored records were bare finding ids. The listing now shows each disagreeing finding with its agent, severity, title and recommendation.
+- Fixed duplicate conflicts: two findings that disagreed under several shared tags produced one conflict per tag, so the same disagreement had to be resolved repeatedly. One conflict per finding pair now, with the topics merged.
+- The engine keeps an agent's raw output when its artifact is rejected, at `engine/<stage>-<role>.rejected`, and names the file in the failure. Previously the output was deleted in a `finally` block, so a rejected artifact could not be diagnosed — a failing build looked identical to malformed output.
+- The approval gate prints the run's real paths and commands for a standalone project (`.agentic-runs/<id>/06-plan.md`, `agentic approve <id>`) instead of the runtime's internal `ai/runs/...` paths and `node ai/tasks/feature/runs.js ...`.
+- Run titles skip the engine's own `# Request` heading, so the dashboard and `agentic runs` show the actual request instead of every run reading `Request`.
+
 ## 1.9.2 — 2026-09-24
 
 - `.agentic/config.yaml`'s `rag:` section (`enabled`, `mode`, `top_k`, `context_budget`) and `.agentic/knowledge.yaml`'s `include`/`exclude`/`prioritize` globs are now actually read by `ai/rag/hybrid-rag.js` and `ai/workflow/subagent-context.js` — previously `agentic init` generated these files but nothing in the runtime ever read them back, so every field was a no-op. `rag.enabled: false` is a hard kill switch (overrides any role-specific retrieval setting); `knowledge.yaml`'s `include` narrows the retrieval corpus, `exclude` adds to the built-in ignore list, and `prioritize` boosts matching chunks' relevance score.

@@ -36,14 +36,17 @@ function loadState(id, root) {
   catch { return null; }
 }
 
-// First heading/line of the run request, for a human-readable label.
+// The engine writes 00-request.md as a generic "# Request" heading followed by
+// the actual text, so a boilerplate heading is skipped in favour of real content.
+const BOILERPLATE_TITLE = /^(request|feature|feature request|task|description|summary)$/i;
+
 function runTitle(id, root, limit = 48) {
   let text = '';
   try { text = fs.readFileSync(path.join(runDir(id, root), '00-request.md'), 'utf8'); }
   catch { return null; }
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').trim();
-    if (!line || /^`{3}/.test(line)) continue;
+    if (!line || /^`{3}/.test(line) || BOILERPLATE_TITLE.test(line.replace(/[:.]$/, ''))) continue;
     return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
   }
   return null;
@@ -150,6 +153,11 @@ function selftest() {
   assert.deepStrictEqual(inProgress.map(r => r.id), ['FEAT-2', 'FEAT-1'], 'in-progress runs, newest first');
   assert.deepStrictEqual(listRuns({ root: temp, all: true }).map(r => r.id), ['FEAT-2', 'FEAT-1', 'FEAT-DONE'], 'done runs sort last');
   assert.strictEqual(inProgress[1].title, 'Payments retry');
+  // The engine's own "# Request" boilerplate must not become the title.
+  write('FEAT-ENGINE', { id: 'FEAT-ENGINE', status: 'active', updatedAt: '2026-09-05T10:00:00.000Z', phases: { request: at('2026-09-05T10:00:00.000Z') } }, { request: '# Request\n\nAdd a Settings screen with a dark mode toggle\n' });
+  assert.strictEqual(runEntry('FEAT-ENGINE', temp).title, 'Add a Settings screen with a dark mode toggle');
+  write('FEAT-EMPTY', { id: 'FEAT-EMPTY', status: 'active', phases: {} }, { request: '# Request\n' });
+  assert.strictEqual(runEntry('FEAT-EMPTY', temp).title, null, 'boilerplate alone leaves no title');
   assert.strictEqual(inProgress[0].title, null, 'a run without a request file has no title');
   assert.strictEqual(inProgress[0].planApproved, true, 'plan.approved is read from the run directory, not the runtime');
   assert.strictEqual(inProgress[1].planApproved, false);
