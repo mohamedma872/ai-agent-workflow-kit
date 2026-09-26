@@ -4,6 +4,10 @@
 
 - No unreleased runtime changes.
 
+## 1.9.4 — 2026-09-26
+
+- Fixed a security-review blind spot introduced in 1.9.2: `.agentic/knowledge.yaml`'s `include`/`exclude` globs are project-supplied and untrusted from a security-review standpoint — a project could narrow or exclude the exact files most in need of review from the `security`/`security-review` roles' retrieval context, accidentally via an over-eager default or deliberately. Those two roles now always retrieve from the full corpus (still minus `hybrid-rag.js`'s built-in ignore/sensitive-file lists); `prioritize` still applies to them since a relevance boost can't hide anything.
+
 ## 1.9.3 — 2026-09-25
 
 Found by running a real `/feature` workflow end to end against a Flutter app.
