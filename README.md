@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.4-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.5-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.4
+1.9.5
 ```
 
 ### 2. Initialize a project
@@ -1527,9 +1527,15 @@ table is a summary of the same thing:
 | `knowledge.yaml` | `include` | **Yes**, except `security`/`security-review` | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
 | `knowledge.yaml` | `exclude` | **Yes**, except `security`/`security-review` | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
 | `knowledge.yaml` | `prioritize` | **Yes** (all roles) | Matched chunks get a small relevance boost (ADRs, schemas, etc.) — a boost can't hide anything, so it applies uniformly |
-| `guardrails.yaml` | *(all fields)* | No | No loader wires this file into the guard engine yet — `ai/guard.yaml` is the only file that actually gates tool calls today |
+| `guardrails.yaml` | `secret_files` | **Yes** | Extra files the model never reads (Read → deny, shell dump → deny), on top of `ai/guard.yaml` |
+| `guardrails.yaml` | `guarded_files` | **Yes** | Extra files only a human changes (Edit/Write or shell rewrite → ask) |
+| `guardrails.yaml` | `evidence` | **Yes** | Directories treated as an audit trail — `rm` of anything inside → deny |
+| `guardrails.yaml` | `shell_rules` | **Yes**, `ask`/`deny` only | Extra shell rules (`regex` or `contains`); a rule with any other decision (`allow`, `off`) is ignored and flagged by `agentic guard check` |
+| `guardrails.yaml` | `project.*` | No | Always-on runtime guarantees, kept for reference; they can't be switched off from a project file |
 
 `include`/`exclude` are ignored for the `security` and `security-review` roles by design: a project's own config is untrusted input to its own security review, and letting it narrow what the security specialist sees would let the reviewed repository hide files from that review — accidentally via an over-eager default, or deliberately. Those two roles always see the full corpus (still minus the built-in ignore/sensitive-file lists).
+
+`guardrails.yaml` is **tighten-only**. The guard engine loads it from the project root on every tool call and adds its rules on top of the runtime's `ai/guard.yaml` and task packs; nothing in it can allow a call the runtime would ask about or deny. The file itself is always guarded, so an agent editing it — directly or through a shell rewrite — triggers a confirmation. Validate it with `agentic guard check` and list every active rule with `agentic guard explain`.
 
 ### MCP configuration
 
@@ -1606,7 +1612,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.4
+runtimeVersion         1.9.5
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

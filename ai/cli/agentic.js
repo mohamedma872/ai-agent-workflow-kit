@@ -21,6 +21,7 @@ const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
 const CONFLICTS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'conflicts.js');
 const VERSION = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'version.js');
 const GUARD_RUNNER = path.join(RUNTIME_ROOT, 'ai', 'guard', 'runner.js');
+const GUARD_ENGINE = path.join(RUNTIME_ROOT, 'ai', 'guard', 'engine.js');
 const CODEX_MCP = path.join(RUNTIME_ROOT, 'ai', 'mcp', 'codex-delegate.mjs');
 const UPDATE = path.join(RUNTIME_ROOT, 'ai', 'cli', 'update.js');
 
@@ -290,10 +291,34 @@ exclude:
 `);
 
   writeIfMissing(path.join(agentic, 'guardrails.yaml'), `version: 1
-# NOT currently enforced. There is no loader that reads this file into the guard
-# engine (ai/guard/engine.js only loads rule packs from ai/tasks/*/guard.yaml).
-# This is a declared record of project policy intent, not active configuration —
-# ai/guard.yaml is the only file that actually gates tool calls today.
+# Project guard rules, loaded by the guard engine (ai/guard/engine.js) on every tool
+# call in this project. TIGHTEN-ONLY: they are added on top of the runtime's
+# ai/guard.yaml and can never allow or switch off anything it already asks/denies.
+# This file itself is always guarded — an agent editing it triggers a confirmation.
+# Check it with: agentic guard check   /   see what's active: agentic guard explain
+
+# Files never read into the model's context (Read → deny, shell dumps → deny).
+secret_files: []
+#  - config/prod-db.json
+
+# Files only a human changes (Edit/Write or a shell rewrite → ask).
+guarded_files: []
+#  - infra/policy/**
+
+# Directories that are an audit trail — rm of anything inside → deny.
+evidence: []
+#  - audit
+
+# Extra shell rules. decision must be ask or deny; any other value (allow, off)
+# is ignored. Match with regex (+ optional flags) or contains: [substrings].
+shell_rules: []
+#  - id: no-prod-migrations
+#    decision: deny
+#    description: Runs database migrations against production
+#    contains: ["migrate --env prod"]
+
+# Always-on runtime guarantees, kept for reference — these can't be switched
+# off from here, so the values are not read.
 project:
   production_write_requires_plan_approval: true
   destructive_operations_require_confirmation: true
@@ -336,6 +361,7 @@ function help() {
 Usage:
   agentic init [--project <repo>]
   agentic doctor [--scope auto|mobile|frontend|backend|all]
+  agentic guard check|explain      Validate / list the active guard rules, incl. .agentic/guardrails.yaml
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
   agentic approve <run-id>
@@ -431,6 +457,19 @@ function main() {
     if (r.error) throw r.error;
     process.exitCode = r.status == null ? 1 : r.status;
     return;
+  }
+
+  if (command === 'guard') {
+    const sub = args[1];
+    if (sub !== 'check' && sub !== 'explain') {
+      console.error('Usage: agentic guard check|explain');
+      process.exit(2);
+    }
+    // policy comes from the runtime's ai/guard.yaml + task packs; .agentic/guardrails.yaml from the project
+    return runNode(GUARD_ENGINE, [`--${sub}`], project, {
+      cwd: RUNTIME_ROOT,
+      env: { AI_WORKFLOW_PRODUCT_ROOT: process.env.AI_WORKFLOW_PRODUCT_ROOT || project, CLAUDE_PROJECT_DIR: RUNTIME_ROOT },
+    });
   }
 
   if (command === 'mcp') {
