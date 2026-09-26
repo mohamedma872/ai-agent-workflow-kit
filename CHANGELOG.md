@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.5 — 2026-09-26
+
+- `.agentic/guardrails.yaml` is now enforced. The guard engine loads it from the project root as a **tighten-only** rule pack: `secret_files`, `guarded_files`, `evidence`, and `shell_rules` are added on top of `ai/guard.yaml` and the task packs. A shell rule may only `ask` or `deny`; any other decision (`allow`, `off`) is dropped, so a project file can add protection but never remove it. The file itself is always guarded, so editing it — directly or by a shell rewrite — asks the user. The `project.*` booleans stay informational because those guarantees are always on.
+- Added `agentic guard check` (validates the runtime rule files plus the project's `guardrails.yaml`, flagging ignored rules) and `agentic guard explain` (lists every active rule, including the project's).
+- The `agentic init` template for `guardrails.yaml` now documents each field with examples.
+- The guard selftest covers the project pack (secret/guarded/evidence/deny/ask are honored; `allow`/`off` can't loosen a runtime rule; the file is self-protected), and clears `AI_WORKFLOW_PRODUCT_ROOT`/`AI_WORKFLOW_RUNTIME_ROOT` so it stays hermetic.
+
 ## 1.9.4 — 2026-09-26
 
 - Fixed a security-review blind spot introduced in 1.9.2: `.agentic/knowledge.yaml`'s `include`/`exclude` globs are project-supplied and untrusted from a security-review standpoint — a project could narrow or exclude the exact files most in need of review from the `security`/`security-review` roles' retrieval context, accidentally via an over-eager default or deliberately. Those two roles now always retrieve from the full corpus (still minus `hybrid-rag.js`'s built-in ignore/sensitive-file lists); `prioritize` still applies to them since a relevance boost can't hide anything.
