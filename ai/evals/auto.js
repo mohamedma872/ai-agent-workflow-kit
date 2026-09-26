@@ -109,6 +109,8 @@ function check() {
   };
   step('fence rule files are valid (engine --check)', ['ai/guard/engine.js', '--check']);
   step('fence behaves as expected (engine --selftest)', ['ai/guard/engine.js', '--selftest']);
+  step('LLM judge plumbing (judge --selftest, offline)', ['ai/evals/judge.js', '--selftest']);
+  step('hillclimb harness + subagent fixtures (hillclimb --selftest, offline)', ['ai/evals/hillclimb.js', '--selftest']);
   let cases = 0;
   for (const name of listTasks()) {
     let task;

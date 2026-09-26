@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- referenced from AndroidManifest.xml: android:networkSecurityConfig="@xml/network_security_config" -->
+<!-- build.gradle (release): buildConfigField "String", "API_BASE_URL", "\"http://api.example.com/v2\"" -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

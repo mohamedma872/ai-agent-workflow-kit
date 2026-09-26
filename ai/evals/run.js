@@ -7,8 +7,9 @@
  *   node ai/evals/run.js <task> list
  *   node ai/evals/run.js <task> plan [--case ID]
  *   node ai/evals/run.js <task> run (--case ID | --all) [--agent NAME] [--reps N] [--budget USD]
- *                                  [--timeout-min M] [--permission-mode M] [--force] [--dry-run]
- *   node ai/evals/run.js <task> grade --case ID [--dir D]        # replay: grade existing artifacts
+ *                                  [--timeout-min M] [--permission-mode M] [--force] [--dry-run] [--judge]
+ *   node ai/evals/run.js <task> grade --case ID [--dir D] [--judge]   # replay: grade existing artifacts
+ *   (--judge [--judge-model M]: also LLM-judge the keyword misses — see ai/evals/judge.js)
  *   node ai/evals/run.js <task> summary
  *
  * A task = ai/tasks/<task>/{adapter.js, cases.yaml}. The adapter runs one
@@ -23,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync, execFileSync } = require('child_process');
-const { ROOT, AI_DIR, listTasks, loadTask, resultsDirFor, catalog, gradeCase, fmt, appendRow, readRows, parseArgs, loadAgents } = require('./grade.js');
+const { ROOT, AI_DIR, listTasks, loadTask, resultsDirFor, catalog, gradeCase, judgeFor, fmt, appendRow, readRows, parseArgs, loadAgents } = require('./grade.js');
 
 function git(...args) { return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim(); }
 function fixOnHead(sha) { return spawnSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: ROOT }).status === 0; }
@@ -114,7 +115,7 @@ function runOne(task, c, rep, opts) {
   if (meta.head_moved || meta.tree_dirty_after) {
     console.log(`⚠ ${runId}: ${meta.head_moved ? 'HEAD moved during the run (a commit slipped past the guard). ' : ''}${meta.tree_dirty_after ? 'tree left dirty:\n' + meta.tree_dirty_after : ''}`);
   }
-  const row = gradeCase(task, c, { dir: runDir, rep, runId, agent: agentName, catalog: catalog(task) });
+  const row = gradeCase(task, c, { dir: runDir, rep, runId, agent: agentName, catalog: catalog(task), judge: opts.judge });
   appendRow(path.join(resultsDir, row.status === 'error' ? 'errors.jsonl' : 'results.jsonl'), row);
   console.log(fmt(row));
 }
@@ -135,8 +136,9 @@ function summary(task) {
   const pct = x => (x === null ? '–' : `${Math.round(x * 100)}%`);
   const num = (x, d) => (x === null || x === undefined ? '–' : x.toFixed(d));
   console.log(`## ${task.name} — ${path.relative(ROOT, resultsDir)}\n`);
-  console.log('| agent · case | rows | graded | recall | phantoms | verdict ok | $ / run | min / run |');
-  console.log('|---|---|---|---|---|---|---|---|');
+  const judgedAny = rows.some(r => r.judged);
+  console.log(`| agent · case | rows | graded | recall |${judgedAny ? ' judge recall |' : ''} phantoms | verdict ok | $ / run | min / run |`);
+  console.log(`|---|---|---|---|${judgedAny ? '---|' : ''}---|---|---|---|`);
   let graded = 0;
   for (const [key, rs] of [...by.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const g = rs.filter(r => r.status === 'graded');
@@ -145,10 +147,12 @@ function summary(task) {
     const ph = g.reduce((a, r) => a + (r.phantoms ? r.phantoms.length : 0), 0);
     const vo = g.filter(r => r.verdict_ok !== null);
     const voRate = vo.length ? vo.filter(r => r.verdict_ok).length / vo.length : null;
-    console.log(`| ${key} | ${rs.length} | ${g.length} | ${pct(recall)} | ${ph} | ${pct(voRate)} | ${num(mean(g.map(r => r.cost_usd).filter(x => typeof x === 'number')), 2)} | ${num(mean(g.map(r => r.duration_min).filter(x => typeof x === 'number')), 1)} |`);
+    const jRecall = judgedAny ? ` ${pct(mean(g.map(r => r.judge_recall).filter(x => typeof x === 'number')))} |` : '';
+    console.log(`| ${key} | ${rs.length} | ${g.length} | ${pct(recall)} |${jRecall} ${ph} | ${pct(voRate)} | ${num(mean(g.map(r => r.cost_usd).filter(x => typeof x === 'number')), 2)} | ${num(mean(g.map(r => r.duration_min).filter(x => typeof x === 'number')), 1)} |`);
   }
   const incomplete = rows.filter(r => r.status === 'incomplete').length;
   console.log(`\n${graded} graded · ${incomplete} incomplete (stopped early) · ${errs.length} errors (no artifacts / timeout) — incomplete and error rows are listed, never averaged in as failures.`);
+  if (judgedAny) {console.log(`judge recall = keyword matches ∪ LLM-judged matches of the keyword misses; rows with judge errors are left out of it (${rows.filter(r => r.judge_errors && r.judge_errors.length).length} such rows). Judge spend: $${rows.reduce((a, r) => a + (r.judge_cost_usd || 0), 0).toFixed(2)}.`);}
   if (graded) {console.log(`noise floor ≈ ±${Math.round(100 / Math.sqrt(graded))} points on any rate above (1/√n, n=${graded} graded trials) — smaller differences are not real.`);}
   for (const e of errs) {console.log(`  ✗ ${e.run_id || e.case_id}: ${e.error_class} ${e.error || ''}`);}
 }
@@ -186,6 +190,7 @@ if (require.main === module) {
     permissionMode: args['permission-mode'] || d.permissionMode || 'bypassPermissions',
     dryRun: !!args['dry-run'],
     force: !!args.force,
+    judge: args.judge ? judgeFor(task, args) : null,
   };
   const pick = () => {
     if (args.case) {
@@ -220,7 +225,7 @@ if (require.main === module) {
     }
     case 'grade': {
       const c = pick()[0];
-      const row = gradeCase(task, c, { dir: args.dir ? path.resolve(ROOT, args.dir) : null, runId: `replay-${Date.now()}`, agent: agentName, catalog: catalog(task) });
+      const row = gradeCase(task, c, { dir: args.dir ? path.resolve(ROOT, args.dir) : null, runId: `replay-${Date.now()}`, agent: agentName, catalog: catalog(task), judge: opts.judge });
       if (!args['no-write'] && row.mode === 'run') {appendRow(path.join(resultsDirFor(task), row.status === 'error' ? 'errors.jsonl' : 'results.jsonl'), row);}
       console.log(args.json ? JSON.stringify(row, null, 2) : fmt(row));
       process.exit(row.status === 'error' ? 2 : 0);
@@ -230,7 +235,7 @@ if (require.main === module) {
       summary(task);
       break;
     default:
-      console.error('usage: run.js <task> list | plan [--case ID] | run (--case ID|--all) [--agent NAME] [--reps N] [--budget USD] [--timeout-min M] [--permission-mode M] [--force] [--dry-run] | grade --case ID [--dir D] [--no-write] | summary');
+      console.error('usage: run.js <task> list | plan [--case ID] | run (--case ID|--all) [--agent NAME] [--reps N] [--budget USD] [--timeout-min M] [--permission-mode M] [--force] [--dry-run] [--judge] | grade --case ID [--dir D] [--no-write] [--judge] | summary');
       console.error(`agents (${path.relative(ROOT, path.join(AI_DIR, 'agents.yaml'))}): ${Object.keys(agents).join(', ') || '(none)'}`);
       process.exit(1);
   }

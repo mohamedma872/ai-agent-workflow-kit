@@ -87,3 +87,66 @@
     - name: missing-negative-test
       severity: medium
       any_of: ["invalid token + test", "expired token + negative"]
+
+# ── security-analyst pilot set (ai/evals/hillclimb.js needs ≥4 cases per specialist) ──
+- name: security-webview-js-bridge
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-webview/HelpActivity.kt
+  ask: Identify the concrete security issue in this screen.
+  must_report:
+    - name: webview-bridge-untrusted-content
+      severity: high
+      any_of: ["addJavascriptInterface + untrusted", "javascript interface + url", "webview + bridge"]
+
+- name: security-token-logged
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-logging/AuthInterceptor.kt
+  ask: Identify the concrete security issue in this interceptor.
+  must_report:
+    - name: token-written-to-logs
+      severity: high
+      any_of: ["token + log", "credential + logcat"]
+
+- name: security-token-plain-storage
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-storage/session.ts
+  ask: Identify the concrete security issue in how the session is stored.
+  must_report:
+    - name: tokens-in-plaintext-storage
+      severity: high
+      any_of: ["asyncstorage + token", "plaintext + token", "unencrypted + token"]
+
+- name: security-cleartext-traffic
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-cleartext/network_security_config.xml
+  ask: Identify the concrete security issue in this network configuration.
+  must_report:
+    - name: cleartext-traffic-allowed
+      severity: high
+      any_of: ["cleartext", "http + unencrypted", "plaintext + traffic"]
+
+- name: security-deeplink-token-redirect
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-deeplink/deeplink_handler.dart
+  ask: Identify the concrete security issue in this deep-link handler.
+  must_report:
+    - name: deeplink-unvalidated-token-or-redirect
+      severity: high
+      any_of: ["deep link + redirect", "redirect + validat", "token + deep link"]
+
+- name: security-hardcoded-merchant-secret
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-hardcoded/payments.ts
+  ask: Identify the concrete security issue in this payments client.
+  must_report:
+    - name: server-secret-in-client-bundle
+      severity: critical
+      any_of: ["hardcoded + secret", "secret + bundle", "embedded + secret"]
+
+- name: security-clean-profile-update
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-clean/profile.ts
+  ask: Review this change for a concrete security issue. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
+    - "injection"

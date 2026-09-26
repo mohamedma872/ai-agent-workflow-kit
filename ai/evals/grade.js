@@ -4,7 +4,7 @@
  * ai/evals/grade.js — generic end-state grader for every AI task in this repo, for ANY agent.
  *
  *   node ai/evals/grade.js <task> <case_id> [--dir <run dir>] [--rep N] [--run-id ID]
- *                                [--oracle | --null] [--no-write] [--json]
+ *                                [--oracle | --null] [--judge [--judge-model M]] [--no-write] [--json]
  *
  * A task = ai/tasks/<task>/{adapter.js, cases.jsonl}. The adapter says
  * how to read what a run left behind (collect) and what counts as a match
@@ -17,6 +17,10 @@
  *
  * Status: graded | incomplete (run stopped early — shown, never averaged as a
  * failure) | error (no artifacts → errors.jsonl). "No answer" ≠ "negative answer".
+ *
+ * --judge also asks an LLM judge (ai/evals/judge.js) about the items the keywords missed and
+ * adds judge_recall next to recall — recall itself never changes. Judge failures are
+ * judge_errors, never misses. Calibrate first: node ai/evals/judge.js calibrate --live.
  *
  * --oracle feeds the case's own expected items as outputs (recall must be 1.0),
  * --null feeds nothing (recall must be 0). Run both before trusting a case or a
@@ -120,7 +124,9 @@ function loadTask(name) {
   return { name, dir, adapter: require(adapterFile), casesFile, cases: casesFile ? loadCases(casesFile) : [] };
 }
 
+// AI_EVAL_RESULTS_DIR redirects one invocation's ledger + run dirs (ai/evals/hillclimb.js gives each prompt version its own)
 function resultsDirFor(task) {
+  if (process.env.AI_EVAL_RESULTS_DIR) {return path.resolve(ROOT, process.env.AI_EVAL_RESULTS_DIR);}
   return path.resolve(ROOT, task.adapter.resultsDir || path.join('ai', 'evals', 'results', task.name));
 }
 
@@ -168,6 +174,7 @@ function gradeCase(task, c, opts) {
   row.matched = matched;
   row.missed = missed;
   row.recall = expected.length ? matched.length / expected.length : null;
+  if (opts.judge && row.mode === 'run') {require('./judge.js').judgeRow(row, outputs, c, opts.judge);}
 
   // phantoms are for report-style signatures (no `in:`): a famous finding reported where it
   // was not seeded. Diff/answer keywords of other coding cases are not phantoms.
@@ -195,7 +202,8 @@ function fmt(r) {
   const v = r.expect_verdict ? `verdict ${r.verdict} (expected ${r.expect_verdict} ${r.verdict_ok ? '✓' : '✗'})` : `verdict ${r.verdict ?? '–'}`;
   const cost = typeof r.cost_usd === 'number' ? `$${r.cost_usd.toFixed(2)}` : '$–';
   const dur = typeof r.duration_min === 'number' ? `${Math.round(r.duration_min)} min` : '– min';
-  const tail = r.unresolved && r.unresolved.length ? ` · unresolved: ${r.unresolved.join(', ')}` : '';
+  const judged = r.judged ? ` · judge ${r.judge_recall === null ? `– (${r.judge_errors.length} judge errors)` : `${Math.round(r.judge_recall * r.expected)}/${r.expected}`}` : '';
+  const tail = `${judged}${r.unresolved && r.unresolved.length ? ` · unresolved: ${r.unresolved.join(', ')}` : ''}`;
   return `${r.status === 'graded' ? '●' : '◐'} ${r.task}/${r.case_id}${r.agent ? ` [${r.agent}]` : ''} [${r.mode}${r.status !== 'graded' ? '/' + r.status : ''}] ${rec} · phantoms ${r.phantoms.length} · ${v} · ${r.outputs_total} outputs · ${cost} · ${dur}${tail}`;
 }
 
@@ -224,7 +232,7 @@ if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
   const [taskName, caseId] = args._;
   if (!taskName || !caseId) {
-    console.error('usage: grade.js <task> <case_id> [--dir D] [--rep N] [--run-id ID] [--oracle|--null] [--no-write] [--json]');
+    console.error('usage: grade.js <task> <case_id> [--dir D] [--rep N] [--run-id ID] [--oracle|--null] [--judge [--judge-model M]] [--no-write] [--json]');
     console.error(`tasks: ${listTasks().join(', ') || '(none under ai/tasks/)'}`);
     process.exit(1);
   }
@@ -239,6 +247,7 @@ if (require.main === module) {
     oracle: !!args.oracle,
     null: !!args.null,
     catalog: catalog(task),
+    judge: args.judge ? judgeFor(task, args) : null,
   });
   if (!args['no-write'] && row.mode === 'run') {
     appendRow(path.join(resultsDirFor(task), row.status === 'error' ? 'errors.jsonl' : 'results.jsonl'), row);
@@ -254,6 +263,14 @@ if (require.main === module) {
   process.exit(row.status === 'error' ? 2 : 0);
 }
 
+// --judge [--judge-model M] → a cached judge function for this task (ai/evals/judge.js)
+function judgeFor(task, args) {
+  const { makeJudge, loadConfig } = require('./judge.js');
+  const config = loadConfig();
+  if (typeof args['judge-model'] === 'string') {config.model = args['judge-model'];}
+  return makeJudge({ config, cacheFile: path.join(resultsDirFor(task), 'judge-cache.jsonl') });
+}
+
 // ai/agents.yaml → { name: { command: [...], result, cost, duration, ... } }
 function loadAgents() {
   const f = path.join(AI_DIR, 'agents.yaml');
@@ -264,4 +281,4 @@ function loadAgents() {
   return out;
 }
 
-module.exports = { ROOT, AI_DIR, TASKS_DIR, listTasks, loadTask, loadAgents, resultsDirFor, catalog, gradeCase, fmt, appendRow, readRows, parseArgs };
+module.exports = { ROOT, AI_DIR, TASKS_DIR, listTasks, loadTask, loadAgents, resultsDirFor, catalog, gradeCase, judgeFor, fmt, appendRow, readRows, parseArgs };
