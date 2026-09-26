@@ -41,6 +41,17 @@ function loadKnowledgeConfig(root){
  const toRe=list=>(Array.isArray(list)?list:[]).map(globToRegExp);
  return {include:toRe(data.include),exclude:toRe(data.exclude),prioritize:toRe(data.prioritize)};
 }
+// A project's own knowledge.yaml is untrusted input to a security review: letting it narrow
+// `include` or add `exclude` globs would let the reviewed repository hide the very files a
+// security-sensitive role most needs to see (accidentally, via an over-eager default, or
+// deliberately). These roles always see the full corpus (still minus the built-in
+// ignore/sensitive-file lists) — only `prioritize` passes through, since a relevance boost
+// can't hide anything.
+const SECURITY_ROLES=new Set(['security','security-review']);
+function knowledgeConfigForRole(knowledge,role){
+ if(!knowledge||!SECURITY_ROLES.has(String(role||'').toLowerCase()))return knowledge;
+ return {include:[],exclude:[],prioritize:knowledge.prioritize};
+}
 // `.agentic/config.yaml` rag: section — project-level retrieval tuning. Returns snake_case keys
 // matching ai/subagents/contracts.yaml's retrieval block, so the two merge without translation.
 function loadRagConfig(root){
@@ -109,7 +120,7 @@ function select(items,o={}){
 function budget(items,o={}){const out=[],max=o.maxContextChars||D.maxContextChars,excerpt=o.maxExcerptChars||D.maxExcerptChars;let used=0;for(const x of items){const text=x.text.slice(0,excerpt),cost=text.length+220;if(out.length&&used+cost>max)break;out.push({...x,text});used+=cost;}return out;}
 function retrieve({root=process.cwd(),query='',role='',topK,semanticIndex=null,queryEmbedding=null,...o}={}){
  if(!String(query).trim())return{query:'',role,results:[],stats:{files:0,chunks:0,returned:0,semanticEnabled:false}};
- const knowledge=o.knowledge!==undefined?o.knowledge:loadKnowledgeConfig(root);
+ const knowledge=knowledgeConfigForRole(o.knowledge!==undefined?o.knowledge:loadKnowledgeConfig(root),role);
  const chunks=corpus(root,{...o,knowledge}),results=budget(select(score(chunks,{query,role,semanticIndex,queryEmbedding,prioritize:knowledge?.prioritize}),{...o,topK}),o);
  return{query:String(query),role:String(role||''),results,stats:{files:new Set(chunks.map(x=>x.source)).size,chunks:chunks.length,returned:results.length,semanticEnabled:!!(semanticIndex&&queryEmbedding)}};
 }
@@ -141,10 +152,19 @@ function selftest(){
  putCfg('legacy/generated/AuthRepository.js','class AuthRepository { refreshToken(){ return SecureStorage.get("refresh_token"); } }');
  putCfg('misc/notes.md','Unrelated notes that also mention refreshToken caching.');
  putCfg('.agentic/knowledge.yaml','version: 1\ninclude:\n  - src/**\n  - docs/**\nexclude:\n  - legacy/**\nprioritize:\n  - docs/adr/**\n');
- const withKnowledge=retrieve({root:cfgRoot,query:'Where is authentication refreshToken stored?',role:'security',topK:5});
+ const withKnowledge=retrieve({root:cfgRoot,query:'Where is authentication refreshToken stored?',role:'architect',topK:5});
  assert(withKnowledge.results.length&&!withKnowledge.results.some(x=>x.source.startsWith('legacy/')),'exclude glob removes legacy/ from the corpus');
  assert(!withKnowledge.results.some(x=>x.source.startsWith('misc/')),'include glob narrows the corpus to src/** and docs/**');
  assert(withKnowledge.results.some(x=>x.source.includes('ADR-014')&&x.channels.includes('prioritized')),'prioritize glob boosts and tags matched chunks');
+
+ // A project's own knowledge.yaml must never hide files from a security-sensitive role:
+ // include/exclude are ignored for `security`/`security-review`, prioritize still applies.
+ const forSecurity=retrieve({root:cfgRoot,query:'Where is authentication refreshToken stored?',role:'security',topK:5});
+ assert(forSecurity.results.some(x=>x.source.startsWith('legacy/')),'security role sees legacy/ despite the project exclude glob');
+ assert(forSecurity.results.some(x=>x.source.startsWith('misc/')),'security role is not narrowed by the project include glob');
+ assert(forSecurity.results.some(x=>x.source.includes('ADR-014')&&x.channels.includes('prioritized')),'prioritize still applies for the security role');
+ const forSecurityReview=retrieve({root:cfgRoot,query:'Where is authentication refreshToken stored?',role:'security-review',topK:5});
+ assert(forSecurityReview.results.some(x=>x.source.startsWith('legacy/')),'security-review role sees legacy/ despite the project exclude glob');
 
  putCfg('.agentic/config.yaml','version: 1\nrag:\n  enabled: false\n');
  assert.strictEqual(loadRagConfig(cfgRoot).enabled,false,'rag.enabled: false is read back from .agentic/config.yaml');
@@ -164,4 +184,4 @@ function cli(){
  console.log(a.json?JSON.stringify(p,null,2):(formatContext(p)||'(no relevant repository evidence found)'));
 }
 if(require.main===module){try{cli();}catch(e){console.error('✗ '+e.message);process.exitCode=1;}}
-module.exports={D,words,queryProfile,isSensitive,walk,chunkFile,corpus,score,retrieve,formatContext,select,budget,dotCosine,globToRegExp,loadKnowledgeConfig,loadRagConfig};
+module.exports={D,words,queryProfile,isSensitive,walk,chunkFile,corpus,score,retrieve,formatContext,select,budget,dotCosine,globToRegExp,loadKnowledgeConfig,loadRagConfig,knowledgeConfigForRole,SECURITY_ROLES};

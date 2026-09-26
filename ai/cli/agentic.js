@@ -249,6 +249,11 @@ rag:
 # Paths are relative to the project root; "**" matches any depth. Glob syntax only
 # (no negation, no regex). File-extension/name filtering in hybrid-rag.js still
 # applies on top of these lists.
+#
+# include/exclude are ignored for the security and security-review roles: this file
+# is untrusted input to your own security review, and letting it narrow what those
+# roles see would let the repository hide files from that review. Those two roles
+# always see the full corpus (minus hybrid-rag.js's built-in ignore/sensitive lists).
 
 # If non-empty, ONLY files matching one of these globs are retrieval candidates —
 # this narrows scope, it does not add file types outside hybrid-rag.js's own list.

@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.3-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.4-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -228,7 +228,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.3
+1.9.4
 ```
 
 ### 2. Initialize a project
@@ -1524,10 +1524,12 @@ table is a summary of the same thing:
 | `config.yaml` | `rag.mode` | **Yes** | `hybrid` (default) or `off` — any other value behaves like `off` |
 | `config.yaml` | `rag.top_k` | **Yes** | Max retrieved chunks per query; overrides the `ai/subagents/contracts.yaml` default |
 | `config.yaml` | `rag.context_budget` | **Yes** | Max characters of retrieved context per role |
-| `knowledge.yaml` | `include` | **Yes** | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
-| `knowledge.yaml` | `exclude` | **Yes** | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
-| `knowledge.yaml` | `prioritize` | **Yes** | Matched chunks get a small relevance boost (ADRs, schemas, etc.) |
+| `knowledge.yaml` | `include` | **Yes**, except `security`/`security-review` | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
+| `knowledge.yaml` | `exclude` | **Yes**, except `security`/`security-review` | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
+| `knowledge.yaml` | `prioritize` | **Yes** (all roles) | Matched chunks get a small relevance boost (ADRs, schemas, etc.) — a boost can't hide anything, so it applies uniformly |
 | `guardrails.yaml` | *(all fields)* | No | No loader wires this file into the guard engine yet — `ai/guard.yaml` is the only file that actually gates tool calls today |
+
+`include`/`exclude` are ignored for the `security` and `security-review` roles by design: a project's own config is untrusted input to its own security review, and letting it narrow what the security specialist sees would let the reviewed repository hide files from that review — accidentally via an over-eager default, or deliberately. Those two roles always see the full corpus (still minus the built-in ignore/sensitive-file lists).
 
 ### MCP configuration
 
@@ -1604,7 +1606,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.3
+runtimeVersion         1.9.4
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable
