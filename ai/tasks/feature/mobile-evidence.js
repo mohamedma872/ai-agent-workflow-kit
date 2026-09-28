@@ -98,12 +98,80 @@ function buildPrompt(id, platforms, attemptId) {
   return `# Mobile evidence execution — ${id}\n\nAttempt id: ${attemptId}\nProduct worktree: ${PRODUCT_ROOT}\n\n` +
     `This is an EXECUTION step. You MUST use the configured Appium MCP. Do not replace Appium with shell screenshots, mocked evidence, descriptions, or assumptions.\n\n` +
     `Target platform(s): ${platformText}\n\n` +
-    `Required agent-produced outputs for THIS attempt (use these ABSOLUTE paths because product execution occurs in an isolated worktree):\n- ${manifestFile(id)}\n- ${sessionsFile(id)}\n- ${screenshotDir(id)}/*.png\n\n` +
+    `You do NOT write any evidence file yourself, and you have no permission to. The runtime writes all of them:\n` +
+    `- screenshots: run this for every capture, which writes ${screenshotDir(id)}/<platform>-<name>.png for you:\n` +
+    `    node ${__filename} capture ${id} --platform <android|ios> --name <NN-checkpoint> [--udid <device>]\n` +
+    `- your QC report: return it as your response. The runtime saves it as ${manifestFile(id)}.\n` +
+    `- session identity: include it as a single fenced \`\`\`json block in that response. The runtime saves it as ${sessionsFile(id)}.\n\n` +
     `appium-sessions.json MUST be JSON with {"attemptId":"${attemptId}","platforms":[...]}. Each platform entry MUST contain:\n` +
     `- platform: android or ios\n- the actual Appium sessionId\n- deviceId\n- appId (Android package / iOS bundle id)\n- appVersion\n- buildNumber\n- buildArtifact (existing APK/AAB/IPA/.app path for the exact build tested, resolved from ${PRODUCT_ROOT})\n- sessionStartedAt and sessionEndedAt ISO timestamps\n- flavor, scheme, environment when applicable\n\n` +
     `The runtime, not you, computes git/workspace identity from the product worktree, hashes the exact build artifact, manifest, and screenshots, and generates evidence.json after you return. Missing build/session identity BLOCKS verification.\n\n` +
-    `Rules:\n1. Create/select an Appium session for each target platform and record its real session id.\n2. Use the final post-fix build from the product worktree and record the exact artifact path used to install/launch it.\n3. Execute the device-relevant acceptance criteria.\n4. Capture fresh screenshots with Appium directly into ${screenshotDir(id)} and prefix names with android- or ios-.\n5. Never fabricate a session id, build identity, screenshot, or PASS result.\n6. If Appium/device/build/data is unavailable, write BLOCKED evidence when possible and return failure.\n7. Do not edit product source, commit, push, deploy, or change workflow/guard files.\n8. Close/detach Appium sessions when finished and record the end timestamp.\n\n` +
+    `Rules:\n1. Create/select an Appium session for each target platform and record its real session id.\n2. Use the final post-fix build from the product worktree and record the exact artifact path used to install/launch it.\n3. Execute the device-relevant acceptance criteria.\n4. Capture fresh screenshots by running the capture command above once per checkpoint, after driving the app there with Appium. Name them NN-checkpoint, e.g. 01-launch.\n5. Never fabricate a session id, build identity, screenshot, or PASS result.\n6. If Appium, the device, or the build is unavailable, return a report whose Verdict section says BLOCKED and explains why. The runtime records it; do not try to write it yourself.\n7. You may build the app under test (flutter build, gradlew, xcodebuild) because device QC needs an installable artifact. Do not edit product source, commit, push, deploy, or change workflow/guard files.\n8. Close/detach Appium sessions when finished and record the end timestamp.\n\n` +
     `## Acceptance criteria\n${readIfExists(path.join(dir, '02-acceptance-criteria.md'))}\n\n## Definition of Done\n${readIfExists(path.join(dir, '03-definition-of-done.md'))}\n\n## Build/test evidence\n${readIfExists(path.join(dir, '08-build-test.md'))}\n\n## Final fixes\n${readIfExists(path.join(dir, '10-fixes.md'))}\n`;
+}
+// The mobile-evidence role is read_only, so it cannot write a single byte of
+// its own evidence: the guard denies Write for any role without product_write,
+// and there is no carve-out for the run's own state directory. The role whose
+// declared output IS device_evidence could therefore never produce it, and the
+// validation below failed every attempt. The runtime owns the writes instead —
+// the agent drives the app and asks for a capture, and nothing it returns can
+// put a file on disk by itself.
+const SAFE_NAME = /^[a-z0-9][a-z0-9-]*$/i;
+function screenshotPath(id, platform, name) {
+  if (!['android', 'ios'].includes(platform)) throw new Error(`unsupported capture platform "${platform}"; use android or ios`);
+  if (!SAFE_NAME.test(String(name || ''))) throw new Error(`invalid capture name "${name}"; use letters, digits and dashes, e.g. 01-launch`);
+  const file = path.join(screenshotDir(id), `${platform}-${name}.png`);
+  // A name that escapes the run's own screenshot directory is a write outside
+  // the evidence boundary, which is the thing this design exists to prevent.
+  if (path.dirname(path.resolve(file)) !== path.resolve(screenshotDir(id))) throw new Error('capture would write outside the run evidence directory');
+  return file;
+}
+function captureScreenshot(id, args) {
+  const state = loadState(id);
+  if (!state) throw new Error(`no state.json for run ${id}`);
+  const execution = state.evidence?.mobileScreenshots?.execution;
+  if (execution?.status !== 'in_progress') throw new Error('capture is only allowed while a mobile-evidence attempt is in progress');
+  const platform = String(args.platform || '').trim().toLowerCase();
+  const file = screenshotPath(id, platform, args.name);
+  fs.mkdirSync(screenshotDir(id), { recursive: true });
+  let res;
+  if (platform === 'android') {
+    const device = args.device || args.udid;
+    res = spawnSync('adb', [...(device ? ['-s', String(device)] : []), 'exec-out', 'screencap', '-p'], { maxBuffer: 256 * 1024 * 1024, encoding: 'buffer' });
+    if (res.error || res.status !== 0) throw new Error(`adb screencap failed: ${res.error ? res.error.message : String(res.stderr || '').trim() || `exit ${res.status}`}`);
+    if (!res.stdout || !res.stdout.length) throw new Error('adb screencap produced no image');
+    fs.writeFileSync(file, res.stdout);
+  } else {
+    const udid = args.udid || args.device || 'booted';
+    res = spawnSync('xcrun', ['simctl', 'io', String(udid), 'screenshot', file], { encoding: 'utf8' });
+    if (res.error || res.status !== 0) throw new Error(`simctl screenshot failed: ${res.error ? res.error.message : String(res.stderr || '').trim() || `exit ${res.status}`}`);
+  }
+  const bytes = fs.statSync(file).size;
+  if (!bytes) throw new Error(`capture wrote an empty file: ${file}`);
+  console.log(`✓ captured ${path.relative(PROJECT_ROOT, file)} (${bytes} bytes)`);
+  return 0;
+}
+// The agent returns its QC report as its response, the way every other
+// read_only role returns an artifact; the runtime is what puts it on disk.
+function extractSessions(text) {
+  const fenced = String(text || '').match(/```json\s*([\s\S]*?)```/i);
+  const candidates = [];
+  if (fenced) candidates.push(fenced[1]);
+  const braced = String(text || '').match(/\{[\s\S]*"platforms"[\s\S]*\}/);
+  if (braced) candidates.push(braced[0]);
+  for (const candidate of candidates) {
+    try { const parsed = JSON.parse(candidate.trim()); if (parsed && typeof parsed === 'object') return parsed; } catch { /* try the next shape */ }
+  }
+  return null;
+}
+function writeAgentEvidence(id, attemptId, platforms) {
+  const text = readIfExists(agentOutputFile(id));
+  if (!text || text === '(not available)') throw new Error('the mobile-evidence role returned no report to record');
+  fs.mkdirSync(deviceDir(id), { recursive: true });
+  fs.writeFileSync(manifestFile(id), text.endsWith('\n') ? text : `${text}\n`);
+  const sessions = extractSessions(text);
+  if (sessions) fs.writeFileSync(sessionsFile(id), JSON.stringify({ attemptId, platforms, ...sessions }, null, 2) + '\n');
+  return !!sessions;
 }
 function markExecution(id, state, patch) { const evidence = evidenceState(state); evidence.execution = { ...(evidence.execution || {}), ...patch, updatedAt: new Date().toISOString() }; saveState(id, state); }
 
@@ -147,6 +215,12 @@ function runEvidence(id, args) {
     throw new Error(child.error ? child.error.message : `mobile-evidence role failed with exit ${child.status}`);
   }
 
+  try { writeAgentEvidence(id, attemptId, platforms); }
+  catch (e) {
+    markExecution(id, state, { status: 'blocked', completedAt: new Date().toISOString(), exitStatus: 0, error: e.message });
+    throw new Error(`mobile-evidence returned, but its report could not be recorded: ${e.message}`);
+  }
+
   const result = validateEvidence(id, platforms, startedMs);
   if (!result.ok) {
     markExecution(id, state, { status: 'blocked', completedAt: new Date().toISOString(), exitStatus: 0, validationErrors: result.errors, freshScreenshots: result.screenshots });
@@ -180,9 +254,20 @@ function selftest() {
   assert.throws(() => assertReadyForEvidence({ phases: {} }), /implementation=pending/);
   assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'skipped' } } }));
   const prompt = buildPrompt('TEST', ['android'], 'ATTEMPT');
-  assert.match(prompt, /ABSOLUTE paths/);
+  assert.match(prompt, /You do NOT write any evidence file yourself/);
+  assert.match(prompt, /capture TEST --platform/);
   assert.match(prompt, /buildArtifact/);
   assert.match(prompt, /sessionStartedAt/);
+  // The role is read_only, so a name that walks out of the evidence directory
+  // must be refused rather than becoming a write anywhere on disk.
+  assert.throws(() => screenshotPath('TEST', 'android', '../../escape'), /invalid capture name/);
+  assert.throws(() => screenshotPath('TEST', 'android', 'a/b'), /invalid capture name/);
+  assert.throws(() => screenshotPath('TEST', 'windows', '01-launch'), /unsupported capture platform/);
+  assert.strictEqual(path.basename(screenshotPath('TEST', 'ios', '01-launch')), 'ios-01-launch.png');
+  // Session identity is lifted out of the agent's report, not written by it.
+  const report = '# QC\n\n## Verdict\n\nPASS on Android.\n\n```json\n{"platforms":[{"platform":"android","sessionId":"s1"}]}\n```\n';
+  assert.strictEqual(extractSessions(report).platforms[0].sessionId, 's1');
+  assert.strictEqual(extractSessions('no json here'), null);
   console.log('mobile-evidence.js selftest OK');
 }
 
@@ -191,5 +276,6 @@ const [cmd, idArg] = args._;
 try {
   if (cmd === 'selftest') selftest();
   else if (cmd === 'run') { const id = args.run || idArg || process.env.FEATURE_RUN_ID || activeId(); if (!id) throw new Error('no run id; use run <id> or --run <id>'); process.exitCode = runEvidence(id, args); }
-  else fail('usage: mobile-evidence.js run [run-id] [--run id] [--platforms android,ios] [--timeout-min 30] [--dry-run] | selftest');
+  else if (cmd === 'capture') { const id = args.run || idArg || process.env.FEATURE_RUN_ID || activeId(); if (!id) throw new Error('no run id; use capture <id> --platform <android|ios> --name <NN-checkpoint>'); process.exitCode = captureScreenshot(id, args); }
+  else fail('usage: mobile-evidence.js run [run-id] [--run id] [--platforms android,ios] [--timeout-min 30] [--dry-run] | capture <run-id> --platform android|ios --name NN-checkpoint [--udid ID] | selftest');
 } catch (error) { fail(error.message); }

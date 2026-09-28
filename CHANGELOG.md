@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.7 — 2026-09-28
+
+Found by driving the `/feature` mobile evidence gate on a real Flutter app: the stage could never pass, for two independent reasons.
+
+- The evidence role could not write its own evidence. `mobile-evidence` is `read_only` and declares `outputs: [device_evidence]`, but the guard denies `Write` to any role without `product_write` and has no carve-out for the run's own state directory — so writing `device/mobile-device-qc.md` was refused with the same message as writing `lib/main.dart`. The role could not even record a BLOCKED result, and validation then rejected every attempt. The runtime now owns every evidence write: the agent returns its QC report as its response (the runtime saves it as the manifest and lifts the session identity out of its fenced `json` block), and screenshots are taken by a new `mobile-evidence.js capture <run> --platform <android|ios> --name <NN-checkpoint>` command that the agent asks for once per checkpoint. The role still has no write capability at all, so the boundary is unchanged — it simply no longer blocks the one stage that needed it.
+- Nothing built the app that Appium has to drive. `qa-execute` is read-only and runs `pub get`, `analyze` and `test`; no stage produced an APK or `Runner.app`, so evidence ran against a build that did not exist. `mobile-evidence` now declares `test_execute` and builds the artifact under test itself. Builds touch only the gitignored `build/` output, never product source.
+
 ## 1.9.6 — 2026-09-28
 
 Found by running a real `/feature` workflow against a Flutter app while the codex account was out of credits.
