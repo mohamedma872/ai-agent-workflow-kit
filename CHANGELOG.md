@@ -4,6 +4,15 @@
 
 - No unreleased runtime changes.
 
+## 1.9.5 — 2026-09-28
+
+Both fixes came from using 1.9.3's own rework command on a stuck run.
+
+- Fixed rework stalling immediately. `agentic retry <run-id> <stage>` reset the named stage but left the later stage that had failed holding its spent attempts, so the resume stopped again on `last failure type deterministic is not retryable`. Rework now means "redo from here": failed or stuck stages after the reworked one are reset too, with their attempts cleared, while stages that passed are left alone and human gates are never touched.
+- Agents are now told why the previous attempt failed. Nothing in a role's prompt carried failure information, so a retried or reworked role ran blind and repeated the same mistake — in the run that found this, the implementation role "fixed" its hanging tests by changing where they stored data while the QA role had already identified the real cause. Every role prompt now opens with a `Previous failures to address` section carrying the role's own last failure reason, any blocked or failed stage's note, and an excerpt of the rejected artifact.
+- Failure reasons survive a retry: clearing the spent attempts is what lets work run again, but it also erased the reasons, so the last reason per stage/role is kept as `lastFailures` in the run state.
+- Rejected outputs are located on disk rather than through the role map, so a stage without parallel roles (`build-test`, `implementation`, `verification`) still surfaces what its agent actually produced.
+
 ## 1.9.4 — 2026-09-26
 
 - Fixed a security-review blind spot introduced in 1.9.2: `.agentic/knowledge.yaml`'s `include`/`exclude` globs are project-supplied and untrusted from a security-review standpoint — a project could narrow or exclude the exact files most in need of review from the `security`/`security-review` roles' retrieval context, accidentally via an over-eager default or deliberately. Those two roles now always retrieve from the full corpus (still minus `hybrid-rag.js`'s built-in ignore/sensitive-file lists); `prioritize` still applies to them since a relevance boost can't hide anything.

@@ -599,11 +599,20 @@ try {
       // recorded attempts and refuses a rerun after a deterministic failure
       // ("last failure type deterministic is not retryable"), so the spent
       // attempts for what is being retried have to go too.
+      // Clearing attempts also erases why the work failed, which is exactly what
+      // the next agent needs, so the last reason is kept aside as feedback.
+      const rememberFailure = (phaseId, roleName, attempts) => {
+        const last = [...(attempts || [])].reverse().find(a => a && a.reason);
+        if (!last) return;
+        state.lastFailures ||= {};
+        state.lastFailures[phaseId] ||= {};
+        state.lastFailures[phaseId][roleName || phaseId] = { reason: String(last.reason).slice(0, 1200), at: now() };
+      };
       const clearAttempts = (phaseId, roleName) => {
         const forPhase = state.executionAttempts?.[phaseId];
         if (!forPhase) return;
-        if (roleName) delete forPhase[roleName];
-        else for (const key of Object.keys(forPhase)) delete forPhase[key];
+        if (roleName) { rememberFailure(phaseId, roleName, forPhase[roleName]); delete forPhase[roleName]; }
+        else for (const key of Object.keys(forPhase)) { rememberFailure(phaseId, key, forPhase[key]); delete forPhase[key]; }
         if (!Object.keys(forPhase).length) delete state.executionAttempts[phaseId];
       };
       for (const group of ROLE_GROUPS) {
@@ -641,6 +650,24 @@ try {
           clearAttempts(name);
           record(state, { kind: 'phase', phase: name, action: 'rework', from, to: 'pending', reason: 'rework requested' });
           retried.push(`${name} (rework from ${from})`);
+          // Rework means "redo from here": the stage that failed downstream is
+          // why we are reworking, and it keeps its spent attempts otherwise —
+          // so the resume stalls again on the previous deterministic failure.
+          for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
+            if (gates.has(later)) continue;
+            const status = phaseStatus(state, later);
+            if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
+            state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
+            clearAttempts(later);
+            for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {
+              if (!['fail', 'blocked', 'in_progress'].includes(roleState?.status)) continue;
+              // Keep the note: it says what went wrong, and the reworked role reads it.
+              state.roles[later][role] = { ...roleState, status: 'pending', updatedAt: now() };
+              clearAttempts(later, role);
+            }
+            record(state, { kind: 'phase', phase: later, action: 'rework-downstream', from: status, to: 'pending', reason: `reset for rework of ${name}` });
+            retried.push(`${later} (downstream of ${name})`);
+          }
         }
       }
       if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
