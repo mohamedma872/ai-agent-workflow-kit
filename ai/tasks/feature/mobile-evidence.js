@@ -7,7 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { buildAttestation } = require('./evidence-attestation');
-const { runtimeRoot, projectRoot, stateRoot } = require('../../workflow/paths');
+const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../../workflow/paths');
+const { loadWorkflow } = require('../../workflow/router');
+const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('../../workflow/execution-policy');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -186,9 +188,9 @@ function runEvidence(id, args) {
   if (!platforms.length) throw new Error('mobile evidence is required but no Android/iOS target could be derived; use --platforms android,ios (or one platform)');
 
   fs.mkdirSync(screenshotDir(id), { recursive: true });
-  const started = new Date();
-  const startedMs = started.getTime();
-  const attemptId = `${id}-${started.toISOString().replace(/[:.]/g, '-')}`;
+  let started = new Date();
+  let startedMs = started.getTime();
+  let attemptId = `${id}-${started.toISOString().replace(/[:.]/g, '-')}`;
   evidence.platforms = platforms;
   markExecution(id, state, { attemptId, status: args['dry-run'] ? 'dry-run' : 'in_progress', startedAt: started.toISOString(), platforms, role: 'mobile-evidence', executor: 'claude', productRoot: PRODUCT_ROOT });
   fs.writeFileSync(contextFile(id), buildPrompt(id, platforms, attemptId));
@@ -203,16 +205,43 @@ function runEvidence(id, args) {
     return 0;
   }
 
-  const child = spawnSync(process.execPath, [ROUTER, 'exec', 'feature', 'mobile-evidence', '--prompt-file', contextFile(id), '--output-file', agentOutputFile(id), '--cwd', PRODUCT_ROOT, '--timeout-min', String(Number(args['timeout-min']) || 30)], {
-    cwd: ROOT,
-    env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
-    encoding: 'utf8', maxBuffer: 512 * 1024 * 1024,
-  });
-  if (child.stdout) process.stdout.write(child.stdout);
-  if (child.stderr) process.stderr.write(child.stderr);
-  if (child.error || child.status !== 0) {
-    markExecution(id, state, { status: 'blocked', completedAt: new Date().toISOString(), exitStatus: typeof child.status === 'number' ? child.status : null, error: child.error ? child.error.message : 'mobile-evidence role exited non-zero' });
-    throw new Error(child.error ? child.error.message : `mobile-evidence role failed with exit ${child.status}`);
+  // This stage used to spawn the role directly, so the retry/timeout/fallback
+  // policy declared for mobile-evidence in the workflow was never applied: a
+  // 30-minute timeout — explicitly listed in its retry_on — went straight to
+  // blocked instead of taking its second attempt, and the timeout came from a
+  // hardcoded default here rather than from the workflow at all.
+  const { data: workflow } = loadWorkflow('feature');
+  const stageDef = (workflow.stages || []).find(x => x.id === 'mobile-evidence') || { id: 'mobile-evidence' };
+  const policy = resolveExecutionPolicy(workflow, stageDef, 'mobile-evidence');
+  const overrideMin = Number(args['timeout-min']) || null;
+  const outcome = executeWithPolicy(policy, [], ({ executor, attemptNumber, timeoutMs }) => {
+    // Each attempt is its own evidence attempt: freshness and the attestation
+    // are measured from when THIS attempt started, never an earlier one.
+    if (attemptNumber > 1) {
+      started = new Date(); startedMs = started.getTime();
+      attemptId = `${id}-${started.toISOString().replace(/[:.]/g, '-')}`;
+      markExecution(id, state, { attemptId, status: 'in_progress', startedAt: started.toISOString(), platforms, role: 'mobile-evidence', executor, productRoot: PRODUCT_ROOT });
+      fs.writeFileSync(contextFile(id), buildPrompt(id, platforms, attemptId));
+    }
+    const minutes = overrideMin || Math.max(1, Math.ceil(timeoutMs / 60000));
+    const child = spawnSync(process.execPath, [ROUTER, 'exec', 'feature', 'mobile-evidence', '--agent', executor, '--prompt-file', contextFile(id), '--output-file', agentOutputFile(id), '--cwd', PRODUCT_ROOT, '--timeout-min', String(minutes)], {
+      cwd: ROOT,
+      env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
+      encoding: 'utf8', maxBuffer: 512 * 1024 * 1024,
+    });
+    if (child.stdout) process.stdout.write(child.stdout);
+    if (child.stderr) process.stderr.write(child.stderr);
+    if (child.error || child.status !== 0) {
+      const exitType = classifyFailure(child);
+      const reason = child.error ? child.error.message : `mobile-evidence role exited ${child.status}`;
+      return { ok: false, exitType, reason: `${exitType}: ${reason}`, attemptId };
+    }
+    return { ok: true, value: { executor }, attemptId };
+  }, () => {});
+  if (!outcome.ok) {
+    const last = outcome.attempts?.[outcome.attempts.length - 1];
+    markExecution(id, state, { status: 'blocked', completedAt: new Date().toISOString(), exitStatus: 1, attempts: outcome.attempts?.length || 1, error: outcome.reason || last?.reason || 'mobile-evidence role exited non-zero' });
+    throw new Error(`mobile-evidence failed after ${outcome.attempts?.length || 1} attempt(s): ${outcome.reason || last?.reason || 'unknown'}`);
   }
 
   try { writeAgentEvidence(id, attemptId, platforms); }
@@ -236,13 +265,13 @@ function runEvidence(id, args) {
 
   markExecution(id, state, {
     status: 'pass', completedAt: new Date().toISOString(), exitStatus: 0,
-    manifest: `ai/runs/${id}/device/mobile-device-qc.md`, sessions: `ai/runs/${id}/device/appium-sessions.json`, attestation: `ai/runs/${id}/device/evidence.json`,
+    manifest: relativeStatePath(id, 'device', 'mobile-device-qc.md'), sessions: relativeStatePath(id, 'device', 'appium-sessions.json'), attestation: relativeStatePath(id, 'device', 'evidence.json'),
     gitSha: attestation.evidence.gitSha, workspaceFingerprint: attestation.evidence.workspaceFingerprint,
     builds: attestation.evidence.platforms.map(p => ({ platform: p.platform, appId: p.appId, appVersion: p.appVersion, buildNumber: p.buildNumber, path: p.buildArtifact.path, sha256: p.buildArtifact.sha256 })),
-    screenshots: result.screenshots.map(name => `ai/runs/${id}/device/screenshots/${name}`), productRoot: PRODUCT_ROOT,
+    screenshots: result.screenshots.map(name => relativeStatePath(id, 'device', 'screenshots', name)), productRoot: PRODUCT_ROOT,
   });
   console.log(`✓ ${id}: Appium mobile evidence attested for ${platforms.join(', ')}`);
-  console.log(`  evidence: ai/runs/${id}/device/evidence.json`);
+  console.log(`  evidence: ${relativeStatePath(id, 'device', 'evidence.json')}`);
   return 0;
 }
 
@@ -268,6 +297,18 @@ function selftest() {
   const report = '# QC\n\n## Verdict\n\nPASS on Android.\n\n```json\n{"platforms":[{"platform":"android","sessionId":"s1"}]}\n```\n';
   assert.strictEqual(extractSessions(report).platforms[0].sessionId, 's1');
   assert.strictEqual(extractSessions('no json here'), null);
+  // The stage must honour the retry/timeout policy the workflow declares for
+  // it. It used to spawn the role directly, so a timeout — which mobile-evidence
+  // lists in retry_on — went straight to blocked with no second attempt.
+  const { loadWorkflow: lw } = require('../../workflow/router');
+  const { resolveExecutionPolicy: rep, canRetry } = require('../../workflow/execution-policy');
+  const { data: wf } = lw('feature');
+  const stageDef = (wf.stages || []).find(x => x.id === 'mobile-evidence') || { id: 'mobile-evidence' };
+  const policy = rep(wf, stageDef, 'mobile-evidence');
+  assert.ok(policy.maxAttempts >= 2, 'mobile-evidence keeps more than one attempt');
+  assert.ok(policy.retryOn.includes('timeout'), 'a timed-out device run is retryable');
+  assert.strictEqual(canRetry(policy, 'timeout', 1), true, 'the second attempt must be allowed after a timeout');
+  assert.ok(policy.timeoutMs >= 60000, 'the timeout comes from the workflow, not a hardcoded default');
   console.log('mobile-evidence.js selftest OK');
 }
 
