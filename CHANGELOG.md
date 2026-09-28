@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.6 — 2026-09-28
+
+Found by running a real `/feature` workflow against a Flutter app while the codex account was out of credits.
+
+- An exhausted executor now reaches its fallback. `implementation` is configured `executor: codex` with `fallback: [claude]` and `retry_on: [timeout, transient, unavailable]`, but a usage limit was classified `deterministic`, so the run stopped at `implementation/implementation: codex exited 1` and the fallback — the one thing configured for "this agent cannot run" — was unreachable. Usage limits, exhausted credits and billing stops now classify as `unavailable`, which is retryable and hands the attempt to the next candidate executor.
+- The executor's own failure reason is now surfaced. A failing agent reports why in its event stream, not on stderr: codex `--json` ends with a `task_complete` carrying `error.message`, and claude `--output-format json` sets `is_error`. Nothing read that stream on failure, so the operator saw a bare `exited 1` and the actual message ("You've hit your usage limit") existed only in the agent's own session log under `~/.codex/sessions/`. The router now writes it to stderr, which both explains the failure and is what lets the classifier tell "out of credits" from "the work failed".
+
 ## 1.9.5 — 2026-09-28
 
 Both fixes came from using 1.9.3's own rework command on a stuck run.

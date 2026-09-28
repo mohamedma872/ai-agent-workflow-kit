@@ -83,6 +83,34 @@ function finalAnswer(agent, stdout, lastMessageFile) {
   if (parsed && typeof parsed.result === 'string') return parsed.result;
   return String(stdout || '').trim();
 }
+// A failing executor reports why in its own event stream, not on stderr: codex
+// --json ends with a task_complete carrying error.message (a usage limit, a
+// refusal, a crash), and claude --output-format json sets is_error with the
+// text in result. Nothing read that stream on failure, so the caller saw a bare
+// "exited 1" — indistinguishable between "out of credits, use the fallback" and
+// "the work itself failed, stop" — and the diagnosis only existed in the
+// agent's own session log.
+function errorText(node) {
+  if (!node || typeof node !== 'object') return '';
+  const parts = [];
+  if (typeof node.codex_error_info === 'string') parts.push(node.codex_error_info);
+  if (typeof node.message === 'string') parts.push(node.message);
+  return parts.join(': ');
+}
+function executorError(stdout) {
+  const found = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed[0] !== '{') continue;
+    let parsed = null;
+    try { parsed = JSON.parse(trimmed); } catch { continue; }
+    const direct = errorText(parsed.error) || errorText(parsed.payload && parsed.payload.error);
+    if (direct) found.push(direct);
+    else if (typeof parsed.error === 'string' && parsed.error) found.push(parsed.error);
+    else if (parsed.is_error && typeof parsed.result === 'string') found.push(parsed.result);
+  }
+  return found.length ? found[found.length - 1] : '';
+}
 function validateWorkflow(name, workflow, agents) {
   const problems = [];
   if (workflow.version !== 1) problems.push(`${name}: version must be 1`);
@@ -137,13 +165,35 @@ function execute(workflow, agents, roleName, args) {
   const answer = finalAnswer(resolved.agent, res.stdout || '', lastMessageFile);
   if (args['output-file']) { const output = path.resolve(args['output-file']); fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, answer.endsWith('\n') ? answer : `${answer}\n`); }
   if (res.stderr) process.stderr.write(res.stderr);
+  const failed = res.error || (typeof res.status === 'number' && res.status !== 0);
+  if (failed) { const why = executorError(res.stdout || ''); if (why) process.stderr.write(`${resolved.agentName}: ${why}\n`); }
   if (!args['output-file'] || args.print) process.stdout.write(answer.endsWith('\n') ? answer : `${answer}\n`);
   if (res.error) throw res.error;
   return typeof res.status === 'number' ? res.status : 1;
 }
 
+function selftest() {
+  const assert = require('assert');
+  // The line codex actually ends an exhausted run with (codex-cli 0.154.0).
+  const codex = [
+    '{"type":"session_meta","payload":{"session_id":"x","cwd":"/tmp"}}',
+    '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do the work"}]}}',
+    JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', last_agent_message: null, error: { message: "You've hit your usage limit.", codex_error_info: 'usage_limit_exceeded' } } }),
+  ].join('\n');
+  assert.strictEqual(executorError(codex), "usage_limit_exceeded: You've hit your usage limit.");
+  assert.strictEqual(executorError('{"is_error":true,"result":"Credit balance is too low"}'), 'Credit balance is too low');
+  assert.strictEqual(executorError('{"type":"result","is_error":false,"result":"all done"}'), '', 'a successful run reports no error');
+  assert.strictEqual(executorError('not json at all'), '', 'plain output is not mistaken for an error');
+  assert.strictEqual(executorError(''), '');
+  // A role artifact is a message, not a failure: nothing in the event stream
+  // other than an error node may be reported as one.
+  assert.strictEqual(executorError('{"type":"response_item","payload":{"type":"message","message":"hello"}}'), '');
+  console.log('router selftest OK');
+}
+
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2)); const [cmd, workflowName, roleOrStage] = args._; let agents;
+  if (process.argv.slice(2).includes('--selftest')) { selftest(); return; }
   try { agents = loadAgents(); } catch (e) { fail(e.message); }
   try {
     switch (cmd) {
@@ -171,4 +221,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };
+module.exports = { executorError, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };

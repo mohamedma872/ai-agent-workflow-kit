@@ -41,6 +41,12 @@ function classifyFailure(result) {
   if (result?.signal === 'SIGTERM' && /timeout/i.test(text)) return 'timeout';
   if (/guard-engine failure|\[ai-guard\]|permissionDecision.*deny|policy denial|plan gate:/i.test(text)) return 'policy';
   if (/not on PATH|command not found|ENOENT|unknown executor|no executor/i.test(text)) return 'unavailable';
+  // A usage limit, exhausted credits or a billing stop means this executor
+  // cannot run at all right now, however well-formed the work is. Classifying
+  // it as deterministic strands the role on an executor that has nothing left
+  // and makes the configured fallback unreachable in the one case it exists
+  // for, so the run stops with "exited 1" instead of switching agents.
+  if (/usage limit|usage_limit_exceeded|insufficient_quota|quota exceeded|out of credits|credit balance|billing/i.test(text)) return 'unavailable';
   if (/\b(429|502|503|504)\b|rate limit|temporar(?:y|ily)|ECONNRESET|EAI_AGAIN|socket hang up|network.*unavailable|service unavailable/i.test(text)) return 'transient';
   return 'deterministic';
 }
@@ -136,6 +142,18 @@ function selftest() {
   assert.strictEqual(resumeDecision(policy, [{ status: 'fail', exitType: 'deterministic' }]).allowed, false);
   assert.strictEqual(classifyFailure({ status: 1, stderr: 'HTTP 503 service unavailable' }), 'transient');
   assert.strictEqual(classifyFailure({ status: 1, stderr: '[ai-guard] plan gate: denied' }), 'policy');
+  // A real codex exhaustion, as the router now surfaces it: retryable, so the
+  // configured fallback executor is reached instead of the run stopping.
+  assert.strictEqual(classifyFailure({ status: 1, stderr: "codex: usage_limit_exceeded: You've hit your usage limit." }), 'unavailable');
+  assert.strictEqual(classifyFailure({ status: 1, stderr: 'claude: Credit balance is too low' }), 'unavailable');
+  assert.strictEqual(classifyFailure({ status: 1, stderr: 'flutter test: 1 test failed' }), 'deterministic');
+  const limited = { execution_defaults: { timeout: '20m', max_attempts: 2, retry_on: ['timeout', 'transient', 'unavailable'], backoff: '1s' }, roles: { implementation: { executor: 'codex', fallback: ['claude'] } } };
+  const limitedPolicy = resolveExecutionPolicy(limited, { id: 'implementation' }, 'implementation');
+  assert.strictEqual(canRetry(limitedPolicy, 'unavailable', 1), true);
+  const switched = [];
+  const afterLimit = executeWithPolicy(limitedPolicy, [], ({ executor, attemptNumber }) => { switched.push(executor); return attemptNumber === 1 ? { ok: false, exitType: 'unavailable', reason: 'usage limit', attemptId: 'u1' } : { ok: true, value: executor, attemptId: 'u2' }; }, () => {}, () => {});
+  assert.strictEqual(afterLimit.ok, true);
+  assert.deepStrictEqual(switched, ['codex', 'claude'], 'an exhausted executor hands the work to its fallback');
   const seen = [];
   const fallback = executeWithPolicy(policy, [], ({ executor, attemptNumber }) => { seen.push(executor); return attemptNumber === 1 ? { ok: false, exitType: 'timeout', reason: 'timed out', attemptId: 'a1' } : { ok: true, value: 'done', attemptId: 'a2' }; }, () => {}, () => {});
   assert.strictEqual(fallback.ok, true);
