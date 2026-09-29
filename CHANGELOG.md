@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.13 — 2026-09-29
+
+A screenshot checkpoint name stopped the device evidence stage from producing a single screenshot.
+
+- **Argument text was read as shell syntax in the capability check.** Mutating verbs were matched anywhere in the command, so the runtime's own capture command — `mobile-evidence.js capture <run> --platform android --name 01-fresh-install-login` — matched `\binstall\b`, because a hyphen is a word boundary. The role was refused with "may not run mutating shell commands", it correctly refused to work around the guard, and the stage produced no evidence at all; `02-rename-flow` failed the same way on `\brename\b`. Earlier runs happened to use names like `01-launch`, which is why this never showed up. A verb now only counts when it is the command being run, in any segment of a pipeline, so `rm -rf lib`, `ls && rm -rf build` and `cat a | tee lib/main.dart` are still denied. Patterns that are unambiguous as written stay matched anywhere: `sed -i`, `perl -pi`, history-rewriting `git` subcommands, redirects, an `fs` call with its parenthesis, and a package install that names its manager (`npm install`, `pod install`).
+
+This is the third defect of the same shape this release series — data inside a command being parsed as shell syntax — after 1.9.10 (quoted test evidence) and 1.9.11 (`2>&1`). Selftests now pin checkpoint names containing `install`, `rename` and `remove` as allowed, alongside the full set of genuinely mutating commands as denied.
 ## 1.9.12 — 2026-09-29
 
 Two ways a review stage could fail while the review itself was fine, both found by driving a feature that adds a native plugin.
