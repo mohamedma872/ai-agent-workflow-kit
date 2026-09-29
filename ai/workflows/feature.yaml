@@ -186,6 +186,13 @@ roles:
     artifact_schema: subagent-findings
     mcps: [context7]
 
+  conflict-arbitration:
+    executor: claude
+    purpose: Read every specialist finding and declare where two of them materially disagree, referencing the specialists' own finding ids, so the plan gate can stop on a real conflict.
+    read_only: true
+    artifact: 05-analysis/arbitration.md
+    artifact_schema: conflict-arbitration
+
   implementation:
     executor: codex
     fallback: [claude]
@@ -418,9 +425,13 @@ stages:
     roles: [docs, architect, qa-plan, security, performance, react-native, android, ios, flutter, backend, frontend, api-contract, dependency-migration]
     selective: true
 
+  - id: conflict-arbitration
+    role: conflict-arbitration
+    needs: [analysis]
+
   - id: plan
     owner: orchestrator
-    needs: [analysis]
+    needs: [conflict-arbitration]
     artifact: 06-plan.md
     artifact_schema: plan
 

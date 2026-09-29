@@ -90,8 +90,20 @@ function semanticProblems(name, data) {
       if (criteria.size && optionCriteria.size !== criteria.size) errors.push(`$.options[${option.id}].criterionScores: all options must score the same criteria`);
     }
   }
-  if (name === 'c4-model' && !/workspace\s*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace');
-  if (name === 'subagent-findings' && data.status !== 'pass') errors.push('$.status: subagent findings artifact must be pass before the role can complete');
+  // A Structurizr workspace is normally declared with a name and description:
+  //   workspace "my_app" "C4 model of ..." {
+  // The previous pattern required `workspace` to be followed immediately by `{`,
+  // so it accepted only the anonymous form and rejected every named workspace —
+  // that is, essentially every real model an agent produces.
+  if (name === 'c4-model' && !/\bworkspace\b[^{}]*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace, e.g. workspace "name" "description" {');
+  // The schema declares status as pass|blocked, but this rejected anything that
+  // was not pass — so a specialist that legitimately reported a blocker had its
+  // whole artifact thrown away as malformed, losing the findings that explained
+  // the block and killing the stage before any other specialist ran. A blocked
+  // artifact is valid; it must carry at least one finding saying why, and the
+  // engine marks the role blocked rather than complete.
+  if (name === 'subagent-findings' && !['pass', 'blocked'].includes(data.status)) errors.push(`$.status: subagent findings status must be pass or blocked, got ${JSON.stringify(data.status)}`);
+  if (name === 'subagent-findings' && data.status === 'blocked' && !(data.findings || []).length) errors.push('$.findings: a blocked specialist must report at least one finding explaining the blocker');
   if (name === 'review') {
     if (data.status !== 'pass') errors.push('$.status: review must be pass before the review role can complete');
     const unresolvedHigh = (data.findings || []).filter(f => f && f.resolved === false && ['critical', 'high'].includes(f.severity));
@@ -293,6 +305,16 @@ function renderMarkdown(name, data) {
     lines.push('','## Unverified scenarios','');if(!(data.unverifiedScenarios||[]).length)lines.push('- None');else for(const x of data.unverifiedScenarios)lines.push('- '+x);
     return lines.join('\n').trim()+'\n';
   }
+  if (name === 'conflict-arbitration') {
+    const escapeCell = s => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    const rows = Array.isArray(data.conflicts) ? data.conflicts : [];
+    const lines = [`# Specialist conflict arbitration`, '', `Status: **${String(data.status || '').toUpperCase()}**`, ''];
+    lines.push(`Read ${(data.consideredAgents || []).length} specialist artifact(s): ${(data.consideredAgents || []).join(', ') || '(none recorded)'}`, '');
+    if (!rows.length) { lines.push('No material disagreement between specialists.'); return lines.join('\n').trim() + '\n'; }
+    lines.push('| topic | severity | findings | why they cannot both be followed |', '|---|---|---|---|');
+    for (const c of rows) lines.push(`| ${escapeCell(c.topic)} | ${c.severity || '—'} | ${escapeCell(c.findingA)} vs ${escapeCell(c.findingB)} | ${escapeCell(c.reason)} |`);
+    return lines.join('\n').trim() + '\n';
+  }
   if (name === 'subagent-findings') {
     const escapeCell = s => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
     const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
@@ -379,6 +401,47 @@ function selftest() {
   materialize('subagent-findings', JSON.stringify(findings), findingsJson, findingsMd, 'TEST');
   assert.deepStrictEqual(validateArtifactData('subagent-findings', findings, 'TEST'), []);
   assert.ok(fs.readFileSync(findingsMd, 'utf8').includes('Example finding'));
+
+  // A specialist that legitimately reports a blocker is valid and must be kept:
+  // rejecting it discarded the findings that explained the block and killed the
+  // stage before any other specialist ran.
+  const blocked = { ...findings, status: 'blocked' };
+  assert.deepStrictEqual(validateArtifactData('subagent-findings', blocked, 'TEST'), [], 'a blocked specialist artifact is valid');
+  const blockedMd = path.join(temp, '05-analysis', 'blocked.md');
+  materialize('subagent-findings', JSON.stringify(blocked), path.join(temp, '05-analysis', 'blocked.json'), blockedMd, 'TEST');
+  assert.ok(fs.readFileSync(blockedMd, 'utf8').includes('Example finding'), 'its findings survive');
+  // But it must say why it is blocked.
+  assert.ok(validateArtifactData('subagent-findings', { ...blocked, findings: [] }, 'TEST')
+    .some(x => x.includes('at least one finding')), 'a blocked specialist must explain the blocker');
+  // The arbitration artifact is the only place a conflict can be declared, so it
+  // must validate and render; without a renderer the stage failed outright.
+  const arb = { schemaVersion: 1, runId: 'TEST', agent: 'conflict-arbitration', status: 'pass',
+    consideredAgents: ['security', 'performance'],
+    conflicts: [{ findingA: 'SEC-1', findingB: 'PERF-1', topic: 'token-storage', reason: 'Secure storage only cannot coexist with a plaintext synchronous read.', severity: 'high' }] };
+  assert.deepStrictEqual(validateArtifactData('conflict-arbitration', arb, 'TEST'), []);
+  const arbMd = path.join(temp, '05-analysis', 'arbitration.md');
+  materialize('conflict-arbitration', JSON.stringify(arb), path.join(temp, '05-analysis', 'arbitration.json'), arbMd, 'TEST');
+  const arbText = fs.readFileSync(arbMd, 'utf8');
+  assert.ok(arbText.includes('SEC-1') && arbText.includes('PERF-1'), 'both disputed findings are named');
+  assert.ok(arbText.includes('token-storage'), 'the disputed topic is rendered');
+  // An empty arbitration is valid and says so rather than rendering an empty table.
+  const none = { ...arb, conflicts: [] };
+  const noneMd = path.join(temp, '05-analysis', 'arbitration-none.md');
+  materialize('conflict-arbitration', JSON.stringify(none), path.join(temp, '05-analysis', 'arbitration-none.json'), noneMd, 'TEST');
+  assert.ok(fs.readFileSync(noneMd, 'utf8').includes('No material disagreement'));
+  // A conflict with no reason is not a conflict.
+  assert.ok(validateArtifactData('conflict-arbitration', { ...arb, conflicts: [{ findingA: 'A', findingB: 'B', topic: 'x' }] }, 'TEST').length > 0);
+
+  // A Structurizr workspace is normally named; only accepting the anonymous
+  // form rejected every real C4 model an agent produces.
+  const c4 = (dsl) => validateArtifactData('c4-model', { schemaVersion: 1, runId: 'TEST', structurizrDsl: dsl }, 'TEST')
+    .filter(x => x.includes('structurizrDsl'));
+  assert.deepStrictEqual(c4('workspace "my_app" "C4 model of the counter app" {\n  model {}\n}'), [], 'a named workspace is valid');
+  assert.deepStrictEqual(c4('workspace {\n  model {}\n}'), [], 'an anonymous workspace is still valid');
+  assert.ok(c4('a prose description of the architecture').length > 0, 'prose is not a workspace');
+
+  // And an unknown status is still rejected.
+  assert.ok(validateArtifactData('subagent-findings', { ...findings, status: 'done' }, 'TEST').length > 0);
 
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('structured artifact selftest OK');

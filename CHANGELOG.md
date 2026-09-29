@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.9 — 2026-09-29
+
+Driving the remaining features against real repositories: the whole-app architecture path, the mobile evidence retry, and specialist conflict detection.
+
+- **Specialist conflict detection could never fire.** `detectConflicts` requires one finding to name another in `conflictsWith`, and its own selftest pins that ("no explicit conflictsWith, no conflict") — but nothing ever populated that field, and no analysis role received another specialist's findings, so no specialist could know another finding's id. Shared tags alone never produced a conflict, so `conflicts.json` was always empty, the plan gate was never blocked by disagreement, and `agentic conflicts` / `agentic resolve` were unreachable. Proven on a run whose architect filed a high-severity finding titled "Security vs. cold-start conflict" tagged `conflict`: the run still recorded zero conflicts. A new read-only `conflict-arbitration` role now runs between analysis and plan, receives every specialist finding with its id through a new `specialist_findings` context input, and declares the material disagreements; the engine injects those declarations onto the raw findings so the existing detection, deduplication, resolution-preservation, plan gate and CLI all work unchanged. On its first live run it found three real contradictions, including one specialist requiring that a transiently unreadable Keychain item must not be deleted against another asserting that unreadable tokens are cleared.
+- **A specialist that reported a blocker had its artifact thrown away.** The `subagent-findings` schema declares `status` as `pass|blocked`, but validation rejected anything that was not `pass`, so a blocked specialist was treated as malformed: its findings were discarded, the stage failed, and the remaining specialists never ran. A blocked artifact is now valid and is materialized like any other, it must carry at least one finding explaining the blocker, unknown statuses are still rejected, and the engine marks that role blocked rather than complete so the findings survive for a human.
+- **The C4 stage rejected every named Structurizr workspace.** The check was `/workspace\s*\{/i`, which requires `workspace` to be followed immediately by `{`, so it accepted only the anonymous form and rejected `workspace "name" "description" {` — the normal, recommended syntax, and what an agent actually produces. Re-validating the exact artifact a real run had rejected now yields no errors.
 ## 1.9.8 — 2026-09-29
 
 A systematic pass over every advertised feature, driving each one against real repositories. Five defects, all of the same family: configuration and documented escape hatches that did not do what they said.

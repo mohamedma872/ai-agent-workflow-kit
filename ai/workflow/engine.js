@@ -261,9 +261,31 @@ function loadFindingArtifacts(id) {
   } catch { /* no analysis directory */ }
   return out;
 }
+// The conflicts the arbitration role declared, keyed to the specialists' own
+// finding ids. Nothing else in the workflow can produce these: specialists run
+// independently and never see each other's findings, so conflictsWith was
+// always empty and detectConflicts could never fire on a real run.
+function declaredConflicts(id) {
+  try { return JSON.parse(fs.readFileSync(path.join(runDir(id), '05-analysis', 'arbitration.json'), 'utf8')).conflicts || []; }
+  catch { return []; }
+}
 function synthesizeAnalysis(id) {
   const sources = loadFindingArtifacts(id); if (!sources.length) return { findings: [], conflicts: [] };
-  const findings = synthesize(sources); let conflicts = detectConflicts(findings);
+  const findings = synthesize(sources);
+  // Detection runs over the raw specialist findings, because those are the ids
+  // the arbitration role quotes and the ids `agentic conflicts` resolves back to
+  // a title and a recommendation.
+  const raw = sources.flatMap(x => (x.findings || []).map(f => ({ ...f, agent: x.agent })));
+  const byId = new Map(raw.map(f => [f.id, f]));
+  for (const pair of declaredConflicts(id)) {
+    const a = byId.get(pair.findingA), b = byId.get(pair.findingB);
+    if (!a || !b || a === b) continue;
+    const topic = String(pair.topic || 'disputed').toLowerCase();
+    a.tags = [...new Set([...(a.tags || []), topic])];
+    b.tags = [...new Set([...(b.tags || []), topic])];
+    a.conflictsWith = [...new Set([...(a.conflictsWith || []), b.id])];
+  }
+  let conflicts = detectConflicts(raw);
   const dir = path.join(runDir(id), '05-analysis'); fs.mkdirSync(dir, { recursive: true });
   try {
     const previous = JSON.parse(fs.readFileSync(path.join(dir, 'conflicts.json'), 'utf8')).conflicts || [];
@@ -341,6 +363,7 @@ function executeRole(id, wf, stage, roleName, output) {
   const result = executeWithPolicy(policy, previous, ({ executor, attemptNumber, timeoutMs }) => {
     const attemptId = `${id}-${stage.id}-${roleName}-${attemptNumber}-${Date.now()}`;
     const rawOutput = output ? path.join(engineDir(id), `${stage.id}-${roleName}-${attemptNumber}.raw`) : null;
+    let artifactStatus = null;
     if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* clean prior temp */ } }
     const args = [ROUTER, 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
     if (rawOutput) args.push('--output-file', rawOutput);
@@ -357,11 +380,14 @@ function executeRole(id, wf, stage, roleName, output) {
       if (output) {
         if (!rawOutput || !fs.existsSync(rawOutput)) throw new Error(`${executor} produced no artifact output`);
         const markdownFile = path.join(runDir(id), output);
-        if (schemaName) materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+        if (schemaName) {
+          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+          try { artifactStatus = JSON.parse(fs.readFileSync(sidecarForMarkdown(markdownFile), 'utf8')).status || null; } catch { artifactStatus = null; }
+        }
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
       }
       refreshWorktree(RUNTIME_ROOT, id);
-      return { ok: true, value: { executor, attemptId }, attemptId };
+      return { ok: true, value: { executor, attemptId, artifactStatus }, attemptId };
     } catch (error) {
       // Keep what the agent actually produced. Without it a rejected artifact is
       // undiagnosable: you cannot tell a failing build from malformed output.
@@ -397,7 +423,11 @@ function executeParallel(id, wf, stage) {
     role(id, 'begin', stage.id, roleName, preferredExecutor, 'engine execution');
     try {
       const execution = executeRole(id, wf, stage, roleName, (wf.roles[roleName] || {}).artifact);
-      role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
+      // A specialist that reports blockers has done its job: its artifact is kept
+      // and the role is marked blocked, so the findings survive for the human
+      // instead of being discarded as an invalid artifact.
+      if (execution.artifactStatus === 'blocked') role(id, 'block', stage.id, roleName, execution.executor || preferredExecutor, 'specialist reported blockers — see its findings');
+      else role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
     } catch (e) {
       role(id, 'fail', stage.id, roleName, preferredExecutor, e.message.slice(0, 180));
       throw e;

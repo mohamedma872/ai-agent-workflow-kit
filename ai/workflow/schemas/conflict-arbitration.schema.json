@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/conflict-arbitration-v1.json",
+  "title": "Conflict Arbitration Artifact",
+  "description": "Specialists analyse independently and never see each other's findings, so no specialist can reference another's finding id. This artifact is where material disagreements are declared, against the specialists' own finding ids, so the plan gate can stop on a real conflict.",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "agent", "status", "conflicts"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runId": {"type": "string", "minLength": 1},
+    "agent": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pass", "blocked"]},
+    "conflicts": {
+      "type": "array",
+      "description": "Only material disagreements: two findings that cannot both be acted on. Differing emphasis, or one finding adding detail to another, is not a conflict.",
+      "items": {
+        "type": "object",
+        "required": ["findingA", "findingB", "topic", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "findingA": {"type": "string", "minLength": 1, "description": "A finding id exactly as a specialist wrote it, e.g. SEC-1"},
+          "findingB": {"type": "string", "minLength": 1, "description": "The finding id it materially disagrees with"},
+          "topic": {"type": "string", "minLength": 2, "description": "Short slug for what is in dispute, e.g. token-storage"},
+          "reason": {"type": "string", "minLength": 20, "description": "Why the two recommendations cannot both be followed"},
+          "severity": {"enum": ["critical", "high", "medium", "low"]}
+        }
+      }
+    },
+    "consideredAgents": {
+      "type": "array",
+      "description": "The specialist artifacts that were read, so an empty conflict list is evidence rather than silence.",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}
