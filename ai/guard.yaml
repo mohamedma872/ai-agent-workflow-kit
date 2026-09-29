@@ -79,7 +79,10 @@ guarded_files:
   - ".codex/*"
   - ".husky/*"
 # a shell command naming a guarded file together with one of these is a rewrite → ask
-write_indicators: [">", ">>", tee, "sed -i", mv, cp, "ln ", install, dd, patch, "perl -pi", "perl -i", writeFileSync, copyFileSync, renameSync, appendFileSync, rmSync, unlinkSync]
+# ".write(" catches the python/ruby idioms open('f','w').write(...) and
+# File.write(...), which no other indicator matched, so `python3 -c` and
+# `ruby -e` could rewrite a guarded file unnoticed.
+write_indicators: [">", ">>", tee, "sed -i", mv, cp, "ln ", install, dd, patch, "perl -pi", "perl -i", writeFileSync, copyFileSync, renameSync, appendFileSync, rmSync, unlinkSync, ".write("]
 
 # ── Rule 3: destructive shell ──
 # `rm -r` on anything NOT in this list asks; a trailing "/" means "this prefix"

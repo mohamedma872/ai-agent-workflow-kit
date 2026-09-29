@@ -4,6 +4,16 @@
 
 - No unreleased runtime changes.
 
+## 1.9.11 — 2026-09-29
+
+Attacking 1.9.10 rather than trusting it. Twenty-two deliberate attempts to rewrite a guarded file found six that got through — three of them introduced by 1.9.10 itself.
+
+- **1.9.10 regression: interpreter flags combine, and more than one flag takes inline code.** Matching an exact `-c` or `-e` meant `bash -lc`, `sh -xc` and `node -p` had their quoted argument treated as data, so `bash -lc "echo bad > ai/guard.yaml"` was allowed. Each interpreter is now matched on the flag *letter* (`-\S*c`, `-\S*e`, plus `-p`/`--print`/`--eval`), and `xargs` is included. An interpreter merely running a script file is still not executing its quoted argument, so evidence text there stays data.
+- **`python3 -c` and `ruby -e` could rewrite a guarded file unnoticed** — this one pre-dates 1.9.10. Their write idioms, `open(f, 'w').write(...)` and `File.write(...)`, matched no entry in `write_indicators`, so the rule never fired whatever the quoting. `.write(` is now an indicator, in both `ai/guard.yaml` and the built-in defaults, so a project without its own guard pack is covered too.
+- **`2>&1` was read as a file write.** It duplicates a file descriptor and writes nothing, but it contains `>`, so every read-only role was denied its most ordinary way of capturing output: `flutter test` was allowed while `flutter test 2>&1 | tail -5` was denied. That is why the verification stage could not independently re-run the tests its own definition of done required, and the run failed with those items `blocked`. Descriptor duplication is removed before the mutation decision; a real redirect, append, `rm`, `cp` or `git commit` is still denied.
+- **Prose was still being mined for fake identities in the equivalence contract.** Symbol extraction ran before the prose filter, so a sentence collapsed to a one-word key that then looked short enough to be an identity: a whole-app refactor reported `removed=[main, MyHomePage, private] added=[class]`, where `private` came from "the private constructor (...)" and `class` from "A class is generated for each feature module". Prose is now recognised before extraction, and a declared type must be capitalised, which separates `class MyApp extends ...` from that sentence.
+
+Guard selftest is now 81/81, with the six bypasses pinned as cases; the adversarial suite reports zero holes and zero false positives; `10/10` runtime hardening regressions still reject real changes.
 ## 1.9.10 — 2026-09-29
 
 Found by driving a whole-app refactor: the guard blocked the one command the runtime tells the refactor role to run.

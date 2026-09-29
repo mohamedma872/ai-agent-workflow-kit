@@ -18,7 +18,14 @@ function capabilityDecision(payload,env=process.env){
  if(tool==='Agent') return {allow:false,reason:`role "${role}" may not spawn nested agents`};
  if(tool==='Bash'||tool==='Shell'){
    const cmd=String(input.command||'');
-   const mut=/\b(?:rm|mv|cp|touch|mkdir|install|patch|sed\s+-i|perl\s+-pi|git\s+(?:commit|push|reset|clean|checkout|merge|rebase))\b|(?:>>|>)(?!=)|writeFile|appendFile|rename|unlink|copyFile/i.test(cmd);
+   // `2>&1` duplicates a file descriptor, it does not write a file, but it
+   // contains ">" and so read every read-only role's most ordinary way of
+   // capturing output as a mutation: `flutter test 2>&1 | tail -5` was denied
+   // while plain `flutter test` was allowed. That is why the verification stage
+   // could not independently re-run the tests its own definition of done asked
+   // for. Descriptor duplication is removed before deciding.
+   const cmdForMut=cmd.replace(/\d*>&\d+/g,' ');
+   const mut=/\b(?:rm|mv|cp|touch|mkdir|install|patch|sed\s+-i|perl\s+-pi|git\s+(?:commit|push|reset|clean|checkout|merge|rebase))\b|(?:>>|>)(?!=)|writeFile|appendFile|rename|unlink|copyFile/i.test(cmdForMut);
    if(!mut) return tools.has('repository_read')||tools.has('test_execute')||tools.has('device_execute')?{allow:true,reason:'read/execute capability declared'}:{allow:false,reason:`role "${role}" has no shell capability`};
    if(tools.has('product_write')) return {allow:true,reason:'product_write declared'};
    if(tools.has('test_execute') && /\b(?:npm|yarn|pnpm|gradle|gradlew|xcodebuild|flutter|pytest|jest|vitest|detox|appium)\b/i.test(cmd)) return {allow:true,reason:'test_execute declared'};
@@ -34,6 +41,16 @@ function selftest(){
  assert.strictEqual(capabilityDecision({tool_name:'Read',tool_input:{file_path:'src/a.js'}},env).allow,true);
  assert.strictEqual(capabilityDecision({tool_name:'mcp__context7__get_library_docs',tool_input:{}},env).allow,true);
  assert.strictEqual(capabilityDecision({tool_name:'mcp__appium__create_session',tool_input:{}},env).allow,false);
+ // `2>&1` duplicates a descriptor, it does not write a file. Denying it stopped
+ // read-only roles capturing command output at all, which is why verification
+ // could not re-run the tests its definition of done required.
+ const orch={...env,AI_WORKFLOW_ROLE:'orchestration'};
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'flutter test 2>&1'}},orch).allow,true);
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'flutter analyze 2>&1 | tail -5'}},orch).allow,true);
+ // A real file write is still a write.
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'flutter test > out.txt'}},orch).allow,false);
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'echo x >> lib/main.dart'}},orch).allow,false);
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'rm -rf lib'}},orch).allow,false);
  const impl={...env,AI_WORKFLOW_ROLE:'implementation'};
  assert.strictEqual(capabilityDecision({tool_name:'Write',tool_input:{file_path:'src/a.js'}},impl).allow,true);
  console.log('subagent-capabilities selftest OK');

@@ -11,6 +11,8 @@ const assert=require('assert');
 // a genuine removal was indistinguishable from that noise.
 const NONE=/^(?:none|n\/a|no\b)/i;
 const NOT_A_CALL=new Set(['if','for','while','switch','catch','return','await','new']);
+const MAX_IDENTITY_WORDS=6;
+function isNote(key){return String(key).trim().split(/\s+/).length>MAX_IDENTITY_WORDS;}
 function normalizeEntry(text){
   let s=String(text==null?'':text).trim();
   if(!s||NONE.test(s)) return '';
@@ -19,8 +21,17 @@ function normalizeEntry(text){
   s=s.replace(/\((?:imported|exported|used|called|referenced)\s+by[^)]*\)/gi,' ');
   s=s.replace(/\((?:unchanged|new|added|same|preserved)\)/gi,' ');
   // A declaration's identity is its symbol, not the prose written around it.
-  const decl=s.match(/\b(?:class|enum|mixin|extension|typedef|interface|struct|protocol)\s+([A-Za-z_$][\w$]*)/);
+  // A declared type is capitalised in every language this runtime targets, which
+  // is what separates "class MyApp extends ..." from the prose "A class is
+  // generated for each feature module", whose next word is `is`.
+  const decl=s.match(/\b(?:class|enum|mixin|extension|typedef|interface|struct|protocol)\s+([A-Z_$][\w$]*)/);
   if(decl) return decl[1];
+  // Everything below mines an identity OUT of the text, so it must only run on
+  // text that IS an identity. Running it on a sentence invented one: "the private
+  // constructor (...)" became `private`, which then looked short enough to pass
+  // the prose filter and was reported as a removed public API. Prose is
+  // recognised before extraction, not after it.
+  if(isNote(s)) return '';
   const fn=s.match(/\b([A-Za-z_$][\w$]*)\s*\(/);
   // The identifier alone, with no parens: the same type appears as "class MyApp"
   // on one side and as a constructor "MyApp({...})" on the other, and those must
@@ -46,8 +57,6 @@ function diffSet(before=[],after=[]){
 // ("_MyHomePageState and _incrementCounter are library-private, so they are not
 // public API ...") is a note about the contract, not a member of it, and must
 // not read as one being removed. Identities are short; notes are sentences.
-const MAX_IDENTITY_WORDS=6;
-function isNote(key){return String(key).trim().split(/\s+/).length>MAX_IDENTITY_WORDS;}
 function identityOnly(keys){return keys.filter(k=>!isNote(k));}
 function contractDiff(before={},after={}){
   const fields=['publicApis','apiCalls','storageContracts','navigationContracts','analyticsEvents','errorBehavior','concurrencyBehavior','lifecycleBehavior'];
@@ -152,6 +161,22 @@ function selftest(){
     {publicApis:['class Foo']}
   );
   assert.strictEqual(noteOnly.publicApis,undefined,'a prose note is not an identity');
+  // Prose must never be mined for a fake identity. ARCH-001 produced exactly
+  // these keys before this was fixed: private, class, initialiser, initState.
+  const prosey=contractDiff(
+    {publicApis:['The private constructor is only reachable from the factory (see the migration plan)'],
+     lifecycleBehavior:['State is seeded from the widget initialiser rather than a late field, which keeps the first frame correct']},
+    {publicApis:['A class is generated for each feature module, as described in the target architecture document'],
+     lifecycleBehavior:['initState seeds the controller once per State object, matching the baseline exactly']}
+  );
+  assert.strictEqual(prosey.publicApis,undefined,'a sentence is not a removed public API');
+  assert.strictEqual(prosey.lifecycleBehavior,undefined,'a sentence is not a lifecycle change');
+  // A real declaration is still an identity however long its description is.
+  const longDecl=contractDiff(
+    {publicApis:['class MyHomePage extends StatefulWidget, final String title, createState() => _MyHomePageState() at lib/main.dart:L38-L54']},
+    {publicApis:['class MyHomePage extends StatefulWidget { final String title; createState() => _MyHomePageState() } (unchanged)']}
+  );
+  assert.strictEqual(longDecl.publicApis,undefined,'a long declaration still matches itself');
   // Identities that are not code symbols must still be compared.
   const keys=contractDiff({storageContracts:['key:session']},{storageContracts:['key:session-v2']});
   assert.deepStrictEqual(keys.storageContracts.removed,['key:session']);
