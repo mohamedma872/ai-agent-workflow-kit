@@ -72,6 +72,13 @@ function buildPrompt(workflow, resolved, taskPrompt) {
     `Mode: ${resolved.role.read_only ? 'READ-ONLY analysis/review. Do not modify product files.' : 'May edit product files only within the approved workflow scope.'}`,
   ];
   if (resolved.role.artifact) lines.push(`Expected workflow artifact: ${resolved.role.artifact}`);
+  // Reviews run before the mobile-evidence stage, so a reviewer that blocks on
+  // the absence of a device build or screenshots blocks on evidence this
+  // workflow only produces later — and because a review carrying an unresolved
+  // critical/high finding is rejected, the run dead-ends before the stage that
+  // would satisfy it. The requirement itself is not weakened: mobile-evidence
+  // and final verification still enforce it independently.
+  if (/-review$/.test(resolved.roleName)) lines.push('Stage order: on-device builds, Appium runs and screenshots are produced by the later mobile-evidence stage and are re-checked at final verification. Their absence at review time is expected — record it as an informational finding, never as a critical/high blocker.');
   lines.push('', 'Shared safety contract:', '- Follow AGENTS.md and the repository guardrails.', '- Never weaken or bypass ai/guard.yaml, hooks, workflow gates, or eval rules.', '- Do not commit, push, deploy, publish, or write to external systems unless the workflow explicitly allows it and the guard approves it.', '- Return a concise, evidence-based final result. Do not claim checks you did not run.', '', 'Task context:', taskPrompt.trim());
   return lines.join('\n');
 }

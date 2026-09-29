@@ -4,6 +4,12 @@
 
 - No unreleased runtime changes.
 
+## 1.9.12 — 2026-09-29
+
+Two ways a review stage could fail while the review itself was fine, both found by driving a feature that adds a native plugin.
+
+- **A leading status line threw away a passing review.** Structured artifacts were parsed with `JSON.parse` after unwrapping a Markdown fence, so an agent that prefixed one sentence — "Still working: I've finished reading the iOS-relevant auth code and am writing the review artifact." — had its whole artifact rejected as invalid JSON, failing the stage. That artifact said `status: "pass"`. The parser now extracts the first balanced JSON value, tracking string literals so braces inside a finding's text cannot end it early. Text containing no JSON is still an error, and a fence is still unwrapped first.
+- **Reviewers blocked on device evidence the workflow only produces later.** Reviews run before `mobile-evidence`, so an iOS reviewer raised a high-severity "there is no iOS build or on-device evidence" finding; because a review carrying an unresolved critical/high finding is rejected, the run dead-ended before reaching the stage that would have produced exactly that evidence. Review roles are now told that on-device builds, Appium runs and screenshots come from the later `mobile-evidence` stage and are re-checked at final verification, so their absence at review time is informational rather than a blocker. The requirement is not weakened — `mobile-evidence` and verification still enforce it independently — and the note reaches `*-review` roles only.
 ## 1.9.11 — 2026-09-29
 
 Attacking 1.9.10 rather than trusting it. Twenty-two deliberate attempts to rewrite a guarded file found six that got through — three of them introduced by 1.9.10 itself.

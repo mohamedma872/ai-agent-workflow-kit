@@ -125,11 +125,40 @@ function semanticProblems(name, data) {
   return errors;
 }
 
+// The first balanced JSON value in the text, ignoring braces inside strings.
+// Agents routinely prefix a status line — "Still working: ... writing the review
+// artifact." followed by the artifact — and discarding an otherwise valid, and in
+// one real case PASSING, review over a leading sentence costs a whole stage.
+function firstJsonValue(text) {
+  const open = text.search(/[{[]/);
+  if (open < 0) return null;
+  const closer = text[open] === '{' ? '}' : ']';
+  const opener = text[open];
+  let depth = 0, inString = false, escaped = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === opener) depth++;
+    else if (ch === closer) { depth--; if (depth === 0) return text.slice(open, i + 1); }
+  }
+  return null;
+}
 function parseJsonText(text) {
   let value = String(text || '').trim();
-  const fenced = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) value = fenced[1].trim();
-  return JSON.parse(value);
+  try { return JSON.parse(value); }
+  catch (error) {
+    const candidate = firstJsonValue(value);
+    if (candidate) { try { return JSON.parse(candidate); } catch { /* report the original failure */ } }
+    throw error;
+  }
 }
 
 function sidecarForMarkdown(file) {
@@ -401,6 +430,21 @@ function selftest() {
   materialize('subagent-findings', JSON.stringify(findings), findingsJson, findingsMd, 'TEST');
   assert.deepStrictEqual(validateArtifactData('subagent-findings', findings, 'TEST'), []);
   assert.ok(fs.readFileSync(findingsMd, 'utf8').includes('Example finding'));
+
+  // Agents routinely prefix a status line before the artifact. Discarding an
+  // otherwise valid — in one real run, PASSING — review over a leading sentence
+  // costs a whole stage, so the first balanced JSON value is extracted.
+  const wrapped = JSON.stringify(findings);
+  assert.deepStrictEqual(parseJsonText(wrapped), findings);
+  assert.deepStrictEqual(parseJsonText('Still working: writing the review artifact.\n\n' + wrapped), findings);
+  assert.deepStrictEqual(parseJsonText('```json\n' + wrapped + '\n```'), findings);
+  assert.deepStrictEqual(parseJsonText('Here it is:\n```json\n' + wrapped + '\n```'), findings);
+  assert.deepStrictEqual(parseJsonText(wrapped + '\n\nThat completes the review.'), findings);
+  // Braces inside strings must not end the value early.
+  const braces = { ...findings, findings: [{ ...findings.findings[0], title: 'uses {a: 1} and [b]' }] };
+  assert.deepStrictEqual(parseJsonText('note:\n' + JSON.stringify(braces)), braces);
+  // Text with no JSON at all is still an error.
+  assert.throws(() => parseJsonText('no json at all here'));
 
   // A specialist that legitimately reports a blocker is valid and must be kept:
   // rejecting it discarded the findings that explained the block and killed the
