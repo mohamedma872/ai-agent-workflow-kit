@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.9.15 — 2026-09-29
+
+Two failure modes where a stage looked fine and the run was not.
+
+- **An agent that wrote nothing no longer counts as success.** A role may declare `requires_changes: true`; if it exits cleanly having left the worktree untouched, that is recorded as `unavailable` rather than a pass, so the configured fallback executor takes the work. This was the worst failure mode in the runtime: codex, unable to run Flutter under `--sandbox workspace-write`, correctly refused to edit code and exited 0 — the role recorded a pass, the fallback never engaged, and the run only broke later at the checkpoint gate with an unrelated message. `implementation` sets the flag; `fixes` deliberately does not, because concluding that no change is needed is a legitimate outcome there, as a real run already demonstrated.
+- **A blocking review is recorded instead of discarded.** A review reporting an unresolved critical/high finding is well-formed — it is the verdict that blocks, not the artifact — but it was thrown away as invalid, leaving the findings only in `engine/<stage>-<role>.rejected`. The stage whose entire purpose is acting on review findings therefore never received the serious ones. The artifact is now written to `09-reviews/` first and the stage still fails, so the gate is unchanged while the findings survive where `fixes` and a retried implementation can read them. A genuinely malformed review is still discarded.
+
+`engine.js` gains a selftest covering the no-op check against a real git worktree: a clean tree fails, a tracked edit passes, a brand new untracked file passes, and a role without the flag is never affected.
 ## 1.9.14 — 2026-09-29
 
 Choosing which agent runs each role no longer means editing the workflow.

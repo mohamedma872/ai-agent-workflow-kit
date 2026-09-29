@@ -196,6 +196,10 @@ roles:
   implementation:
     executor: codex
     fallback: [claude]
+    # An approved plan that produces no diff means the agent did not implement it.
+    # `fixes` deliberately does not set this: concluding that no change is needed
+    # is a legitimate outcome there.
+    requires_changes: true
     execution:
       timeout: 45m
       max_attempts: 2

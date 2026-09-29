@@ -382,11 +382,28 @@ function validateArtifactFile(name, file, expectedRunId, options = {}) {
   return validateArtifactData(name, data, expectedRunId, options);
 }
 
+// A review that reports a real unresolved problem is well-formed: it is the
+// VERDICT that blocks, not the artifact. Throwing it away left the findings only
+// in engine/<stage>-<role>.rejected, so the stage whose whole purpose is acting
+// on review findings never received the serious ones. The artifact is written
+// first and the stage still fails, so the gate is unchanged and the findings
+// survive where fixes and a retried implementation can read them.
+const GATE_ONLY = [/^\$\.status: review must be pass/, /^\$\.findings: \d+ unresolved critical\/high finding/];
 function materialize(name, rawText, jsonFile, markdownFile, expectedRunId) {
   let data;
   try { data = parseJsonText(rawText); } catch (e) { throw new Error(`${name} output is not valid JSON: ${e.message}`); }
   const errors = validateArtifactData(name, data, expectedRunId);
-  if (errors.length) throw new Error(`${name} structured artifact rejected:\n- ${errors.join('\n- ')}`);
+  if (errors.length) {
+    const gateOnly = name === 'review' && errors.every(e => GATE_ONLY.some(rx => rx.test(e)));
+    if (gateOnly) {
+      fs.mkdirSync(path.dirname(jsonFile), { recursive: true });
+      fs.mkdirSync(path.dirname(markdownFile), { recursive: true });
+      fs.writeFileSync(jsonFile, JSON.stringify(data, null, 2) + '\n');
+      fs.writeFileSync(markdownFile, renderMarkdown(name, data));
+      throw new Error(`${name} reports unresolved findings (recorded at ${path.basename(markdownFile)}):\n- ${errors.join('\n- ')}`);
+    }
+    throw new Error(`${name} structured artifact rejected:\n- ${errors.join('\n- ')}`);
+  }
   fs.mkdirSync(path.dirname(jsonFile), { recursive: true });
   fs.mkdirSync(path.dirname(markdownFile), { recursive: true });
   fs.writeFileSync(jsonFile, JSON.stringify(data, null, 2) + '\n');
@@ -430,6 +447,26 @@ function selftest() {
   materialize('subagent-findings', JSON.stringify(findings), findingsJson, findingsMd, 'TEST');
   assert.deepStrictEqual(validateArtifactData('subagent-findings', findings, 'TEST'), []);
   assert.ok(fs.readFileSync(findingsMd, 'utf8').includes('Example finding'));
+
+  // A review that reports a real unresolved problem is well-formed: the verdict
+  // blocks, not the artifact. Throwing it away left the findings only in
+  // engine/*.rejected, so `fixes` never received the serious ones.
+  const revFinding = (severity, resolved) => ({
+    id: 'R-1', severity, summary: 'macOS keychain entitlement missing, so sign-in will not persist',
+    uncertainty: 'confirmed', confidence: 0.9,
+    evidence: [{ source: 'macos/Runner/Release.entitlements', detail: 'no keychain-access-groups entry present' }],
+    recommendation: 'Add the keychain-access-groups entitlement to both Runner entitlement files', resolved,
+  });
+  const revRaw = (severity, resolved, status) => JSON.stringify({ schemaVersion: 1, runId: 'TEST', reviewer: 'ios-review', status, findings: [revFinding(severity, resolved)] });
+  const revMd = path.join(temp, '09-reviews', 'ios-review.md');
+  assert.throws(() => materialize('review', revRaw('high', false, 'fail'), revMd.replace(/\.md$/, '.json'), revMd, 'TEST'), /unresolved findings/,
+    'a blocking review still fails the stage');
+  assert.ok(fs.existsSync(revMd), 'a blocking review is still recorded so fixes can read it');
+  assert.ok(fs.readFileSync(revMd, 'utf8').includes('keychain'), 'its findings survive');
+  // Genuinely malformed output is still discarded.
+  const badMd = path.join(temp, '09-reviews', 'bad.md');
+  assert.throws(() => materialize('review', JSON.stringify({ schemaVersion: 1, runId: 'WRONG', reviewer: 'x', status: 'pass', findings: [] }), badMd.replace(/\.md$/, '.json'), badMd, 'TEST'), /rejected/);
+  assert.ok(!fs.existsSync(badMd), 'a malformed review is not recorded');
 
   // Agents routinely prefix a status line before the artifact. Discarding an
   // otherwise valid — in one real run, PASSING — review over a leading sentence

@@ -183,6 +183,13 @@ function changedFileList(root) {
   return [...new Set([...(tracked.status === 0 ? String(tracked.stdout || '').split('\n') : []), ...(untracked.status === 0 ? String(untracked.stdout || '').split('\n') : [])].map(x => x.trim()).filter(Boolean))];
 }
 
+// A role declared `requires_changes` has not done its job if the worktree is
+// untouched, however the agent exited. Returns the reason, or null when fine.
+function noopFailure(wf, roleName, worktree) {
+  if (!wf || !wf.roles || !wf.roles[roleName] || !wf.roles[roleName].requires_changes) return null;
+  return changedFileList(worktree).length ? null : `${roleName} reported success but changed no files in the worktree`;
+}
+
 function promoteArchitectureAsCode(id) {
   const source = runDir(id);
   const root = productRoot(id);
@@ -386,6 +393,15 @@ function executeRole(id, wf, stage, roleName, output) {
         }
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
       }
+      // An agent that exits 0 having written nothing has not done the work, and
+      // reporting success is the worst failure mode here: the configured fallback
+      // never engages, and the run only breaks at a later gate with a confusing
+      // message. Seen for real when codex could not run Flutter under its sandbox
+      // and correctly refused to edit code — while the role still recorded a pass.
+      // Classified unavailable, which is retryable, so the next candidate executor
+      // gets the work.
+      const noop = noopFailure(wf, roleName, worktree);
+      if (noop) return { ok: false, exitType: 'unavailable', reason: noop, attemptId };
       refreshWorktree(RUNTIME_ROOT, id);
       return { ok: true, value: { executor, attemptId, artifactStatus }, attemptId };
     } catch (error) {
@@ -617,6 +633,29 @@ function runLoop(id, opts = {}) {
 }
 
 function selftest() {
+  {
+    const assert = require('assert');
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'noop-'));
+    spawnSync('git', ['init', '-q', tmp]);
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'one\n');
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: tmp });
+    const wf = { roles: { implementation: { requires_changes: true }, fixes: {} } };
+    // Clean worktree: a role that must change code has not done its job.
+    assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/);
+    // A role without the flag may legitimately change nothing.
+    assert.strictEqual(noopFailure(wf, 'fixes', tmp), null);
+    // A tracked edit counts.
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'two\n');
+    assert.strictEqual(noopFailure(wf, 'implementation', tmp), null);
+    // So does a brand new untracked file, which is how most implementations start.
+    spawnSync('git', ['checkout', '--', 'a.txt'], { cwd: tmp });
+    assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/);
+    fs.writeFileSync(path.join(tmp, 'new.dart'), 'class A {}\n');
+    assert.strictEqual(noopFailure(wf, 'implementation', tmp), null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
   const wf = { stages: [{ id: 'a' }, { id: 'b', needs: ['a'] }, { id: 'c', needs: ['b'] }] };
   assert.strictEqual(nextEligibleStage(wf, { phases: {} }).id, 'a');
   assert.strictEqual(nextEligibleStage(wf, { phases: { a: { status: 'pass' } } }).id, 'b');
@@ -653,4 +692,4 @@ try {
   else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
-module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
