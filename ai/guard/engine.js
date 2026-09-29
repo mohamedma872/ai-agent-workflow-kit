@@ -280,7 +280,18 @@ function bashRules(cmd, ctx, deny, ask) {
     deny('secrets shield: this command prints, copies, or sources a credential file — never load secrets into the context');
   }
   // 2 self-protection (shell edition)
-  if (tokens.some(tok => ctx.isGuardedPath(tok.replace(/^[<>]+/, ''))) && P.writeCmd.test(cmd)) {
+  // A quoted argument is data, not shell syntax. Write indicators were matched
+  // against the whole command, so `--test "mutant fails -> tests failed"` read as
+  // a redirect; combined with a guarded path this asked, and for codex every ask
+  // is a deny. That deadlocked the refactor workflow, because its checkpoint
+  // recorder lives under the guarded ai/workflow/* and the workflow requires
+  // passing free-text test evidence to it, where `->` and `>` are natural.
+  // ...unless an interpreter is executing that quoted argument, where the quotes
+  // hold code and not data: `node -e "...writeFileSync('ai/guard.yaml')..."` must
+  // still be caught.
+  const executesQuoted = /\b(?:node|deno|bun)\s+(?:-[^\s]+\s+)*-e\b|\b(?:python3?|ruby|perl)\s+(?:-[^\s]+\s+)*-[ce]\b|\b(?:ba|z|k)?sh\s+(?:-[^\s]+\s+)*-c\b|\beval\b/.test(cmd);
+  const unquoted = executesQuoted ? cmd : cmd.replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ');
+  if (tokens.some(tok => ctx.isGuardedPath(tok.replace(/^[<>]+/, ''))) && P.writeCmd.test(unquoted)) {
     ask('self-protection: this command rewrites the agent\'s guardrails, settings, or instructions — only the user changes those');
   }
   // 3 evidence + destructive rm (per target)
@@ -532,6 +543,18 @@ async function selftest() {
     ['--agent codex: git status → allow', P('Bash', { command: 'git status' }), {}, 'allow', null, { agent: 'codex' }],
     ['shell rewrite of settings → ask', P('Bash', { command: "sed -i '' 's/a/b/' .claude/settings.json" }), {}, 'ask'],
     ['node one-liner rewriting guard.yaml → ask', P('Bash', { command: 'node -e "require(\'fs\').writeFileSync(\'ai/guard.yaml\', \'{}\')"' }), {}, 'ask'],
+    // The refactor workflow tells the implementation role to record each
+    // checkpoint with ai/workflow/refactor-checkpoints.js, a guarded path, and to
+    // pass its real test evidence. Evidence naturally contains `->` and `>`, which
+    // were read as redirects into that guarded file: the command asked, every ask
+    // is a deny for codex, and the run deadlocked because the stage then failed
+    // for missing checkpoints. Quoted arguments are data, not shell syntax.
+    ['arrow inside a quoted argument is data, not a redirect → allow', P('Bash', { command: 'node ai/guard/engine.js --explain --note "null self-check: mutant fails -> Some tests failed"' }), {}, 'allow'],
+    ['> inside a quoted argument is data, not a redirect → allow', P('Bash', { command: 'node ai/guard/engine.js --explain --note "coverage > 80 percent"' }), {}, 'allow'],
+    // A real redirect into a guarded file still asks, quoted target or not.
+    ['redirect into a guarded file → ask', P('Bash', { command: 'echo broken > ai/guard.yaml' }), {}, 'ask'],
+    ['append into a guarded file → ask', P('Bash', { command: 'cat tmp.yaml >> ai/agents.yaml' }), {}, 'ask'],
+    ['redirect into a quoted guarded target → ask', P('Bash', { command: 'echo broken > "ai/guard.yaml"' }), {}, 'ask'],
     ['grep in the engine → allow', P('Bash', { command: 'grep -n budget ai/guard/engine.js' }), {}, 'allow'],
     ['rm -rf node_modules → allow', P('Bash', { command: 'rm -rf node_modules dist && npm ci' }), {}, 'allow'],
     ['rm -rf /tmp/x → allow', P('Bash', { command: 'rm -rf /tmp/ai-guard-scratch' }), {}, 'allow'],

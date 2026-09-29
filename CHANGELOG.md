@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.9.10 — 2026-09-29
+
+Found by driving a whole-app refactor: the guard blocked the one command the runtime tells the refactor role to run.
+
+- **Test evidence containing `->` or `>` was read as a shell redirect into a guarded file.** Rule 2 matched `write_indicators` (which include `>` and `>>`) against the whole command string, quotes included. The refactor workflow instructs the implementation role to record every increment with `ai/workflow/refactor-checkpoints.js` — a guarded path — and to pass its real test evidence, where an arrow is entirely natural. So `--test "null self-check: mutant fails -> Some tests failed"` asked, while the identical command with "then" instead of "->" was allowed. Every ask is a deny for codex, and it halted a headless claude run too; the stage then failed its checkpoint gate for every increment, deadlocking the run. Write indicators are now matched only outside quoted spans, because a quoted argument is data rather than shell syntax.
+- **Unless an interpreter is executing that quoted argument.** Stripping every quoted span would have let `node -e "require('fs').writeFileSync('ai/guard.yaml', '{}')"` through, which the guard's own selftest caught. When the command is `node -e`, `python -c`, `sh -c`, `perl -e` or `eval`, the quotes hold code and the full command is still scanned.
+
+Guard selftest is now 74/74, with five cases pinning this: an arrow and a bare `>` inside a quoted argument to a guarded-path command are allowed, while a redirect, an append, and a redirect to a *quoted* guarded target still ask.
 ## 1.9.9 — 2026-09-29
 
 Driving the remaining features against real repositories: the whole-app architecture path, the mobile evidence retry, and specialist conflict detection.
