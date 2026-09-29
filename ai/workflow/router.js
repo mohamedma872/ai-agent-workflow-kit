@@ -16,6 +16,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+const { projectRoot } = require('./paths');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'ai', 'workflows');
@@ -41,10 +42,51 @@ function listWorkflows() {
   if (!fs.existsSync(WORKFLOWS_DIR)) return [];
   return fs.readdirSync(WORKFLOWS_DIR).filter(f => f.endsWith('.yaml') || f.endsWith('.yml')).map(f => f.replace(/\.ya?ml$/, '')).sort();
 }
-function loadWorkflow(name) {
+// Which agent writes the code is a routing preference, not a safety gate, so a
+// project may choose it in .agentic/config.yaml without weakening anything:
+//
+//   executors:
+//     default: claude          # every role
+//     roles:
+//       implementation: codex  # or per role
+//
+// The chosen executor becomes the role's primary and whatever the workflow named
+// stays behind it as a fallback, so retries can still switch agents. Applying it
+// here, at load, means the router, the execution policy and the engine all agree
+// without any of them needing to know the setting exists.
+function loadExecutorPrefs(root) {
+  const file = path.join(root, '.agentic', 'config.yaml');
+  if (!fs.existsSync(file)) return null;
+  let data = null;
+  try { data = readYaml(file); } catch { return null; }
+  const ex = data && data.executors;
+  if (!ex || typeof ex !== 'object') return null;
+  const roles = ex.roles && typeof ex.roles === 'object' ? ex.roles : {};
+  const fallback = ex.default ? String(ex.default) : null;
+  if (!fallback && !Object.keys(roles).length) return null;
+  return { default: fallback, roles };
+}
+function applyExecutorPrefs(workflow, prefs) {
+  if (!prefs) return workflow;
+  for (const [name, role] of Object.entries(workflow.roles || {})) {
+    if (!role || typeof role !== 'object') continue;
+    const want = roles_pref(prefs, name);
+    if (!want || want === role.executor) continue;
+    const rest = [role.executor, ...(role.fallback || [])].filter(x => x && x !== want);
+    role.executor = want;
+    role.fallback = rest;
+  }
+  return workflow;
+}
+function roles_pref(prefs, name) {
+  const explicit = prefs.roles && prefs.roles[name];
+  return explicit ? String(explicit) : prefs.default;
+}
+function loadWorkflow(name, options = {}) {
   const file = workflowFile(name);
   if (!fs.existsSync(file)) throw new Error(`unknown workflow "${name}" — known: ${listWorkflows().join(', ') || '(none)'}`);
   const data = readYaml(file); data.name = data.name || name; data.roles = data.roles || {}; data.stages = data.stages || [];
+  if (options.executorPrefs !== false) applyExecutorPrefs(data, loadExecutorPrefs(options.projectRoot || projectRoot()));
   return { file, data };
 }
 function loadAgents() { if (!fs.existsSync(AGENTS_FILE)) throw new Error('ai/agents.yaml is missing'); return readYaml(AGENTS_FILE); }
@@ -195,6 +237,19 @@ function selftest() {
   // A role artifact is a message, not a failure: nothing in the event stream
   // other than an error node may be reported as one.
   assert.strictEqual(executorError('{"type":"response_item","payload":{"type":"message","message":"hello"}}'), '');
+  // A project may choose which agent runs each role. The chosen one becomes
+  // primary and the workflow's own choice stays behind it as a fallback.
+  const wf = () => ({ roles: { implementation: { executor: 'codex', fallback: ['claude'] }, 'code-review': { executor: 'claude' } } });
+  const asDefault = applyExecutorPrefs(wf(), { default: 'claude', roles: {} });
+  assert.strictEqual(asDefault.roles.implementation.executor, 'claude', 'executor preference applies');
+  assert.deepStrictEqual(asDefault.roles.implementation.fallback, ['codex'], 'the workflow choice becomes the fallback');
+  assert.strictEqual(asDefault.roles['code-review'].executor, 'claude', 'a role already on that executor is untouched');
+  assert.deepStrictEqual(asDefault.roles['code-review'].fallback, undefined);
+  const perRole = applyExecutorPrefs(wf(), { default: 'claude', roles: { implementation: 'codex' } });
+  assert.strictEqual(perRole.roles.implementation.executor, 'codex', 'a per-role setting beats the default');
+  assert.deepStrictEqual(applyExecutorPrefs(wf(), null).roles.implementation.executor, 'codex', 'no preference leaves the workflow alone');
+  // An absent or malformed config must never break loading.
+  assert.strictEqual(loadExecutorPrefs('/nonexistent-root-for-selftest'), null);
   console.log('router selftest OK');
 }
 
@@ -228,4 +283,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { executorError, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };
+module.exports = { executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };

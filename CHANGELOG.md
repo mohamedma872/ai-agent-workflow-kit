@@ -4,6 +4,24 @@
 
 - No unreleased runtime changes.
 
+## 1.9.14 — 2026-09-29
+
+Choosing which agent runs each role no longer means editing the workflow.
+
+- **`executors:` in `.agentic/config.yaml`.** A project can now route every role, or named roles, to a specific executor:
+
+  ```yaml
+  executors:
+    default: claude          # every role
+    roles:
+      implementation: codex  # or per role, overriding default
+  ```
+
+  The chosen executor becomes the role's primary and whatever `ai/workflows/feature.yaml` named stays behind it as a fallback, so a retry can still switch agents. The preference is applied when the workflow is loaded, so the router, the execution policy and the engine all agree without any of them needing to know the setting exists. An absent, malformed or empty block changes nothing, and `router.js check` still rejects an executor that `ai/agents.yaml` does not define.
+
+  This is routing, not policy: unlike `workflow.require_plan_approval`, which stays deliberately unwired because honouring it from an unprotected project file would let an ordinary edit disable the plan gate, choosing which agent writes the code weakens no guarantee. The plan approval, architecture selection and device evidence gates are unaffected.
+
+  Practical reason it exists: `implementation` and `fixes` default to codex, and codex cannot run Flutter under `--sandbox workspace-write` because Flutter writes its SDK cache outside the workspace. Until that is solved, a Flutter project can set `default: claude` instead of hand-editing the shipped workflow.
 ## 1.9.13 — 2026-09-29
 
 A screenshot checkpoint name stopped the device evidence stage from producing a single screenshot.
