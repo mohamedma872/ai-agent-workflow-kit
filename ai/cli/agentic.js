@@ -253,17 +253,6 @@ rag:
 #   default: claude        # every role
 #   roles:                 # or per role, overriding default
 #     implementation: codex
-
-# Enforced — read by ai/workflow/specs.js.
-# Run artifacts live in .agentic-runs/ and are gitignored, so every run derives
-# its requirements, acceptance criteria and definition of done from scratch.
-# Enable this and a run that reaches verification publishes them into
-# <dir>/<run-id>/, committed with the change, and every later run reads the
-# published specs as context so it builds on what was already agreed.
-# Publish an earlier run by hand with: agentic spec publish <run-id>
-# specs:
-#   enabled: true
-#   dir: specs
 `);
 
   writeIfMissing(path.join(agentic, 'knowledge.yaml'), `version: 1
@@ -371,8 +360,6 @@ Usage:
   agentic refactor-app <run-id> --request "..."
   agentic architecture <run-id> <option-id> [note]
   agentic report <run-id> [--json]
-  agentic spec [list]              Specifications published into the project
-  agentic spec publish <run-id>    Publish a run's requirements/AC/DoD to specs/
   agentic conflicts <run-id>       Specialist disagreements blocking the plan
   agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."
   agentic rag --query "..." [--role security] [--json]
@@ -518,30 +505,6 @@ function main() {
     return runNode(REPORT, [args[1], ...args.slice(2)], project);
   }
   // Unresolved specialist conflicts block the plan stage; these expose them.
-  if (command === 'spec') {
-    const { specsSettings, publishSpec, listSpecs } = require(path.join(RUNTIME_ROOT, 'ai', 'workflow', 'specs.js'));
-    const sub = args[1];
-    const settings = specsSettings(project);
-    if (sub === 'list' || !sub) {
-      const specs = listSpecs(project, settings.dir);
-      if (!specs.length) { console.log(settings.enabled ? `no specs published yet under ${settings.dir}/` : `spec publishing is off — set specs.enabled: true in .agentic/config.yaml`); return; }
-      for (const spec of specs) console.log(`${spec.id.padEnd(14)} ${spec.title}  (${spec.files.join(', ')})`);
-      return;
-    }
-    if (sub === 'publish') {
-      const id = args[2];
-      if (!id) throw new Error('spec publish requires a run id');
-      if (!settings.enabled) throw new Error('spec publishing is off — set specs.enabled: true in .agentic/config.yaml');
-      const runDir = path.join(stateRoot(project), id);
-      if (!fs.existsSync(runDir)) throw new Error(`unknown run ${id}`);
-      let request = null; try { request = fs.readFileSync(path.join(runDir, '00-request.md'), 'utf8'); } catch { request = null; }
-      const result = publishSpec({ runDir, projectRoot: project, id, dir: settings.dir, request });
-      console.log(`published ${result.dir}/`);
-      for (const file of result.files) console.log(`  ${file}`);
-      return;
-    }
-    throw new Error('usage: agentic spec [list] | spec publish <run-id>');
-  }
   if (command === 'conflicts') {
     if (!args[1]) throw new Error('conflicts requires a run id');
     return runNode(CONFLICTS, ['list', ...args.slice(1)], project);

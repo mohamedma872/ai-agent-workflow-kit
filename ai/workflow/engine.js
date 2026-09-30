@@ -8,7 +8,6 @@ const { spawnSync } = require('child_process');
 const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
 const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
-const { specsSettings, publishSpec } = require('./specs');
 const { roleContract, assertRequiredMcps } = require('./subagent-contracts');
 const { buildRoleContext } = require('./subagent-context');
 const { detectRefactorMode } = require('./refactor-mode');
@@ -190,25 +189,6 @@ function noopFailure(wf, roleName, worktree) {
   if (!wf || !wf.roles || !wf.roles[roleName] || !wf.roles[roleName].requires_changes) return null;
   return changedFileList(worktree).length ? null : `${roleName} reported success but changed no files in the worktree`;
 }
-
-function publishRunSpec(id) {
-  const settings = specsSettings(PROJECT_ROOT);
-  if (!settings.enabled) return null;
-  try {
-    const result = publishSpec({
-      runDir: runDir(id), projectRoot: PROJECT_ROOT, targetRoot: productRoot(id), id,
-      dir: settings.dir, request: readIfAny(path.join(runDir(id), '00-request.md')),
-      runtimeVersion: readIfAny(path.join(RUNTIME_ROOT, 'ai', 'runtime-version.json')) ? JSON.parse(readIfAny(path.join(RUNTIME_ROOT, 'ai', 'runtime-version.json'))).runtimeVersion : null,
-    });
-    console.log(`${id}: specification published to ${result.dir}/ (${result.files.length} files)`);
-    return result;
-  } catch (error) {
-    // A spec that cannot be written must not fail a verified run.
-    console.error(`${id}: specification not published — ${error.message}`);
-    return null;
-  }
-}
-function readIfAny(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } }
 
 function promoteArchitectureAsCode(id) {
   const source = runDir(id);
@@ -641,14 +621,7 @@ function runLoop(id, opts = {}) {
     const state = loadState(id);
     if (!state) throw new Error(`run ${id} does not exist`);
     const stage = nextEligibleStage(wf, state);
-    if (!stage) {
-      // The run is done and verified, so its specification is worth keeping.
-      // Published into the worktree, it is committed with the change; published
-      // any earlier it would sit in the run's own diff and make the
-      // requires_changes check answer yes for an agent that wrote no code.
-      publishRunSpec(id);
-      console.log(`${id}: workflow complete`); refreshWorktree(RUNTIME_ROOT, id); return 'complete';
-    }
+    if (!stage) { console.log(`${id}: workflow complete`); refreshWorktree(RUNTIME_ROOT, id); return 'complete'; }
     console.log(`${id}: ${stage.id} (${phaseStatus(state, stage.id)})`);
     const result = executeStage(id, wf, stage, opts);
     if (result === 'waiting' || result === 'dry-run') return result;
@@ -719,4 +692,4 @@ try {
   else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
-module.exports = { publishRunSpec, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

@@ -4,22 +4,15 @@
 
 - No unreleased runtime changes.
 
-## 1.9.16 — 2026-09-30
+## 1.9.17 — 2026-09-30
 
-Specifications that live in the repository and are reused by later runs.
+Reverts 1.9.16. Specification publishing is withdrawn at the user's request.
 
-- **`specs:` in `.agentic/config.yaml`.** Run artifacts live in `.agentic-runs/` and are gitignored, so every run derived its requirements, acceptance criteria and definition of done from scratch and nothing accumulated. With `specs.enabled: true`, a run that reaches verification publishes those three artifacts into `<dir>/<run-id>/` with a README index carrying the original request — inside the run worktree, so the specification is committed with the change that implemented it.
+- **`specs:` publishing and reuse is removed.** `ai/workflow/specs.js`, the `existing_specs` role input, the `orchestration` contract entry, the publish hook in the engine, the `agentic spec` command and the commented `specs:` block in the `agentic init` template are all gone. Runs no longer write `specs/<run-id>/` and no longer read published specs as context; run artifacts stay in `.agentic-runs/` as they did before 1.9.16.
 
-  ```yaml
-  specs:
-    enabled: true
-    dir: specs
-  ```
+Nothing else from 1.9.16 is affected, because the feature had exactly two edges into the rest of the runtime — one input to the context builder and one publish call after verification — and both are removed. A project that enabled it can delete the `specs:` block from `.agentic/config.yaml`; any `specs/` directory already committed is ordinary repository content and is left alone.
 
-- **Later runs read them.** A new `existing_specs` role input renders every published spec, and the `orchestration` contract declares it, so the roles that write requirements, acceptance criteria, the definition of done and the plan start from what was already agreed for that codebase instead of re-deriving it. With publishing off, nothing is read and nothing is written.
-- **`agentic spec`.** `agentic spec list` shows what a project has published; `agentic spec publish <run-id>` publishes an earlier run by hand, which is how an existing run gets its first spec.
-
-Publishing deliberately happens after verification, never before: written into the worktree any earlier it would sit in the run's own diff and make the 1.9.15 `requires_changes` check answer yes for an agent that wrote no product code. Spec ids are constrained to the run-id shape, so a spec cannot be written outside the configured directory, and a run with no spec artifacts is an error rather than an empty spec. A spec that cannot be written never fails a verified run.
+v1.9.16 remains tagged and released; this release removes the feature rather than rewriting that history.
 ## 1.9.15 — 2026-09-29
 
 Two failure modes where a stage looked fine and the run was not.
