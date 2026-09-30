@@ -4,6 +4,22 @@
 
 - No unreleased runtime changes.
 
+## 1.9.16 — 2026-09-30
+
+Specifications that live in the repository and are reused by later runs.
+
+- **`specs:` in `.agentic/config.yaml`.** Run artifacts live in `.agentic-runs/` and are gitignored, so every run derived its requirements, acceptance criteria and definition of done from scratch and nothing accumulated. With `specs.enabled: true`, a run that reaches verification publishes those three artifacts into `<dir>/<run-id>/` with a README index carrying the original request — inside the run worktree, so the specification is committed with the change that implemented it.
+
+  ```yaml
+  specs:
+    enabled: true
+    dir: specs
+  ```
+
+- **Later runs read them.** A new `existing_specs` role input renders every published spec, and the `orchestration` contract declares it, so the roles that write requirements, acceptance criteria, the definition of done and the plan start from what was already agreed for that codebase instead of re-deriving it. With publishing off, nothing is read and nothing is written.
+- **`agentic spec`.** `agentic spec list` shows what a project has published; `agentic spec publish <run-id>` publishes an earlier run by hand, which is how an existing run gets its first spec.
+
+Publishing deliberately happens after verification, never before: written into the worktree any earlier it would sit in the run's own diff and make the 1.9.15 `requires_changes` check answer yes for an agent that wrote no product code. Spec ids are constrained to the run-id shape, so a spec cannot be written outside the configured directory, and a run with no spec artifacts is an error rather than an empty spec. A spec that cannot be written never fails a verified run.
 ## 1.9.15 — 2026-09-29
 
 Two failure modes where a stage looked fine and the run was not.

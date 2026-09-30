@@ -1,6 +1,7 @@
 "use strict";
 const fs=require('fs'); const path=require('path'); const {spawnSync}=require('child_process');
 const {retrieve,formatContext,loadRagConfig}=require('../rag/hybrid-rag');
+const {specsSettings,specsContext}=require('./specs');
 
 const INPUT_FILES={
  request:['00-request.md'], acceptance_criteria:['02-acceptance-criteria.md'], definition_of_done:['03-definition-of-done.md'],
@@ -99,6 +100,7 @@ function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,
  for(const input of contract.inputs||[]){
    if(INPUT_FILES[input]) for(const f of INPUT_FILES[input]){const t=read(path.join(runDir,f));if(t)sections.push(`## ${f}\n${t.slice(0,16000)}`);}
    else if(input==='changed_files') sections.push('## Changed files\n'+(changedFiles(productRoot).join('\n')||'(none)'));
+   else if(input==='existing_specs'){const cfg=specsSettings(productRoot);if(cfg.enabled){const t=specsContext(productRoot,cfg.dir);if(t)sections.push(t);}}
    else if(input==='specialist_findings'){const t=specialistFindings(runDir);if(t)sections.push(t);}
    else if(input==='validated_review_findings'){const t=reviewArtifacts(runDir);if(t)sections.push(t);}
    else if(input==='dependency_versions'){const t=dependencyVersions(productRoot);if(t)sections.push(t);}

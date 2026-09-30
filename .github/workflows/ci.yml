@@ -118,6 +118,7 @@ jobs:
           node ai/workflow/artifacts.js selftest
           node ai/workflow/execution-policy.js --selftest
           node ai/workflow/router.js --selftest
+          node ai/workflow/specs.js --selftest
           node ai/workflow/attempts.js --selftest
           node ai/workflow/worktree.js selftest
           node ai/workflow/engine.js selftest

@@ -16,7 +16,7 @@ defaults:
 roles:
   orchestration:
     mode: read_only
-    inputs: [run_artifacts, repository_evidence]
+    inputs: [run_artifacts, repository_evidence, existing_specs]
     outputs: [stage_artifact]
     tools: [repository_read]
     mcps_optional: [atlassian, context7, github]
