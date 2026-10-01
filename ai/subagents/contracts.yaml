@@ -117,6 +117,12 @@ roles:
     outputs: [findings]
     tools: [repository_read]
     mcps_optional: [context7, playwright]
+  conflict-arbitration:
+    mode: read_only
+    inputs: [acceptance_criteria, definition_of_done, specialist_findings]
+    outputs: [conflicts]
+    tools: [repository_read]
+
   implementation:
     mode: workspace_write
     inputs: [approved_plan, acceptance_criteria, definition_of_done]
@@ -156,7 +162,12 @@ roles:
     mode: read_only
     inputs: [acceptance_criteria, definition_of_done, build_test, fixes]
     outputs: [device_evidence]
-    tools: [repository_read, device_execute]
+    # test_execute so the role can build the installable artifact device QC
+    # needs: no stage before it produces an APK or Runner.app, and Appium
+    # cannot drive a build that does not exist. Builds write only to the
+    # gitignored build/ output, never to product source, and the role still
+    # has no product_write — every evidence file is written by the runtime.
+    tools: [repository_read, device_execute, test_execute]
     mcps_optional: [appium]
 
   react-native:

@@ -243,6 +243,17 @@ rag:
   mode: hybrid           # hybrid | off (any other value behaves like off)
   top_k: 8               # max chunks returned per retrieval query
   context_budget: 24000  # max characters of retrieved context per role
+
+# Enforced — read by ai/workflow/router.js when the workflow is loaded.
+# Routing only: the plan approval, architecture selection and device evidence
+# gates are unaffected by this. The executor you choose becomes each role's
+# primary, and whatever ai/workflows/feature.yaml named stays behind it as a
+# fallback, so a retry can still switch agents. Delete the block to go back to
+# the workflow's own defaults.
+# executors:
+#   default: claude        # every role
+#   roles:                 # or per role, overriding default
+#     implementation: codex
 `);
 
   writeIfMissing(path.join(agentic, 'knowledge.yaml'), `version: 1

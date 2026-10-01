@@ -183,6 +183,13 @@ function changedFileList(root) {
   return [...new Set([...(tracked.status === 0 ? String(tracked.stdout || '').split('\n') : []), ...(untracked.status === 0 ? String(untracked.stdout || '').split('\n') : [])].map(x => x.trim()).filter(Boolean))];
 }
 
+// A role declared `requires_changes` has not done its job if the worktree is
+// untouched, however the agent exited. Returns the reason, or null when fine.
+function noopFailure(wf, roleName, worktree) {
+  if (!wf || !wf.roles || !wf.roles[roleName] || !wf.roles[roleName].requires_changes) return null;
+  return changedFileList(worktree).length ? null : `${roleName} reported success but changed no files in the worktree`;
+}
+
 function promoteArchitectureAsCode(id) {
   const source = runDir(id);
   const root = productRoot(id);
@@ -261,9 +268,31 @@ function loadFindingArtifacts(id) {
   } catch { /* no analysis directory */ }
   return out;
 }
+// The conflicts the arbitration role declared, keyed to the specialists' own
+// finding ids. Nothing else in the workflow can produce these: specialists run
+// independently and never see each other's findings, so conflictsWith was
+// always empty and detectConflicts could never fire on a real run.
+function declaredConflicts(id) {
+  try { return JSON.parse(fs.readFileSync(path.join(runDir(id), '05-analysis', 'arbitration.json'), 'utf8')).conflicts || []; }
+  catch { return []; }
+}
 function synthesizeAnalysis(id) {
   const sources = loadFindingArtifacts(id); if (!sources.length) return { findings: [], conflicts: [] };
-  const findings = synthesize(sources); let conflicts = detectConflicts(findings);
+  const findings = synthesize(sources);
+  // Detection runs over the raw specialist findings, because those are the ids
+  // the arbitration role quotes and the ids `agentic conflicts` resolves back to
+  // a title and a recommendation.
+  const raw = sources.flatMap(x => (x.findings || []).map(f => ({ ...f, agent: x.agent })));
+  const byId = new Map(raw.map(f => [f.id, f]));
+  for (const pair of declaredConflicts(id)) {
+    const a = byId.get(pair.findingA), b = byId.get(pair.findingB);
+    if (!a || !b || a === b) continue;
+    const topic = String(pair.topic || 'disputed').toLowerCase();
+    a.tags = [...new Set([...(a.tags || []), topic])];
+    b.tags = [...new Set([...(b.tags || []), topic])];
+    a.conflictsWith = [...new Set([...(a.conflictsWith || []), b.id])];
+  }
+  let conflicts = detectConflicts(raw);
   const dir = path.join(runDir(id), '05-analysis'); fs.mkdirSync(dir, { recursive: true });
   try {
     const previous = JSON.parse(fs.readFileSync(path.join(dir, 'conflicts.json'), 'utf8')).conflicts || [];
@@ -341,6 +370,7 @@ function executeRole(id, wf, stage, roleName, output) {
   const result = executeWithPolicy(policy, previous, ({ executor, attemptNumber, timeoutMs }) => {
     const attemptId = `${id}-${stage.id}-${roleName}-${attemptNumber}-${Date.now()}`;
     const rawOutput = output ? path.join(engineDir(id), `${stage.id}-${roleName}-${attemptNumber}.raw`) : null;
+    let artifactStatus = null;
     if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* clean prior temp */ } }
     const args = [ROUTER, 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
     if (rawOutput) args.push('--output-file', rawOutput);
@@ -357,11 +387,23 @@ function executeRole(id, wf, stage, roleName, output) {
       if (output) {
         if (!rawOutput || !fs.existsSync(rawOutput)) throw new Error(`${executor} produced no artifact output`);
         const markdownFile = path.join(runDir(id), output);
-        if (schemaName) materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+        if (schemaName) {
+          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+          try { artifactStatus = JSON.parse(fs.readFileSync(sidecarForMarkdown(markdownFile), 'utf8')).status || null; } catch { artifactStatus = null; }
+        }
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
       }
+      // An agent that exits 0 having written nothing has not done the work, and
+      // reporting success is the worst failure mode here: the configured fallback
+      // never engages, and the run only breaks at a later gate with a confusing
+      // message. Seen for real when codex could not run Flutter under its sandbox
+      // and correctly refused to edit code — while the role still recorded a pass.
+      // Classified unavailable, which is retryable, so the next candidate executor
+      // gets the work.
+      const noop = noopFailure(wf, roleName, worktree);
+      if (noop) return { ok: false, exitType: 'unavailable', reason: noop, attemptId };
       refreshWorktree(RUNTIME_ROOT, id);
-      return { ok: true, value: { executor, attemptId }, attemptId };
+      return { ok: true, value: { executor, attemptId, artifactStatus }, attemptId };
     } catch (error) {
       // Keep what the agent actually produced. Without it a rejected artifact is
       // undiagnosable: you cannot tell a failing build from malformed output.
@@ -397,7 +439,11 @@ function executeParallel(id, wf, stage) {
     role(id, 'begin', stage.id, roleName, preferredExecutor, 'engine execution');
     try {
       const execution = executeRole(id, wf, stage, roleName, (wf.roles[roleName] || {}).artifact);
-      role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
+      // A specialist that reports blockers has done its job: its artifact is kept
+      // and the role is marked blocked, so the findings survive for the human
+      // instead of being discarded as an invalid artifact.
+      if (execution.artifactStatus === 'blocked') role(id, 'block', stage.id, roleName, execution.executor || preferredExecutor, 'specialist reported blockers — see its findings');
+      else role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
     } catch (e) {
       role(id, 'fail', stage.id, roleName, preferredExecutor, e.message.slice(0, 180));
       throw e;
@@ -587,6 +633,29 @@ function runLoop(id, opts = {}) {
 }
 
 function selftest() {
+  {
+    const assert = require('assert');
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'noop-'));
+    spawnSync('git', ['init', '-q', tmp]);
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'one\n');
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: tmp });
+    const wf = { roles: { implementation: { requires_changes: true }, fixes: {} } };
+    // Clean worktree: a role that must change code has not done its job.
+    assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/);
+    // A role without the flag may legitimately change nothing.
+    assert.strictEqual(noopFailure(wf, 'fixes', tmp), null);
+    // A tracked edit counts.
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'two\n');
+    assert.strictEqual(noopFailure(wf, 'implementation', tmp), null);
+    // So does a brand new untracked file, which is how most implementations start.
+    spawnSync('git', ['checkout', '--', 'a.txt'], { cwd: tmp });
+    assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/);
+    fs.writeFileSync(path.join(tmp, 'new.dart'), 'class A {}\n');
+    assert.strictEqual(noopFailure(wf, 'implementation', tmp), null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
   const wf = { stages: [{ id: 'a' }, { id: 'b', needs: ['a'] }, { id: 'c', needs: ['b'] }] };
   assert.strictEqual(nextEligibleStage(wf, { phases: {} }).id, 'a');
   assert.strictEqual(nextEligibleStage(wf, { phases: { a: { status: 'pass' } } }).id, 'b');
@@ -623,4 +692,4 @@ try {
   else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
 } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 
-module.exports = { nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

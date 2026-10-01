@@ -50,7 +50,10 @@ const DEFAULTS = {
   guarded_files: ['ai/guard.yaml', 'ai/guard/*', 'ai/tasks/*/guard.yaml', 'ai/tasks/*/guard.js', 'ai/agents.yaml', 'AGENTS.md', 'CLAUDE.md',
     '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks/*', '.claude/rules/*', '.claude/keybindings.json',
     '.codex/*', '.husky/*'],
-  write_indicators: ['>', '>>', 'tee', 'sed -i', 'mv', 'cp', 'ln ', 'install', 'dd', 'patch', 'perl -pi', 'perl -i', 'writeFileSync', 'copyFileSync', 'renameSync', 'appendFileSync', 'rmSync', 'unlinkSync'],
+  // '.write(' catches the python/ruby idioms open('f','w').write(...) and
+  // File.write(...), which no other indicator matched, so `python3 -c` and
+  // `ruby -e` could rewrite a guarded file unnoticed.
+  write_indicators: ['>', '>>', 'tee', 'sed -i', 'mv', 'cp', 'ln ', 'install', 'dd', 'patch', 'perl -pi', 'perl -i', 'writeFileSync', 'copyFileSync', 'renameSync', 'appendFileSync', 'rmSync', 'unlinkSync', '.write('],
   disposable_dirs: ['/tmp/', '/private/tmp/', '$TMPDIR', '${TMPDIR}', '$CLAUDE_SCRATCHPAD', '${CLAUDE_SCRATCHPAD}', 'node_modules', 'build', 'dist', 'out', 'coverage', '.cache', '.next', '.turbo', '.parcel-cache', 'target', '__pycache__', '.pytest_cache', '.venv', 'venv', 'Pods', 'DerivedData', '.gradle', 'ios/build', 'ios/Pods', 'android/build', 'android/app/build', 'android/.gradle'],
   shell_rules: [
     { id: 'force-push', decision: 'deny', description: 'Force-push rewrites shared history — never from the agent', regex: 'git push\\b[^;&|]*\\s(-f|--force|--force-with-lease)\\b' },
@@ -310,7 +313,23 @@ function bashRules(cmd, ctx, deny, ask) {
     deny('secrets shield: this command prints, copies, or sources a credential file — never load secrets into the context');
   }
   // 2 self-protection (shell edition)
-  if (tokens.some(tok => ctx.isGuardedPath(tok.replace(/^[<>]+/, ''))) && P.writeCmd.test(cmd)) {
+  // A quoted argument is data, not shell syntax. Write indicators were matched
+  // against the whole command, so `--test "mutant fails -> tests failed"` read as
+  // a redirect; combined with a guarded path this asked, and for codex every ask
+  // is a deny. That deadlocked the refactor workflow, because its checkpoint
+  // recorder lives under the guarded ai/workflow/* and the workflow requires
+  // passing free-text test evidence to it, where `->` and `>` are natural.
+  // ...unless an interpreter is executing that quoted argument, where the quotes
+  // hold code and not data: `node -e "...writeFileSync('ai/guard.yaml')..."` must
+  // still be caught.
+  // Flags combine (`bash -lc`, `python3 -Sc`) and more than one flag takes inline
+  // code (`node -p` as well as `-e`), so each interpreter is matched on the flag
+  // LETTER rather than an exact flag. An interpreter merely running a script file
+  // — `node ai/workflow/foo.js --test "a -> b"` — is not executing the quoted
+  // argument and must stay out of this.
+  const executesQuoted = /\b(?:ba|z|k|da|a)?sh\s+(?:-\S+\s+)*-\S*c\b|\b(?:node|deno|bun)\s+(?:-\S+\s+)*(?:-e|--eval|-p|--print)\b|\bpython[0-9.]*\s+(?:-\S+\s+)*-\S*c\b|\b(?:ruby|perl)\s+(?:-\S+\s+)*-\S*e\b|\beval\b|\bxargs\b/.test(cmd);
+  const unquoted = executesQuoted ? cmd : cmd.replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ');
+  if (tokens.some(tok => ctx.isGuardedPath(tok.replace(/^[<>]+/, ''))) && P.writeCmd.test(unquoted)) {
     ask('self-protection: this command rewrites the agent\'s guardrails, settings, or instructions — only the user changes those');
   }
   // 3 evidence + destructive rm (per target)
@@ -580,6 +599,31 @@ async function selftest() {
     ['--agent codex: git status → allow', P('Bash', { command: 'git status' }), {}, 'allow', null, { agent: 'codex' }],
     ['shell rewrite of settings → ask', P('Bash', { command: "sed -i '' 's/a/b/' .claude/settings.json" }), {}, 'ask'],
     ['node one-liner rewriting guard.yaml → ask', P('Bash', { command: 'node -e "require(\'fs\').writeFileSync(\'ai/guard.yaml\', \'{}\')"' }), {}, 'ask'],
+    // The refactor workflow tells the implementation role to record each
+    // checkpoint with ai/workflow/refactor-checkpoints.js, a guarded path, and to
+    // pass its real test evidence. Evidence naturally contains `->` and `>`, which
+    // were read as redirects into that guarded file: the command asked, every ask
+    // is a deny for codex, and the run deadlocked because the stage then failed
+    // for missing checkpoints. Quoted arguments are data, not shell syntax.
+    ['arrow inside a quoted argument is data, not a redirect → allow', P('Bash', { command: 'node ai/guard/engine.js --explain --note "null self-check: mutant fails -> Some tests failed"' }), {}, 'allow'],
+    ['> inside a quoted argument is data, not a redirect → allow', P('Bash', { command: 'node ai/guard/engine.js --explain --note "coverage > 80 percent"' }), {}, 'allow'],
+    // A real redirect into a guarded file still asks, quoted target or not.
+    ['redirect into a guarded file → ask', P('Bash', { command: 'echo broken > ai/guard.yaml' }), {}, 'ask'],
+    ['append into a guarded file → ask', P('Bash', { command: 'cat tmp.yaml >> ai/agents.yaml' }), {}, 'ask'],
+    ['redirect into a quoted guarded target → ask', P('Bash', { command: 'echo broken > "ai/guard.yaml"' }), {}, 'ask'],
+    // Adversarial: every one of these rewrites a guarded file through an
+    // interpreter. Flags combine and several flags take inline code, so matching
+    // an exact `-c` or `-e` let bash -lc, sh -xc and node -p through; python and
+    // ruby write idioms matched no indicator at all.
+    ['bash -lc with combined flags → ask', P('Bash', { command: 'bash -lc "echo bad > ai/guard.yaml"' }), {}, 'ask'],
+    ['sh -xc with combined flags → ask', P('Bash', { command: 'sh -xc "echo bad > ai/guard.yaml"' }), {}, 'ask'],
+    ['node -p → ask', P('Bash', { command: 'node -p "require(\'fs\').writeFileSync(\'ai/guard.yaml\',\'{}\')"' }), {}, 'ask'],
+    ['python3 -c writing a guarded file → ask', P('Bash', { command: 'python3 -c "open(\'ai/guard.yaml\',\'w\').write(\'\')"' }), {}, 'ask'],
+    ['python3 -Sc with combined flags → ask', P('Bash', { command: 'python3 -Sc "open(\'ai/guard.yaml\',\'w\').write(\'\')"' }), {}, 'ask'],
+    ['ruby -e writing a guarded file → ask', P('Bash', { command: 'ruby -e "File.write(\'ai/guard.yaml\',\'\')"' }), {}, 'ask'],
+    // An interpreter merely running a script file is not executing the quoted
+    // argument, so evidence text there must stay data.
+    ['node running a script with arrow evidence → allow', P('Bash', { command: 'node ai/guard/engine.js --explain --note "a -> b"' }), {}, 'allow'],
     ['grep in the engine → allow', P('Bash', { command: 'grep -n budget ai/guard/engine.js' }), {}, 'allow'],
     ['rm -rf node_modules → allow', P('Bash', { command: 'rm -rf node_modules dist && npm ci' }), {}, 'allow'],
     ['rm -rf /tmp/x → allow', P('Bash', { command: 'rm -rf /tmp/ai-guard-scratch' }), {}, 'allow'],

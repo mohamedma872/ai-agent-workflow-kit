@@ -16,6 +16,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+const { projectRoot } = require('./paths');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'ai', 'workflows');
@@ -41,10 +42,51 @@ function listWorkflows() {
   if (!fs.existsSync(WORKFLOWS_DIR)) return [];
   return fs.readdirSync(WORKFLOWS_DIR).filter(f => f.endsWith('.yaml') || f.endsWith('.yml')).map(f => f.replace(/\.ya?ml$/, '')).sort();
 }
-function loadWorkflow(name) {
+// Which agent writes the code is a routing preference, not a safety gate, so a
+// project may choose it in .agentic/config.yaml without weakening anything:
+//
+//   executors:
+//     default: claude          # every role
+//     roles:
+//       implementation: codex  # or per role
+//
+// The chosen executor becomes the role's primary and whatever the workflow named
+// stays behind it as a fallback, so retries can still switch agents. Applying it
+// here, at load, means the router, the execution policy and the engine all agree
+// without any of them needing to know the setting exists.
+function loadExecutorPrefs(root) {
+  const file = path.join(root, '.agentic', 'config.yaml');
+  if (!fs.existsSync(file)) return null;
+  let data = null;
+  try { data = readYaml(file); } catch { return null; }
+  const ex = data && data.executors;
+  if (!ex || typeof ex !== 'object') return null;
+  const roles = ex.roles && typeof ex.roles === 'object' ? ex.roles : {};
+  const fallback = ex.default ? String(ex.default) : null;
+  if (!fallback && !Object.keys(roles).length) return null;
+  return { default: fallback, roles };
+}
+function applyExecutorPrefs(workflow, prefs) {
+  if (!prefs) return workflow;
+  for (const [name, role] of Object.entries(workflow.roles || {})) {
+    if (!role || typeof role !== 'object') continue;
+    const want = roles_pref(prefs, name);
+    if (!want || want === role.executor) continue;
+    const rest = [role.executor, ...(role.fallback || [])].filter(x => x && x !== want);
+    role.executor = want;
+    role.fallback = rest;
+  }
+  return workflow;
+}
+function roles_pref(prefs, name) {
+  const explicit = prefs.roles && prefs.roles[name];
+  return explicit ? String(explicit) : prefs.default;
+}
+function loadWorkflow(name, options = {}) {
   const file = workflowFile(name);
   if (!fs.existsSync(file)) throw new Error(`unknown workflow "${name}" — known: ${listWorkflows().join(', ') || '(none)'}`);
   const data = readYaml(file); data.name = data.name || name; data.roles = data.roles || {}; data.stages = data.stages || [];
+  if (options.executorPrefs !== false) applyExecutorPrefs(data, loadExecutorPrefs(options.projectRoot || projectRoot()));
   return { file, data };
 }
 function loadAgents() { if (!fs.existsSync(AGENTS_FILE)) throw new Error('ai/agents.yaml is missing'); return readYaml(AGENTS_FILE); }
@@ -72,6 +114,13 @@ function buildPrompt(workflow, resolved, taskPrompt) {
     `Mode: ${resolved.role.read_only ? 'READ-ONLY analysis/review. Do not modify product files.' : 'May edit product files only within the approved workflow scope.'}`,
   ];
   if (resolved.role.artifact) lines.push(`Expected workflow artifact: ${resolved.role.artifact}`);
+  // Reviews run before the mobile-evidence stage, so a reviewer that blocks on
+  // the absence of a device build or screenshots blocks on evidence this
+  // workflow only produces later — and because a review carrying an unresolved
+  // critical/high finding is rejected, the run dead-ends before the stage that
+  // would satisfy it. The requirement itself is not weakened: mobile-evidence
+  // and final verification still enforce it independently.
+  if (/-review$/.test(resolved.roleName)) lines.push('Stage order: on-device builds, Appium runs and screenshots are produced by the later mobile-evidence stage and are re-checked at final verification. Their absence at review time is expected — record it as an informational finding, never as a critical/high blocker.');
   lines.push('', 'Shared safety contract:', '- Follow AGENTS.md and the repository guardrails.', '- Never weaken or bypass ai/guard.yaml, hooks, workflow gates, or eval rules.', '- Do not commit, push, deploy, publish, or write to external systems unless the workflow explicitly allows it and the guard approves it.', '- Return a concise, evidence-based final result. Do not claim checks you did not run.', '', 'Task context:', taskPrompt.trim());
   return lines.join('\n');
 }
@@ -82,6 +131,34 @@ function finalAnswer(agent, stdout, lastMessageFile) {
   if (spec.file && fs.existsSync(lastMessageFile)) return fs.readFileSync(lastMessageFile, 'utf8');
   if (parsed && typeof parsed.result === 'string') return parsed.result;
   return String(stdout || '').trim();
+}
+// A failing executor reports why in its own event stream, not on stderr: codex
+// --json ends with a task_complete carrying error.message (a usage limit, a
+// refusal, a crash), and claude --output-format json sets is_error with the
+// text in result. Nothing read that stream on failure, so the caller saw a bare
+// "exited 1" — indistinguishable between "out of credits, use the fallback" and
+// "the work itself failed, stop" — and the diagnosis only existed in the
+// agent's own session log.
+function errorText(node) {
+  if (!node || typeof node !== 'object') return '';
+  const parts = [];
+  if (typeof node.codex_error_info === 'string') parts.push(node.codex_error_info);
+  if (typeof node.message === 'string') parts.push(node.message);
+  return parts.join(': ');
+}
+function executorError(stdout) {
+  const found = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed[0] !== '{') continue;
+    let parsed = null;
+    try { parsed = JSON.parse(trimmed); } catch { continue; }
+    const direct = errorText(parsed.error) || errorText(parsed.payload && parsed.payload.error);
+    if (direct) found.push(direct);
+    else if (typeof parsed.error === 'string' && parsed.error) found.push(parsed.error);
+    else if (parsed.is_error && typeof parsed.result === 'string') found.push(parsed.result);
+  }
+  return found.length ? found[found.length - 1] : '';
 }
 function validateWorkflow(name, workflow, agents) {
   const problems = [];
@@ -137,13 +214,48 @@ function execute(workflow, agents, roleName, args) {
   const answer = finalAnswer(resolved.agent, res.stdout || '', lastMessageFile);
   if (args['output-file']) { const output = path.resolve(args['output-file']); fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, answer.endsWith('\n') ? answer : `${answer}\n`); }
   if (res.stderr) process.stderr.write(res.stderr);
+  const failed = res.error || (typeof res.status === 'number' && res.status !== 0);
+  if (failed) { const why = executorError(res.stdout || ''); if (why) process.stderr.write(`${resolved.agentName}: ${why}\n`); }
   if (!args['output-file'] || args.print) process.stdout.write(answer.endsWith('\n') ? answer : `${answer}\n`);
   if (res.error) throw res.error;
   return typeof res.status === 'number' ? res.status : 1;
 }
 
+function selftest() {
+  const assert = require('assert');
+  // The line codex actually ends an exhausted run with (codex-cli 0.154.0).
+  const codex = [
+    '{"type":"session_meta","payload":{"session_id":"x","cwd":"/tmp"}}',
+    '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do the work"}]}}',
+    JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', last_agent_message: null, error: { message: "You've hit your usage limit.", codex_error_info: 'usage_limit_exceeded' } } }),
+  ].join('\n');
+  assert.strictEqual(executorError(codex), "usage_limit_exceeded: You've hit your usage limit.");
+  assert.strictEqual(executorError('{"is_error":true,"result":"Credit balance is too low"}'), 'Credit balance is too low');
+  assert.strictEqual(executorError('{"type":"result","is_error":false,"result":"all done"}'), '', 'a successful run reports no error');
+  assert.strictEqual(executorError('not json at all'), '', 'plain output is not mistaken for an error');
+  assert.strictEqual(executorError(''), '');
+  // A role artifact is a message, not a failure: nothing in the event stream
+  // other than an error node may be reported as one.
+  assert.strictEqual(executorError('{"type":"response_item","payload":{"type":"message","message":"hello"}}'), '');
+  // A project may choose which agent runs each role. The chosen one becomes
+  // primary and the workflow's own choice stays behind it as a fallback.
+  const wf = () => ({ roles: { implementation: { executor: 'codex', fallback: ['claude'] }, 'code-review': { executor: 'claude' } } });
+  const asDefault = applyExecutorPrefs(wf(), { default: 'claude', roles: {} });
+  assert.strictEqual(asDefault.roles.implementation.executor, 'claude', 'executor preference applies');
+  assert.deepStrictEqual(asDefault.roles.implementation.fallback, ['codex'], 'the workflow choice becomes the fallback');
+  assert.strictEqual(asDefault.roles['code-review'].executor, 'claude', 'a role already on that executor is untouched');
+  assert.deepStrictEqual(asDefault.roles['code-review'].fallback, undefined);
+  const perRole = applyExecutorPrefs(wf(), { default: 'claude', roles: { implementation: 'codex' } });
+  assert.strictEqual(perRole.roles.implementation.executor, 'codex', 'a per-role setting beats the default');
+  assert.deepStrictEqual(applyExecutorPrefs(wf(), null).roles.implementation.executor, 'codex', 'no preference leaves the workflow alone');
+  // An absent or malformed config must never break loading.
+  assert.strictEqual(loadExecutorPrefs('/nonexistent-root-for-selftest'), null);
+  console.log('router selftest OK');
+}
+
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2)); const [cmd, workflowName, roleOrStage] = args._; let agents;
+  if (process.argv.slice(2).includes('--selftest')) { selftest(); return; }
   try { agents = loadAgents(); } catch (e) { fail(e.message); }
   try {
     switch (cmd) {
@@ -171,4 +283,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };
+module.exports = { executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };

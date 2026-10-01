@@ -13,7 +13,7 @@ const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { validateAttestation } = require('./evidence-attestation');
 const { validateArtifactFile, sidecarForMarkdown } = require('../../workflow/artifacts');
-const { runtimeRoot, projectRoot, stateRoot } = require('../../workflow/paths');
+const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../../workflow/paths');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -207,9 +207,9 @@ function verificationEvidenceProblem(id, state, options = {}) {
   if (!evidence.execution.attemptId) return 'mobile evidence execution has no attemptId';
   const platforms = evidence.execution.platforms || evidence.platforms || [];
   if (!Array.isArray(platforms) || !platforms.length) return 'mobile evidence execution has no required platforms';
-  if (evidence.screenshotCount < 1) return `mobile screenshot evidence is required but ai/runs/${id}/device/screenshots/ contains no screenshots`;
-  if (!evidence.manifest) return `mobile screenshot evidence is required but ai/runs/${id}/device/mobile-device-qc.md is missing`;
-  if (!evidence.attestation) return `mobile screenshot evidence is required but ai/runs/${id}/device/evidence.json is missing`;
+  if (evidence.screenshotCount < 1) return `mobile screenshot evidence is required but ${relativeStatePath(id, 'device', 'screenshots')}/ contains no screenshots`;
+  if (!evidence.manifest) return `mobile screenshot evidence is required but ${relativeStatePath(id, 'device', 'mobile-device-qc.md')} is missing`;
+  if (!evidence.attestation) return `mobile screenshot evidence is required but ${relativeStatePath(id, 'device', 'evidence.json')} is missing`;
   const attestationErrors = validateAttestation(evidenceFile(id), {
     runId: id,
     attemptId: evidence.execution.attemptId,
@@ -481,8 +481,8 @@ try {
       fs.mkdirSync(path.join(RUNS, id, '09-reviews'), { recursive: true });
       fs.mkdirSync(screenshotDir(id), { recursive: true });
       let state = load(id);
-      if (!state) { state = ensureShape(null, id); atomicSave(id, state); console.log(`created ai/runs/${id}/`); }
-      else { state = ensureShape(state, id); if (reconcileState(id, state)) atomicSave(id, state); console.log(`ai/runs/${id}/ exists — resuming`); }
+      if (!state) { state = ensureShape(null, id); atomicSave(id, state); console.log(`created ${relativeStatePath(id)}/`); }
+      else { state = ensureShape(state, id); if (reconcileState(id, state)) atomicSave(id, state); console.log(`${relativeStatePath(id)}/ exists — resuming`); }
       fs.writeFileSync(ACTIVE, `${id}\n`);
       render(id, state);
       break;
@@ -599,11 +599,20 @@ try {
       // recorded attempts and refuses a rerun after a deterministic failure
       // ("last failure type deterministic is not retryable"), so the spent
       // attempts for what is being retried have to go too.
+      // Clearing attempts also erases why the work failed, which is exactly what
+      // the next agent needs, so the last reason is kept aside as feedback.
+      const rememberFailure = (phaseId, roleName, attempts) => {
+        const last = [...(attempts || [])].reverse().find(a => a && a.reason);
+        if (!last) return;
+        state.lastFailures ||= {};
+        state.lastFailures[phaseId] ||= {};
+        state.lastFailures[phaseId][roleName || phaseId] = { reason: String(last.reason).slice(0, 1200), at: now() };
+      };
       const clearAttempts = (phaseId, roleName) => {
         const forPhase = state.executionAttempts?.[phaseId];
         if (!forPhase) return;
-        if (roleName) delete forPhase[roleName];
-        else for (const key of Object.keys(forPhase)) delete forPhase[key];
+        if (roleName) { rememberFailure(phaseId, roleName, forPhase[roleName]); delete forPhase[roleName]; }
+        else for (const key of Object.keys(forPhase)) { rememberFailure(phaseId, key, forPhase[key]); delete forPhase[key]; }
         if (!Object.keys(forPhase).length) delete state.executionAttempts[phaseId];
       };
       for (const group of ROLE_GROUPS) {
@@ -641,6 +650,24 @@ try {
           clearAttempts(name);
           record(state, { kind: 'phase', phase: name, action: 'rework', from, to: 'pending', reason: 'rework requested' });
           retried.push(`${name} (rework from ${from})`);
+          // Rework means "redo from here": the stage that failed downstream is
+          // why we are reworking, and it keeps its spent attempts otherwise —
+          // so the resume stalls again on the previous deterministic failure.
+          for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
+            if (gates.has(later)) continue;
+            const status = phaseStatus(state, later);
+            if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
+            state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
+            clearAttempts(later);
+            for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {
+              if (!['fail', 'blocked', 'in_progress'].includes(roleState?.status)) continue;
+              // Keep the note: it says what went wrong, and the reworked role reads it.
+              state.roles[later][role] = { ...roleState, status: 'pending', updatedAt: now() };
+              clearAttempts(later, role);
+            }
+            record(state, { kind: 'phase', phase: later, action: 'rework-downstream', from: status, to: 'pending', reason: `reset for rework of ${name}` });
+            retried.push(`${later} (downstream of ${name})`);
+          }
         }
       }
       if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
@@ -656,7 +683,7 @@ try {
       if (!safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('unknown run');
       if (!optionId || !/^[A-Za-z0-9._-]{1,80}$/.test(optionId)) throw new Error('architecture-select requires a valid option id');
       const optionsFile = path.join(RUNS, id, '05-architecture-options.json');
-      if (!fs.existsSync(optionsFile)) throw new Error(`ai/runs/${id}/05-architecture-options.json is missing`);
+      if (!fs.existsSync(optionsFile)) throw new Error(`${relativeStatePath(id, '05-architecture-options.json')} is missing`);
       const artifactProblem = phaseArtifactProblem(id, 'architecture-options');
       if (artifactProblem) throw new Error(`cannot select architecture: ${artifactProblem}`);
       const options = JSON.parse(fs.readFileSync(optionsFile, 'utf8'));
@@ -691,7 +718,7 @@ try {
       const id = resolveId(rest[0]);
       if (!safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('unknown run');
       const plan = path.join(RUNS, id, '06-plan.md');
-      if (!fs.existsSync(plan) || fs.statSync(plan).size < 80) throw new Error(`ai/runs/${id}/06-plan.md is missing or empty — nothing to approve`);
+      if (!fs.existsSync(plan) || fs.statSync(plan).size < 80) throw new Error(`${relativeStatePath(id, '06-plan.md')} is missing or empty — nothing to approve`);
       const planProblem = phaseArtifactProblem(id, 'plan');
       if (planProblem) throw new Error(`cannot approve plan: ${planProblem}`);
       const state = ensureShape(load(id), id);

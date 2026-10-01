@@ -90,8 +90,20 @@ function semanticProblems(name, data) {
       if (criteria.size && optionCriteria.size !== criteria.size) errors.push(`$.options[${option.id}].criterionScores: all options must score the same criteria`);
     }
   }
-  if (name === 'c4-model' && !/workspace\s*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace');
-  if (name === 'subagent-findings' && data.status !== 'pass') errors.push('$.status: subagent findings artifact must be pass before the role can complete');
+  // A Structurizr workspace is normally declared with a name and description:
+  //   workspace "my_app" "C4 model of ..." {
+  // The previous pattern required `workspace` to be followed immediately by `{`,
+  // so it accepted only the anonymous form and rejected every named workspace —
+  // that is, essentially every real model an agent produces.
+  if (name === 'c4-model' && !/\bworkspace\b[^{}]*\{/i.test(data.structurizrDsl || '')) errors.push('$.structurizrDsl: expected a Structurizr DSL workspace, e.g. workspace "name" "description" {');
+  // The schema declares status as pass|blocked, but this rejected anything that
+  // was not pass — so a specialist that legitimately reported a blocker had its
+  // whole artifact thrown away as malformed, losing the findings that explained
+  // the block and killing the stage before any other specialist ran. A blocked
+  // artifact is valid; it must carry at least one finding saying why, and the
+  // engine marks the role blocked rather than complete.
+  if (name === 'subagent-findings' && !['pass', 'blocked'].includes(data.status)) errors.push(`$.status: subagent findings status must be pass or blocked, got ${JSON.stringify(data.status)}`);
+  if (name === 'subagent-findings' && data.status === 'blocked' && !(data.findings || []).length) errors.push('$.findings: a blocked specialist must report at least one finding explaining the blocker');
   if (name === 'review') {
     if (data.status !== 'pass') errors.push('$.status: review must be pass before the review role can complete');
     const unresolvedHigh = (data.findings || []).filter(f => f && f.resolved === false && ['critical', 'high'].includes(f.severity));
@@ -113,11 +125,40 @@ function semanticProblems(name, data) {
   return errors;
 }
 
+// The first balanced JSON value in the text, ignoring braces inside strings.
+// Agents routinely prefix a status line — "Still working: ... writing the review
+// artifact." followed by the artifact — and discarding an otherwise valid, and in
+// one real case PASSING, review over a leading sentence costs a whole stage.
+function firstJsonValue(text) {
+  const open = text.search(/[{[]/);
+  if (open < 0) return null;
+  const closer = text[open] === '{' ? '}' : ']';
+  const opener = text[open];
+  let depth = 0, inString = false, escaped = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === opener) depth++;
+    else if (ch === closer) { depth--; if (depth === 0) return text.slice(open, i + 1); }
+  }
+  return null;
+}
 function parseJsonText(text) {
   let value = String(text || '').trim();
-  const fenced = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) value = fenced[1].trim();
-  return JSON.parse(value);
+  try { return JSON.parse(value); }
+  catch (error) {
+    const candidate = firstJsonValue(value);
+    if (candidate) { try { return JSON.parse(candidate); } catch { /* report the original failure */ } }
+    throw error;
+  }
 }
 
 function sidecarForMarkdown(file) {
@@ -293,6 +334,16 @@ function renderMarkdown(name, data) {
     lines.push('','## Unverified scenarios','');if(!(data.unverifiedScenarios||[]).length)lines.push('- None');else for(const x of data.unverifiedScenarios)lines.push('- '+x);
     return lines.join('\n').trim()+'\n';
   }
+  if (name === 'conflict-arbitration') {
+    const escapeCell = s => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    const rows = Array.isArray(data.conflicts) ? data.conflicts : [];
+    const lines = [`# Specialist conflict arbitration`, '', `Status: **${String(data.status || '').toUpperCase()}**`, ''];
+    lines.push(`Read ${(data.consideredAgents || []).length} specialist artifact(s): ${(data.consideredAgents || []).join(', ') || '(none recorded)'}`, '');
+    if (!rows.length) { lines.push('No material disagreement between specialists.'); return lines.join('\n').trim() + '\n'; }
+    lines.push('| topic | severity | findings | why they cannot both be followed |', '|---|---|---|---|');
+    for (const c of rows) lines.push(`| ${escapeCell(c.topic)} | ${c.severity || '—'} | ${escapeCell(c.findingA)} vs ${escapeCell(c.findingB)} | ${escapeCell(c.reason)} |`);
+    return lines.join('\n').trim() + '\n';
+  }
   if (name === 'subagent-findings') {
     const escapeCell = s => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
     const lines = [`# Subagent findings — ${data.agent}`, '', `Status: **${data.status.toUpperCase()}**`, '', '| id | severity | uncertainty | confidence | finding | evidence |', '|---|---|---|---:|---|---|'];
@@ -331,11 +382,28 @@ function validateArtifactFile(name, file, expectedRunId, options = {}) {
   return validateArtifactData(name, data, expectedRunId, options);
 }
 
+// A review that reports a real unresolved problem is well-formed: it is the
+// VERDICT that blocks, not the artifact. Throwing it away left the findings only
+// in engine/<stage>-<role>.rejected, so the stage whose whole purpose is acting
+// on review findings never received the serious ones. The artifact is written
+// first and the stage still fails, so the gate is unchanged and the findings
+// survive where fixes and a retried implementation can read them.
+const GATE_ONLY = [/^\$\.status: review must be pass/, /^\$\.findings: \d+ unresolved critical\/high finding/];
 function materialize(name, rawText, jsonFile, markdownFile, expectedRunId) {
   let data;
   try { data = parseJsonText(rawText); } catch (e) { throw new Error(`${name} output is not valid JSON: ${e.message}`); }
   const errors = validateArtifactData(name, data, expectedRunId);
-  if (errors.length) throw new Error(`${name} structured artifact rejected:\n- ${errors.join('\n- ')}`);
+  if (errors.length) {
+    const gateOnly = name === 'review' && errors.every(e => GATE_ONLY.some(rx => rx.test(e)));
+    if (gateOnly) {
+      fs.mkdirSync(path.dirname(jsonFile), { recursive: true });
+      fs.mkdirSync(path.dirname(markdownFile), { recursive: true });
+      fs.writeFileSync(jsonFile, JSON.stringify(data, null, 2) + '\n');
+      fs.writeFileSync(markdownFile, renderMarkdown(name, data));
+      throw new Error(`${name} reports unresolved findings (recorded at ${path.basename(markdownFile)}):\n- ${errors.join('\n- ')}`);
+    }
+    throw new Error(`${name} structured artifact rejected:\n- ${errors.join('\n- ')}`);
+  }
   fs.mkdirSync(path.dirname(jsonFile), { recursive: true });
   fs.mkdirSync(path.dirname(markdownFile), { recursive: true });
   fs.writeFileSync(jsonFile, JSON.stringify(data, null, 2) + '\n');
@@ -379,6 +447,82 @@ function selftest() {
   materialize('subagent-findings', JSON.stringify(findings), findingsJson, findingsMd, 'TEST');
   assert.deepStrictEqual(validateArtifactData('subagent-findings', findings, 'TEST'), []);
   assert.ok(fs.readFileSync(findingsMd, 'utf8').includes('Example finding'));
+
+  // A review that reports a real unresolved problem is well-formed: the verdict
+  // blocks, not the artifact. Throwing it away left the findings only in
+  // engine/*.rejected, so `fixes` never received the serious ones.
+  const revFinding = (severity, resolved) => ({
+    id: 'R-1', severity, summary: 'macOS keychain entitlement missing, so sign-in will not persist',
+    uncertainty: 'confirmed', confidence: 0.9,
+    evidence: [{ source: 'macos/Runner/Release.entitlements', detail: 'no keychain-access-groups entry present' }],
+    recommendation: 'Add the keychain-access-groups entitlement to both Runner entitlement files', resolved,
+  });
+  const revRaw = (severity, resolved, status) => JSON.stringify({ schemaVersion: 1, runId: 'TEST', reviewer: 'ios-review', status, findings: [revFinding(severity, resolved)] });
+  const revMd = path.join(temp, '09-reviews', 'ios-review.md');
+  assert.throws(() => materialize('review', revRaw('high', false, 'fail'), revMd.replace(/\.md$/, '.json'), revMd, 'TEST'), /unresolved findings/,
+    'a blocking review still fails the stage');
+  assert.ok(fs.existsSync(revMd), 'a blocking review is still recorded so fixes can read it');
+  assert.ok(fs.readFileSync(revMd, 'utf8').includes('keychain'), 'its findings survive');
+  // Genuinely malformed output is still discarded.
+  const badMd = path.join(temp, '09-reviews', 'bad.md');
+  assert.throws(() => materialize('review', JSON.stringify({ schemaVersion: 1, runId: 'WRONG', reviewer: 'x', status: 'pass', findings: [] }), badMd.replace(/\.md$/, '.json'), badMd, 'TEST'), /rejected/);
+  assert.ok(!fs.existsSync(badMd), 'a malformed review is not recorded');
+
+  // Agents routinely prefix a status line before the artifact. Discarding an
+  // otherwise valid — in one real run, PASSING — review over a leading sentence
+  // costs a whole stage, so the first balanced JSON value is extracted.
+  const wrapped = JSON.stringify(findings);
+  assert.deepStrictEqual(parseJsonText(wrapped), findings);
+  assert.deepStrictEqual(parseJsonText('Still working: writing the review artifact.\n\n' + wrapped), findings);
+  assert.deepStrictEqual(parseJsonText('```json\n' + wrapped + '\n```'), findings);
+  assert.deepStrictEqual(parseJsonText('Here it is:\n```json\n' + wrapped + '\n```'), findings);
+  assert.deepStrictEqual(parseJsonText(wrapped + '\n\nThat completes the review.'), findings);
+  // Braces inside strings must not end the value early.
+  const braces = { ...findings, findings: [{ ...findings.findings[0], title: 'uses {a: 1} and [b]' }] };
+  assert.deepStrictEqual(parseJsonText('note:\n' + JSON.stringify(braces)), braces);
+  // Text with no JSON at all is still an error.
+  assert.throws(() => parseJsonText('no json at all here'));
+
+  // A specialist that legitimately reports a blocker is valid and must be kept:
+  // rejecting it discarded the findings that explained the block and killed the
+  // stage before any other specialist ran.
+  const blocked = { ...findings, status: 'blocked' };
+  assert.deepStrictEqual(validateArtifactData('subagent-findings', blocked, 'TEST'), [], 'a blocked specialist artifact is valid');
+  const blockedMd = path.join(temp, '05-analysis', 'blocked.md');
+  materialize('subagent-findings', JSON.stringify(blocked), path.join(temp, '05-analysis', 'blocked.json'), blockedMd, 'TEST');
+  assert.ok(fs.readFileSync(blockedMd, 'utf8').includes('Example finding'), 'its findings survive');
+  // But it must say why it is blocked.
+  assert.ok(validateArtifactData('subagent-findings', { ...blocked, findings: [] }, 'TEST')
+    .some(x => x.includes('at least one finding')), 'a blocked specialist must explain the blocker');
+  // The arbitration artifact is the only place a conflict can be declared, so it
+  // must validate and render; without a renderer the stage failed outright.
+  const arb = { schemaVersion: 1, runId: 'TEST', agent: 'conflict-arbitration', status: 'pass',
+    consideredAgents: ['security', 'performance'],
+    conflicts: [{ findingA: 'SEC-1', findingB: 'PERF-1', topic: 'token-storage', reason: 'Secure storage only cannot coexist with a plaintext synchronous read.', severity: 'high' }] };
+  assert.deepStrictEqual(validateArtifactData('conflict-arbitration', arb, 'TEST'), []);
+  const arbMd = path.join(temp, '05-analysis', 'arbitration.md');
+  materialize('conflict-arbitration', JSON.stringify(arb), path.join(temp, '05-analysis', 'arbitration.json'), arbMd, 'TEST');
+  const arbText = fs.readFileSync(arbMd, 'utf8');
+  assert.ok(arbText.includes('SEC-1') && arbText.includes('PERF-1'), 'both disputed findings are named');
+  assert.ok(arbText.includes('token-storage'), 'the disputed topic is rendered');
+  // An empty arbitration is valid and says so rather than rendering an empty table.
+  const none = { ...arb, conflicts: [] };
+  const noneMd = path.join(temp, '05-analysis', 'arbitration-none.md');
+  materialize('conflict-arbitration', JSON.stringify(none), path.join(temp, '05-analysis', 'arbitration-none.json'), noneMd, 'TEST');
+  assert.ok(fs.readFileSync(noneMd, 'utf8').includes('No material disagreement'));
+  // A conflict with no reason is not a conflict.
+  assert.ok(validateArtifactData('conflict-arbitration', { ...arb, conflicts: [{ findingA: 'A', findingB: 'B', topic: 'x' }] }, 'TEST').length > 0);
+
+  // A Structurizr workspace is normally named; only accepting the anonymous
+  // form rejected every real C4 model an agent produces.
+  const c4 = (dsl) => validateArtifactData('c4-model', { schemaVersion: 1, runId: 'TEST', structurizrDsl: dsl }, 'TEST')
+    .filter(x => x.includes('structurizrDsl'));
+  assert.deepStrictEqual(c4('workspace "my_app" "C4 model of the counter app" {\n  model {}\n}'), [], 'a named workspace is valid');
+  assert.deepStrictEqual(c4('workspace {\n  model {}\n}'), [], 'an anonymous workspace is still valid');
+  assert.ok(c4('a prose description of the architecture').length > 0, 'prose is not a workspace');
+
+  // And an unknown status is still rejected.
+  assert.ok(validateArtifactData('subagent-findings', { ...findings, status: 'done' }, 'TEST').length > 0);
 
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('structured artifact selftest OK');

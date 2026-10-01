@@ -24,4 +24,33 @@ const disabledRag=buildRoleContext({runDir:run,productRoot:product,contract:{inp
 assert(!disabledRag.includes('Hybrid RAG retrieved evidence'),'rag.enabled: false disables retrieval regardless of the contract default');
 fs.rmSync(path.join(product,'.agentic'),{recursive:true,force:true});
 
+// A retried or reworked role is told why the previous attempt and any later
+// stage failed, so it fixes the cause instead of repeating the work.
+const {failureFeedback}=require('./subagent-context');
+assert.strictEqual(failureFeedback(run,'implementation','implementation'),'','a clean run carries no failure feedback');
+fs.writeFileSync(path.join(run,'state.json'),JSON.stringify({
+ id:'TEST',
+ phases:{implementation:{status:'pending'},'build-test':{status:'fail',note:'qa-execute: 6 of 7 widget tests never complete'}},
+ roles:{'build-test':{'qa-execute':{status:'fail',note:'tests await real dart:io inside fake-async'}}},
+ executionAttempts:{implementation:{implementation:[{attempt:1,ok:false,reason:'artifact/worktree validation failed: plan step missing'}]}},
+}));
+fs.mkdirSync(path.join(run,'engine'),{recursive:true});
+fs.writeFileSync(path.join(run,'engine','build-test-qa-execute.rejected'),'{"status":"fail","blockers":["tests hang"]}');
+const feedback=failureFeedback(run,'implementation','implementation');
+assert.match(feedback,/Previous failures to address/);
+assert.match(feedback,/plan step missing/,'its own failed attempt is reported');
+assert.match(feedback,/never complete/,'the downstream blocker is reported');
+assert.match(feedback,/await real dart:io/,'the failing role note is reported');
+assert.match(feedback,/tests hang/,'the rejected output excerpt is included');
+// A non-parallel stage keeps no roles in state, so its rejected output must be
+// found on disk or the feedback silently drops the most useful part.
+fs.writeFileSync(path.join(run,'state.json'),JSON.stringify({
+ id:'TEST',
+ phases:{implementation:{status:'pending'},'build-test':{status:'in_progress'}},
+ roles:{},
+}));
+assert.match(failureFeedback(run,'implementation','implementation'),/tests hang/,'a roleless stage still surfaces its rejected output');
+const reworkContext=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request']},excludeArtifact:null,roleName:'implementation',stageId:'implementation'});
+assert(reworkContext.startsWith('## Previous failures to address'),'failures lead the prompt');
+
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');
