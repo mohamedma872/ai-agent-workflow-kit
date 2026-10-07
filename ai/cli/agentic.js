@@ -17,6 +17,7 @@ const DASHBOARD = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'dashboard.js');
 const RUNS_INDEX = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'runs-index.js');
 const REFACTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-cli.js');
 const REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-report.js');
+const ARCHITECTURE_REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'architecture-review-report.js');
 const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
 const CONFLICTS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'conflicts.js');
 const VERSION = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'version.js');
@@ -386,6 +387,7 @@ Usage:
   agentic refactor-app <run-id> --request "..."
   agentic architecture <run-id> <option-id> [note]
   agentic report <run-id> [--json]
+  agentic architecture-report <run-id> [--json] [--output <dir>]
   agentic conflicts <run-id>       Specialist disagreements blocking the plan
   agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."
   agentic rag --query "..." [--role security] [--json]
@@ -542,6 +544,10 @@ function main() {
   if (command === 'report') {
     if (!args[1]) throw new Error('report requires a run id');
     return runNode(REPORT, [args[1], ...args.slice(2)], project);
+  }
+  if (command === 'architecture-report') {
+    if (!args[1]) throw new Error('architecture-report requires a run id');
+    return runNode(ARCHITECTURE_REPORT, [args[1], ...args.slice(2)], project);
   }
   // Unresolved specialist conflicts block the plan stage; these expose them.
   if (command === 'conflicts') {
