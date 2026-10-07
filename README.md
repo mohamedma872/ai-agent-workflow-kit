@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.18-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.19-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -18,6 +18,7 @@ It turns an AI coding agent from “a model that can edit files” into a govern
 - whole-app architecture assessment and C4 modeling
 - Appium-based mobile evidence
 - structured artifacts and verification
+- comprehensive architecture-review export with coverage evidence and grouped WHY/impact findings
 - runtime/eval hardening
 - GitHub verification
 - safe self-updates
@@ -228,7 +229,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.18
+1.9.19
 ```
 
 ### 2. Initialize a project
@@ -420,6 +421,7 @@ agentic --project ~/projects/payment-backend \
 | `agentic refactor-app <id> --request "..."` | start a whole-app architecture refactor |
 | `agentic architecture <id> <option>` | record the human architecture choice |
 | `agentic report <id>` | produce/read refactor verification results |
+| `agentic architecture-report <id> [--json] [--output <dir>]` | export grouped architecture findings + coverage matrix |
 | `agentic rag --query "..."` | inspect Hybrid RAG directly |
 | `agentic worktree <id>` | inspect run worktree state |
 | `agentic cleanup <id>` | safely remove a run worktree |
@@ -528,6 +530,29 @@ architecture-compliance reviewer
 ```
 
 A pre-implementation specialist does not silently approve its own recommendation.
+
+### Architecture review export
+
+Every run can export a normalized architecture assessment from the evidence already produced by selected specialists and independent reviewers:
+
+```bash
+agentic architecture-report FEAT-001
+agentic architecture-report FEAT-001 --json
+```
+
+The default export is:
+
+```text
+.agentic-runs/<run-id>/reports/
+├── architecture-review.md
+└── architecture-review.json
+```
+
+The architecture specialist explicitly records coverage for feature boundaries, domain/business rules, data/state, concurrency/synchronization, API/error handling, navigation, security/privacy, observability, performance/scalability, testing/quality, architecture enforcement, maintainability, and e-commerce architecture when applicable.
+
+Each grouped finding carries the current design, repository evidence, recommendation, **why**, impact, P0/P1/P2 priority, owner domain, confidence, and governing principle. Missing coverage appears as `not-reviewed`; it is never treated as a pass.
+
+Details: [docs/architecture-review-report.md](docs/architecture-review-report.md).
 
 ---
 
@@ -1612,7 +1637,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.18
+runtimeVersion         1.9.19
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

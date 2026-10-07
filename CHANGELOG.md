@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.19 — 2026-10-07
+
+- **Architecture review export.** Added `agentic architecture-report <run-id> [--json] [--output <dir>]`, which writes both human-readable Markdown and machine-readable JSON under the run's `reports/` directory. It aggregates synthesized specialist analysis and independent review findings into concern groups with severity, current design, repository evidence, recommendation, WHY, impact, P0/P1/P2 priority, owner, confidence, and architecture principle.
+- **Coverage is explicit instead of inferred from silence.** The architecture specialist now declares a coverage matrix for 13 areas: feature boundaries, domain/business rules, data/state, concurrency/synchronization, API/error handling, navigation, security/privacy, observability, performance/scalability, testing/quality, architecture enforcement, maintainability, and e-commerce architecture when applicable. Missing coverage is `not-reviewed`, never pass.
+- **Architecture findings carry decision rationale.** The specialist/review schemas accept `group`, `currentDesign`, `why`, `impact`, `priority`, `ownerDomain`, and `principle`; the architect is required to provide them. Finding synthesis preserves those fields while deduplicating.
+- Added an exporter selftest to `workflow:check` and migration/documentation in `docs/architecture-review-report.md` and `docs/migrations/1.9.19.md`.
+
 ## 1.9.18 — 2026-10-01
 
 - `.agentic/guardrails.yaml` is now enforced. The guard engine loads it from the project root as a **tighten-only** rule pack: `secret_files`, `guarded_files`, `evidence`, and `shell_rules` are added on top of `ai/guard.yaml` and the task packs. A shell rule may only `ask` or `deny`; any other decision (`allow`, `off`) is dropped, so a project file can add protection but never remove it. The file itself is always guarded, so editing it — directly or by a shell rewrite — asks the user. The `project.*` booleans stay informational because those guarantees are always on.

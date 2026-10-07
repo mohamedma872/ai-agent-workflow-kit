@@ -33,7 +33,7 @@ roles:
   architect:
     executor: claude
     claude_subagent: mobile-architect
-    purpose: Inspect architecture, integration points, reuse opportunities, boundaries, and trade-offs.
+    purpose: Inspect architecture comprehensively across boundaries, domain rules, data/state, concurrency, API/errors, navigation, security/privacy, observability, performance, testing, enforcement, maintainability, and e-commerce concerns when applicable; provide evidence-backed coverage and WHY/impact for every finding.
     read_only: true
     artifact: 05-analysis/mobile-architect.md
     artifact_schema: subagent-findings

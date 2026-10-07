@@ -16,7 +16,8 @@ function synthesize(agentFindings){
    const confidence=Math.max(...list.map(x=>Number(x.confidence)||0));
    return {id:first.id,title:first.title,severity,uncertainty:first.uncertainty,confidence,
      evidence:[...new Map(list.flatMap(x=>x.evidence||[]).map(e=>[JSON.stringify(e),e])).values()],
-     recommendation:first.recommendation,tags:[...new Set(list.flatMap(x=>x.tags||[]))],conflictsWith:[...new Set(list.flatMap(x=>x.conflictsWith||[]))],provenance:[...new Set(list.map(x=>x.agent))]};
+     recommendation:first.recommendation,group:first.group,currentDesign:first.currentDesign,why:first.why,impact:first.impact,priority:first.priority,ownerDomain:first.ownerDomain,principle:first.principle,
+     tags:[...new Set(list.flatMap(x=>x.tags||[]))],conflictsWith:[...new Set(list.flatMap(x=>x.conflictsWith||[]))],provenance:[...new Set(list.map(x=>x.agent))]};
  });
 }
 function selftest(){const base={id:'F-1',title:'Unsafe token storage',severity:'high',uncertainty:'confirmed',confidence:.9,evidence:[{source:'a.ts',detail:'token persisted'}],recommendation:'use secure storage'};const out=synthesize([{agent:'security',findings:[base]},{agent:'rn',findings:[{...base,confidence:.8}]}]);assert.equal(out.length,1);assert.deepStrictEqual(out[0].provenance,['security','rn']);console.log('finding-synthesis selftest OK');}
