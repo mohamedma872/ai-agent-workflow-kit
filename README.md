@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.20-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.21-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -40,7 +40,7 @@ Security reporting and supported security-update versions are documented in [SEC
 - [Standalone CLI](#standalone-cli)
 - [Normal feature workflow](#normal-feature-workflow)
 - [Specialist agents](#specialist-agents)
-- [Clean engineering standards](#clean-engineering-standards)
+- [Engineering rulebook](#engineering-rulebook)
 - [Hybrid RAG](#hybrid-rag)
 - [Guardrails and human authority](#guardrails-and-human-authority)
 - [Run isolation](#run-isolation)
@@ -231,7 +231,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.20
+1.9.21
 ```
 
 ### 2. Initialize a project
@@ -533,12 +533,12 @@ architecture-compliance reviewer
 
 A pre-implementation specialist does not silently approve its own recommendation.
 
-## Clean engineering standards
+## Engineering rulebook
 
-Selected architecture, implementation, fixes, and review roles receive the same provider-independent rule pack from:
+All engineering and architecture rules are maintained in **one canonical file**:
 
 ```text
-ai/standards/clean-engineering.md
+ai/standards/engineering-rulebook.md
 ```
 
 The rules are paraphrased engineering principles influenced by Robert C. Martin's *Clean Code* and *Clean Architecture*, plus Martin Fowler's *Refactoring* and *Patterns of Enterprise Application Architecture*. They cover:
@@ -561,7 +561,7 @@ simplicity / avoiding over-engineering
 review severity and evidence
 ```
 
-The pack is injected by the workflow router, so it applies whether a role executes through Claude or Codex. It is intentionally **not dogmatic**: repository evidence, approved ADRs, explicit constraints, and measured behavior outrank generic book guidance. Code smells are investigation signals, and style preference alone cannot become a blocking finding.
+The rulebook is injected by the workflow router, so it applies whether a role executes through Claude or Codex. It is intentionally **not dogmatic**: repository evidence, approved ADRs, explicit constraints, and measured behavior outrank generic book guidance. Code smells are investigation signals, and style preference alone cannot become a blocking finding.
 
 ### Architecture review export
 
@@ -1669,7 +1669,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.20
+runtimeVersion         1.9.21
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable
