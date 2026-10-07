@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.21 — 2026-10-07
+
+- **One canonical engineering rulebook.** Consolidated Clean Code, SOLID, Clean Architecture, state/concurrency/error rules, Fowler refactoring, testing, security, observability, performance, navigation, e-commerce, architecture coverage, report semantics, ADRs, fitness functions, severity/priority, and architecture Definition of Done into `ai/standards/engineering-rulebook.md`.
+- **Agents consume the same source humans review.** Architecture, implementation, fixes, code review, behavior regression, and architecture-compliance roles now inject `engineering-rulebook`. The older `clean-engineering` file is a compatibility pointer only.
+- **Removed duplicated rule definitions from architecture-report docs.** Supporting docs now explain usage and link back to the canonical rulebook, preventing rule drift.
+
+
 ## 1.9.20 — 2026-10-07
 
 - **Provider-independent clean engineering standard.** Added `ai/standards/clean-engineering.md`, a paraphrased rule pack influenced by Robert C. Martin's *Clean Code* / *Clean Architecture* and Martin Fowler's *Refactoring* / *Patterns of Enterprise Application Architecture*. It covers naming, functions, responsibilities, SOLID, dependency direction, boundary mapping, state ownership, errors/retries, concurrency, comments, testing, refactoring discipline, code smells, simplicity, severity, and review restraint.
