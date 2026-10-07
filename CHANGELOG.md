@@ -4,6 +4,14 @@
 
 - No unreleased runtime changes.
 
+## 1.9.20 — 2026-10-07
+
+- **Provider-independent clean engineering standard.** Added `ai/standards/clean-engineering.md`, a paraphrased rule pack influenced by Robert C. Martin's *Clean Code* / *Clean Architecture* and Martin Fowler's *Refactoring* / *Patterns of Enterprise Application Architecture*. It covers naming, functions, responsibilities, SOLID, dependency direction, boundary mapping, state ownership, errors/retries, concurrency, comments, testing, refactoring discipline, code smells, simplicity, severity, and review restraint.
+- **Standards are injected into actual agent prompts.** Workflow roles can declare `standards: [...]`; the router validates each pack and injects its contents regardless of whether the executor is Claude or Codex. Architecture, architecture design/migration/compliance, implementation, fixes, code review, and behavior-regression review now receive `clean-engineering`.
+- **Evidence over dogma.** The code-review and architecture instructions explicitly require concrete repository evidence and impact. Code smells are investigation triggers rather than automatic failures, approved ADRs/constraints can justify deviations, and style-only preferences cannot become blocker/major findings.
+- Router selftests now verify standards injection, and `workflow:check` runs that selftest.
+
+
 ## 1.9.19 — 2026-10-07
 
 - **Architecture review export.** Added `agentic architecture-report <run-id> [--json] [--output <dir>]`, which writes both human-readable Markdown and machine-readable JSON under the run's `reports/` directory. It aggregates synthesized specialist analysis and independent review findings into concern groups with severity, current design, repository evidence, recommendation, WHY, impact, P0/P1/P2 priority, owner, confidence, and architecture principle.
