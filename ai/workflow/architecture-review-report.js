@@ -266,6 +266,8 @@ function markdown(report) {
   const lines = [
     `# Architecture Review — ${report.runId}`,
     '',
+    'Rules: `ai/standards/engineering-rulebook.md`',
+    '',
     `Overall decision: **${report.decision}**`,
     '',
     '> This report aggregates evidence produced by the workflow. Its decision is advisory and does not replace deterministic workflow gates or human approval.',
