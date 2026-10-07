@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.19-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.20-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -19,6 +19,7 @@ It turns an AI coding agent from “a model that can edit files” into a govern
 - Appium-based mobile evidence
 - structured artifacts and verification
 - comprehensive architecture-review export with coverage evidence and grouped WHY/impact findings
+- provider-independent Clean Code / Clean Architecture / Refactoring engineering standards
 - runtime/eval hardening
 - GitHub verification
 - safe self-updates
@@ -39,6 +40,7 @@ Security reporting and supported security-update versions are documented in [SEC
 - [Standalone CLI](#standalone-cli)
 - [Normal feature workflow](#normal-feature-workflow)
 - [Specialist agents](#specialist-agents)
+- [Clean engineering standards](#clean-engineering-standards)
 - [Hybrid RAG](#hybrid-rag)
 - [Guardrails and human authority](#guardrails-and-human-authority)
 - [Run isolation](#run-isolation)
@@ -229,7 +231,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.19
+1.9.20
 ```
 
 ### 2. Initialize a project
@@ -530,6 +532,36 @@ architecture-compliance reviewer
 ```
 
 A pre-implementation specialist does not silently approve its own recommendation.
+
+## Clean engineering standards
+
+Selected architecture, implementation, fixes, and review roles receive the same provider-independent rule pack from:
+
+```text
+ai/standards/clean-engineering.md
+```
+
+The rules are paraphrased engineering principles influenced by Robert C. Martin's *Clean Code* and *Clean Architecture*, plus Martin Fowler's *Refactoring* and *Patterns of Enterprise Application Architecture*. They cover:
+
+```text
+intent-revealing naming
+cohesive functions and modules
+SOLID
+dependency inversion and inward dependency direction
+domain/framework separation
+composition roots and boundary mapping
+state/data ownership
+error and retry semantics
+concurrency and side effects
+comments/documentation
+testing
+behavior-preserving refactoring
+code smells
+simplicity / avoiding over-engineering
+review severity and evidence
+```
+
+The pack is injected by the workflow router, so it applies whether a role executes through Claude or Codex. It is intentionally **not dogmatic**: repository evidence, approved ADRs, explicit constraints, and measured behavior outrank generic book guidance. Code smells are investigation signals, and style preference alone cannot become a blocking finding.
 
 ### Architecture review export
 
@@ -1637,7 +1669,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.19
+runtimeVersion         1.9.20
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable
