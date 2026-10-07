@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/architecture-review-report-v1.json",
+  "title": "Architecture Review Export",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "generatedAt", "decision", "counts", "coverage", "coverageComplete", "coverageGaps", "groups", "findings"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runId": {"type": "string", "minLength": 1},
+    "generatedAt": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["PASS", "CONDITIONAL", "BLOCKED"]},
+    "counts": {"type": "object"},
+    "coverage": {"type": "array"},
+    "coverageComplete": {"type": "boolean"},
+    "coverageGaps": {"type": "array", "items": {"type": "string"}},
+    "sourceRoles": {"type": "array", "items": {"type": "string"}},
+    "sourceArtifacts": {"type": "array"},
+    "groups": {"type": "array"},
+    "findings": {"type": "array"}
+  }
+}
