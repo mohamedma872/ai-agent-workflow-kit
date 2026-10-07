@@ -45,5 +45,5 @@ files touched that the plan did not list, or "none"
 - Blockers are correctness, safety, data-loss, security-adjacent, or AC gaps; style alone is minor/nit.
 - Cite the exact code/evidence; propose a precise replacement when short.
 - Do not invent framework conventions that are not present in the repository.
-- Apply the injected `clean-engineering` standard as a heuristic. Repository evidence and approved ADRs outrank generic book guidance.
+- Apply the injected `engineering-rulebook` standard as a heuristic. Repository evidence and approved ADRs outrank generic book guidance.
 - Never raise a blocker/major finding for style preference alone. Tie Clean Code/Architecture/Refactoring findings to correctness, coupling, testability, change cost, reliability, or maintainability impact.
