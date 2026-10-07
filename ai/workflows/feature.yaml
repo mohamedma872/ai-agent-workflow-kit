@@ -32,6 +32,7 @@ roles:
 
   architect:
     executor: claude
+    standards: [clean-engineering]
     claude_subagent: mobile-architect
     purpose: Inspect architecture comprehensively across boundaries, domain rules, data/state, concurrency, API/errors, navigation, security/privacy, observability, performance, testing, enforcement, maintainability, and e-commerce concerns when applicable; provide evidence-backed coverage and WHY/impact for every finding.
     read_only: true
@@ -41,6 +42,7 @@ roles:
 
   architecture-assessment:
     executor: claude
+    standards: [clean-engineering]
     purpose: Build an evidence-backed current-state architecture assessment for a whole-app refactor, covering business drivers, constraints, quality attributes, team ownership, delivery/operations, security/compliance, data/integrations, testing, migration constraints, risks, unknowns, and weighted decision criteria.
     read_only: true
     artifact: 05-architecture-assessment.md
@@ -49,6 +51,7 @@ roles:
 
   architecture-options:
     executor: claude
+    standards: [clean-engineering]
     purpose: Propose 2-4 viable target architectures from repository evidence and the architecture assessment. Explain trade-offs, migration/reversibility, team/operations/security/performance/testability impact, score every option against the same decision criteria, provide C4 previews, and make an advisory recommendation without selecting on behalf of the human.
     read_only: true
     artifact: 05-architecture-options.md
@@ -57,6 +60,7 @@ roles:
 
   target-architecture:
     executor: claude
+    standards: [clean-engineering]
     purpose: Convert the human-selected architecture option into a concrete architecture contract with boundaries, dependency rules, module responsibilities, data ownership, integration contracts, security/observability/testing requirements, performance budgets, migration guardrails, and executable architecture fitness functions.
     read_only: true
     artifact: 05-target-architecture.md
@@ -73,6 +77,7 @@ roles:
 
   architecture-migration:
     executor: claude
+    standards: [clean-engineering]
     purpose: Decompose the selected architecture into risk-aware domains and dependency-ordered migration waves with integration checkpoints, rollback points, behavior coverage, and whole-app completion criteria.
     read_only: true
     artifact: 05-architecture-migration.md
@@ -81,6 +86,7 @@ roles:
 
   architecture-compliance-review:
     executor: claude
+    standards: [clean-engineering]
     purpose: Independently compare the final implementation against the human-selected target architecture, dependency rules, C4 model, migration guardrails, and architecture fitness functions. Report violations as review findings; do not approve architecture by assumption.
     read_only: true
     artifact: 09-reviews/architecture-compliance-reviewer.md
@@ -195,6 +201,7 @@ roles:
 
   implementation:
     executor: codex
+    standards: [clean-engineering]
     fallback: [claude]
     # An approved plan that produces no diff means the agent did not implement it.
     # `fixes` deliberately does not set this: concluding that no change is needed
@@ -226,6 +233,7 @@ roles:
 
   code-review:
     executor: claude
+    standards: [clean-engineering]
     claude_subagent: code-reviewer
     purpose: Independently review the diff for correctness, maintainability, regressions, and plan/acceptance-criteria compliance.
     read_only: true
@@ -308,6 +316,7 @@ roles:
 
   behavior-regression-review:
     executor: claude
+    standards: [clean-engineering]
     claude_subagent: behavior-regression-reviewer
     purpose: Independently compare the original behavior baseline and preservation invariants with the final diff/test evidence, focusing only on externally observable behavior changes.
     read_only: true
@@ -324,6 +333,7 @@ roles:
 
   fixes:
     executor: codex
+    standards: [clean-engineering]
     fallback: [claude]
     execution:
       timeout: 45m

@@ -21,6 +21,7 @@ const { projectRoot } = require('./paths');
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'ai', 'workflows');
 const AGENTS_FILE = path.join(ROOT, 'ai', 'agents.yaml');
+const STANDARDS_DIR = path.join(ROOT, 'ai', 'standards');
 
 function fail(message, code = 1) { console.error(`✗ ${message}`); process.exit(code); }
 function parseArgs(argv) {
@@ -107,6 +108,19 @@ function resolveRole(workflow, agents, roleName, override) {
   return { roleName, role, agentName: selected, agent: agents[selected], candidates };
 }
 function fill(template, vars) { return String(template).replace(/\{(\w+)\}/g, (m, key) => Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : m); }
+function standardFile(name) {
+  const key = String(name || '');
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(key)) throw new Error(`invalid engineering standard "${key}"`);
+  return path.join(STANDARDS_DIR, `${key}.md`);
+}
+function loadRoleStandards(role) {
+  const names = Array.isArray(role?.standards) ? role.standards : [];
+  return names.map(name => {
+    const file = standardFile(name);
+    if (!fs.existsSync(file)) throw new Error(`engineering standard "${name}" is missing: ${path.relative(ROOT, file)}`);
+    return { name, content: fs.readFileSync(file, 'utf8').trim() };
+  });
+}
 function buildPrompt(workflow, resolved, taskPrompt) {
   const lines = [
     `You are the ${resolved.roleName} role in the "${workflow.name}" agentic workflow.`, '',
@@ -114,6 +128,9 @@ function buildPrompt(workflow, resolved, taskPrompt) {
     `Mode: ${resolved.role.read_only ? 'READ-ONLY analysis/review. Do not modify product files.' : 'May edit product files only within the approved workflow scope.'}`,
   ];
   if (resolved.role.artifact) lines.push(`Expected workflow artifact: ${resolved.role.artifact}`);
+  for (const standard of loadRoleStandards(resolved.role)) {
+    lines.push('', `Engineering standard — ${standard.name}:`, standard.content);
+  }
   // Reviews run before the mobile-evidence stage, so a reviewer that blocks on
   // the absence of a device build or screenshots blocks on evidence this
   // workflow only produces later — and because a review carrying an unresolved
@@ -177,6 +194,13 @@ function validateWorkflow(name, workflow, agents) {
   for (const [roleName, role] of Object.entries(workflow.roles || {})) {
     const candidates = roleCandidates(role); if (!candidates.length) problems.push(`${name}/${roleName}: no executor`);
     for (const a of candidates) if (!agents[a]) problems.push(`${name}/${roleName}: unknown executor "${a}"`);
+    for (const standard of role.standards || []) {
+      try {
+        if (!fs.existsSync(standardFile(standard))) problems.push(`${name}/${roleName}: unknown engineering standard "${standard}"`);
+      } catch (e) {
+        problems.push(`${name}/${roleName}: ${e.message}`);
+      }
+    }
   }
   return problems;
 }
@@ -248,6 +272,9 @@ function selftest() {
   const perRole = applyExecutorPrefs(wf(), { default: 'claude', roles: { implementation: 'codex' } });
   assert.strictEqual(perRole.roles.implementation.executor, 'codex', 'a per-role setting beats the default');
   assert.deepStrictEqual(applyExecutorPrefs(wf(), null).roles.implementation.executor, 'codex', 'no preference leaves the workflow alone');
+  const standardPrompt = buildPrompt({ name: 'test' }, { roleName: 'review', role: { read_only: true, standards: ['clean-engineering'] } }, 'inspect code');
+  assert.match(standardPrompt, /Clean Engineering Standards/);
+  assert.match(standardPrompt, /Dependency Inversion Principle/);
   // An absent or malformed config must never break loading.
   assert.strictEqual(loadExecutorPrefs('/nonexistent-root-for-selftest'), null);
   console.log('router selftest OK');
@@ -283,4 +310,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, safeRunId };
+module.exports = { executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, loadRoleStandards, safeRunId };

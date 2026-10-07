@@ -18,6 +18,11 @@ Detect the implementation stack from repository evidence. Do not apply React Nat
 - **Error handling & UX**: errors are actionable; loading, retry, disabled and empty states are coherent.
 - **Scope**: no unapproved files, debug code, commented-out blocks, accidental generated files or unrelated formatting churn.
 - **Tests**: new logic has appropriate unit/widget/integration/device coverage, or the report explains why final device evidence is the correct proof.
+- **Clean code**: names reveal intent; functions have cohesive responsibilities and clear side effects; arguments represent clear concepts; comments explain non-obvious why rather than compensate for confusing code.
+- **SOLID**: check SRP, OCP, LSP, ISP, and DIP where they materially affect change cost or correctness. Do not demand an abstraction without credible variation.
+- **Clean Architecture**: business policy stays independent of framework/transport/storage details; dependencies point toward policy; DTO/framework types are mapped at boundaries; composition/DI ownership is explicit; feature boundaries are not bypassed.
+- **Refactoring discipline**: investigate duplicated decisions, mixed abstraction levels, feature envy, shotgun surgery, divergent change, primitive obsession, speculative generality, dead code, and obsolete migration paths. A smell is not automatically a defect.
+- **Simplicity**: reject pattern-for-pattern's-sake and unnecessary repositories/use-cases/interfaces/factories when they add ceremony without boundary protection, testability, independent variation, reuse, or domain clarity.
 
 ## Report — return exactly this structure (≤ 650 words)
 
@@ -27,7 +32,7 @@ Detect the implementation stack from repository evidence. Do not apply React Nat
 framework/language + relevant architecture conventions
 ## Verdict: APPROVE | REQUEST CHANGES
 ## Findings
-| severity (blocker/major/minor/nit) | file:line | issue | suggested fix |
+| severity (blocker/major/minor/nit) | file:line | issue | principle | why / impact | suggested fix |
 (or "no findings — checked: <list>")
 ## AC coverage
 | AC | satisfied by (file:line/test/evidence) | gap |
@@ -40,3 +45,5 @@ files touched that the plan did not list, or "none"
 - Blockers are correctness, safety, data-loss, security-adjacent, or AC gaps; style alone is minor/nit.
 - Cite the exact code/evidence; propose a precise replacement when short.
 - Do not invent framework conventions that are not present in the repository.
+- Apply the injected `clean-engineering` standard as a heuristic. Repository evidence and approved ADRs outrank generic book guidance.
+- Never raise a blocker/major finding for style preference alone. Tie Clean Code/Architecture/Refactoring findings to correctness, coupling, testability, change cost, reliability, or maintainability impact.
