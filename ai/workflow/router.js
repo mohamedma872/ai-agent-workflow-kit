@@ -272,8 +272,8 @@ function selftest() {
   const perRole = applyExecutorPrefs(wf(), { default: 'claude', roles: { implementation: 'codex' } });
   assert.strictEqual(perRole.roles.implementation.executor, 'codex', 'a per-role setting beats the default');
   assert.deepStrictEqual(applyExecutorPrefs(wf(), null).roles.implementation.executor, 'codex', 'no preference leaves the workflow alone');
-  const standardPrompt = buildPrompt({ name: 'test' }, { roleName: 'review', role: { read_only: true, standards: ['clean-engineering'] } }, 'inspect code');
-  assert.match(standardPrompt, /Clean Engineering Standards/);
+  const standardPrompt = buildPrompt({ name: 'test' }, { roleName: 'review', role: { read_only: true, standards: ['engineering-rulebook'] } }, 'inspect code');
+  assert.match(standardPrompt, /Engineering Rulebook/);
   assert.match(standardPrompt, /Dependency Inversion Principle/);
   // An absent or malformed config must never break loading.
   assert.strictEqual(loadExecutorPrefs('/nonexistent-root-for-selftest'), null);
