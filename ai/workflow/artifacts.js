@@ -104,6 +104,22 @@ function semanticProblems(name, data) {
   // engine marks the role blocked rather than complete.
   if (name === 'subagent-findings' && !['pass', 'blocked'].includes(data.status)) errors.push(`$.status: subagent findings status must be pass or blocked, got ${JSON.stringify(data.status)}`);
   if (name === 'subagent-findings' && data.status === 'blocked' && !(data.findings || []).length) errors.push('$.findings: a blocked specialist must report at least one finding explaining the blocker');
+  if (name === 'subagent-findings' && /architect/i.test(String(data.agent || ''))) {
+    const requiredAreas = ['feature-boundaries','domain-business','data-state','concurrency-sync','api-errors','navigation','security-privacy','observability','performance-scalability','testing-quality','architecture-enforcement','maintainability','ecommerce'];
+    const coverage = Array.isArray(data.coverage) ? data.coverage : [];
+    const byArea = new Map(coverage.map(x => [x.area, x]));
+    for (const area of requiredAreas) if (!byArea.has(area)) errors.push(`$.coverage: architect must explicitly cover ${area}`);
+    const findingIds = new Set((data.findings || []).map(x => x.id));
+    for (const item of coverage) {
+      if (['pass','finding'].includes(item.status) && !(item.evidence || []).length) errors.push(`$.coverage[${item.area}].evidence: reviewed areas need repository evidence`);
+      if (item.status === 'finding' && !(item.findingIds || []).length) errors.push(`$.coverage[${item.area}].findingIds: finding coverage must reference at least one finding`);
+      for (const id of item.findingIds || []) if (!findingIds.has(id)) errors.push(`$.coverage[${item.area}].findingIds: unknown finding id ${id}`);
+    }
+    const requiredFindingFields = ['group','currentDesign','why','impact','priority','ownerDomain','principle'];
+    for (const finding of data.findings || []) {
+      for (const field of requiredFindingFields) if (!finding[field]) errors.push(`$.findings[${finding.id || '?'}].${field}: required for architecture findings`);
+    }
+  }
   if (name === 'review') {
     if (data.status !== 'pass') errors.push('$.status: review must be pass before the review role can complete');
     const unresolvedHigh = (data.findings || []).filter(f => f && f.resolved === false && ['critical', 'high'].includes(f.severity));
@@ -350,6 +366,13 @@ function renderMarkdown(name, data) {
     for (const f of Array.isArray(data.findings) ? data.findings : []) {
       const evidence = escapeCell((Array.isArray(f.evidence) ? f.evidence : []).map(e => `${e.source}${e.line ? ':' + e.line : ''} — ${e.detail}`).join('<br>'));
       lines.push(`| ${f.id} | ${f.severity} | ${f.uncertainty} | ${f.confidence} | ${escapeCell(f.title || '')} | ${evidence} |`);
+    }
+    if (Array.isArray(data.coverage) && data.coverage.length) {
+      lines.push('', '## Coverage matrix', '', '| area | status | finding ids | evidence / notes |', '|---|---|---|---|');
+      for (const item of data.coverage) {
+        const detail = [...(item.evidence || []), item.notes].filter(Boolean).join('; ');
+        lines.push(`| ${escapeCell(item.area)} | ${item.status} | ${escapeCell((item.findingIds || []).join(', '))} | ${escapeCell(detail || '—')} |`);
+      }
     }
     return lines.join('\n').trim() + '\n';
   }
