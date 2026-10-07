@@ -3,39 +3,203 @@
   "$id": "https://ai-agent-workflow-runtime.local/schemas/subagent-findings-v1.json",
   "title": "Subagent Findings Artifact",
   "type": "object",
-  "required": ["schemaVersion", "runId", "agent", "status", "findings"],
+  "required": [
+    "schemaVersion",
+    "runId",
+    "agent",
+    "status",
+    "findings"
+  ],
   "properties": {
-    "schemaVersion": {"const": 1},
-    "runId": {"type": "string", "minLength": 1},
-    "agent": {"type": "string", "minLength": 1},
-    "status": {"enum": ["pass", "blocked"]},
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "blocked"
+      ]
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "severity", "uncertainty", "confidence", "evidence", "recommendation"],
+        "required": [
+          "id",
+          "title",
+          "severity",
+          "uncertainty",
+          "confidence",
+          "evidence",
+          "recommendation"
+        ],
         "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "title": {"type": "string", "minLength": 3},
-          "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
-          "uncertainty": {"enum": ["confirmed", "likely", "possible", "unknown"]},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 3
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "uncertainty": {
+            "enum": [
+              "confirmed",
+              "likely",
+              "possible",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
           "evidence": {
             "type": "array",
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["source", "detail"],
+              "required": [
+                "source",
+                "detail"
+              ],
               "properties": {
-                "source": {"type": "string", "minLength": 1},
-                "line": {"type": ["integer", "null"]},
-                "detail": {"type": "string", "minLength": 3}
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "line": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "minLength": 3
+                }
               }
             }
           },
-          "recommendation": {"type": "string", "minLength": 3},
-          "tags": {"type": "array", "items": {"type": "string"}},
-          "conflictsWith": {"type": "array", "items": {"type": "string"}}
+          "recommendation": {
+            "type": "string",
+            "minLength": 3
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "conflictsWith": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "group": {
+            "type": "string",
+            "minLength": 3
+          },
+          "currentDesign": {
+            "type": "string",
+            "minLength": 3
+          },
+          "why": {
+            "type": "string",
+            "minLength": 3
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 3
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "ownerDomain": {
+            "type": "string",
+            "minLength": 2
+          },
+          "principle": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "area",
+          "status"
+        ],
+        "properties": {
+          "area": {
+            "enum": [
+              "feature-boundaries",
+              "domain-business",
+              "data-state",
+              "concurrency-sync",
+              "api-errors",
+              "navigation",
+              "security-privacy",
+              "observability",
+              "performance-scalability",
+              "testing-quality",
+              "architecture-enforcement",
+              "maintainability",
+              "ecommerce"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "finding",
+              "not-applicable",
+              "not-reviewed"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3
+            }
+          },
+          "findingIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
         }
       }
     }
