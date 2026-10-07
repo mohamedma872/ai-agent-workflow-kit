@@ -31,12 +31,40 @@ Do not assume React Native or Flutter.
 
 For Flutter specifically, inspect `pubspec.yaml`, widget/module boundaries under `lib/`, state/navigation packages actually present, localization/code generation, plugins/platform channels, and widget/integration tests.
 
-## Report — return exactly this structure (≤ 600 words)
+## Architecture coverage contract
+
+For every run, explicitly inspect and report all of these areas. Do not treat "no finding" as proof that an area was reviewed.
+
+1. `feature-boundaries` — feature/module boundaries, dependency direction, cross-feature imports, composition root, DI, shared/core ownership.
+2. `domain-business` — domain purity, business rules/invariants, source of authority, business-specific failures.
+3. `data-state` — repositories, data sources, persistence/cache, state management, source of truth, offline behavior.
+4. `concurrency-sync` — races, debounce/throttle, retries, idempotency, conflict resolution, queues/event transformers.
+5. `api-errors` — API contracts, result/failure model, timeouts, auth errors, technical vs business failures.
+6. `navigation` — route ownership, typed arguments, deep links, guards, back-stack behavior, migration switches.
+7. `security-privacy` — auth/session, sensitive storage, secrets, logs/PII, transport, permissions, validation.
+8. `observability` — logging, crash reporting, metrics, tracing, redaction, production diagnostics.
+9. `performance-scalability` — rendering, startup, network, memory, pagination, images, scale/load risks.
+10. `testing-quality` — unit/state/widget/integration/E2E/contract/regression strategy and gaps.
+11. `architecture-enforcement` — lint/import boundaries, CI architecture tests, fitness functions, ADR compliance.
+12. `maintainability` — naming, directory structure, duplication, generated code, complexity, documentation.
+13. `ecommerce` — catalog/cart durability and sync, price/inventory/promotion authority, checkout/payment/order idempotency, force update and environment/API consistency. Mark `not-applicable` when the product is not commerce-related.
+
+The structured `subagent-findings` artifact must include a `coverage` entry for every area using `pass | finding | not-applicable | not-reviewed`. A `pass` or `finding` needs concrete repository evidence. A `finding` must reference its finding id.
+
+Every architecture finding must populate:
+`group`, `currentDesign`, `why`, `impact`, `priority` (`P0|P1|P2`), `ownerDomain`, and `principle`, in addition to severity/confidence/evidence/recommendation.
+
+## Report — return exactly this structure (≤ 1400 words)
 
 ```text
 # Architecture analysis — <request>
 ## Stack detected
 framework · state management · navigation · DI · localization/build variants
+## Coverage matrix
+| area | result | repository evidence |
+all 13 required areas; use not-applicable explicitly
+## Grouped findings
+| severity | group | issue | current design | recommendation | why | impact | priority | principle | evidence |
 ## Where it fits
 navigation · state · API/data · platform integration — one line each, with file:line
 ## Reuse
