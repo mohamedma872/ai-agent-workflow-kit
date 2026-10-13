@@ -194,3 +194,65 @@
   ask: Review this WebView page for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+# ── platform reviewers: release and runtime patterns from a Flutter e-commerce review ──
+- name: ios-review-version-regression
+  role: ios-review
+  fixture: ai/tasks/subagent/fixtures/ios-version-regression/project.pbxproj.diff
+  ask: Review this iOS project change before release.
+  must_report:
+    - name: ios-version-goes-backwards
+      severity: critical
+      any_of: ["version + lower", "build number + lower", "backwards", "regress + version", "itms", "reject + upload"]
+
+- name: ios-review-retain-cycle
+  role: ios-review
+  fixture: ai/tasks/subagent/fixtures/ios-retain-cycle/CardFormPlatformView.swift
+  ask: Review this platform view for lifecycle and memory problems.
+  must_report:
+    - name: closure-retain-cycle-deinit-never-runs
+      severity: medium
+      any_of: ["retain cycle", "weak self", "deinit + never", "strong reference + self"]
+
+- name: flutter-review-global-text-scale
+  role: flutter-review
+  fixture: ai/tasks/subagent/fixtures/flutter-text-scale/app.dart
+  ask: Review this app root widget.
+  must_report:
+    - name: text-scale-forced-app-wide
+      severity: medium
+      any_of: ["textscaler", "text scal", "font scal", "dynamic type"]
+
+- name: flutter-review-from-environment-runtime
+  role: flutter-review
+  fixture: ai/tasks/subagent/fixtures/flutter-from-environment/cashback_badge.dart
+  ask: Review this widget for runtime failures.
+  must_report:
+    - name: from-environment-not-const
+      severity: high
+      any_of: ["fromenvironment + const", "fromenvironment + unsupported", "fromenvironment + runtime"]
+
+- name: android-review-event-sink-unit
+  role: android-review
+  fixture: ai/tasks/subagent/fixtures/android-channel-unit/MainActivity.kt
+  ask: Review how this activity forwards links to Flutter.
+  must_report:
+    - name: unit-sent-to-codec
+      severity: medium
+      any_of: ["unit + success", "unit + codec", "unsupported value", "elvis + error", "datastring + null + return"]
+
+- name: android-review-cancellation-swallowed
+  role: android-review
+  fixture: ai/tasks/subagent/fixtures/android-channel-cancellation/CardFormView.kt
+  ask: Review this platform view's method-channel handling.
+  must_report:
+    - name: cancellation-leaves-result-unanswered
+      severity: high
+      any_of: ["cancellationexception", "result + never", "cancel + hang", "future + never complete"]
+
+- name: flutter-review-clean-lifecycle
+  role: flutter-review
+  fixture: ai/tasks/subagent/fixtures/flutter-clean-lifecycle/search_field.dart
+  ask: Review this widget for a concrete lifecycle or async problem. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'

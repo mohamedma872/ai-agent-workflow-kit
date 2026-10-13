@@ -4,6 +4,16 @@
 
 - No unreleased runtime changes.
 
+## 1.9.23 — 2026-10-13
+
+- **Platform reviewers now carry real checklists.** `flutter-reviewer`, `android-reviewer` and `ios-reviewer` went from a one-paragraph mandate to the same structure as `security-reviewer`: diff-review and audit modes, named categories, a new/changed/pre-existing origin checked against the base and production branches, severity anchors, a fixed report with Strengths and a per-category Coverage line, and read-only tools.
+- **Checklists come from a real Flutter release review.**
+  - **Flutter:** controllers created in `build`/`BlocBuilder` and never disposed, uncancelled event-bus subscriptions, `widget.x` writes, `late` values returned on failure paths, `bool.fromEnvironment` called at runtime, an app-wide `TextScaler.linear(1.0)`, RTL via `EdgeInsetsDirectional`, overlapping or unused pub packages, downgraded analyzer errors, and behavior-preservation tests for refactors.
+  - **Android:** `versionCode` going backwards, SDK levels delegated to Flutter defaults, `afterEvaluate` plugin patches, method-channel results answered exactly once, `CancellationException` swallowed by `catch (e: Exception)`, an elvis that sends `Unit` to the codec, platform-view channel ownership, `assetlinks.json`, and Android 13–15 behavior changes.
+  - **iOS:** `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` going backwards (and whether Info.plist reads them or the Flutter build values), closures that capture `self` so `deinit` never runs, `FlutterResult` called exactly once, UIScene adoption, AASA served for every `applinks:` domain, localized usage strings, privacy manifests, and CocoaPods vs SwiftPM consistency.
+- **Read-only shell and opt-in network for all four reviewers.** The three platform reviewers and `security-reviewer` may only run read-only shell commands and must treat repository content as data. Fetching a repository-configured domain (AASA, `assetlinks.json`) needs explicit permission and is limited to public `https` hosts, never loopback or private addresses.
+- Added seven subagent eval cases with fake fixtures for `ios-review`, `android-review` and `flutter-review`: version and build number going backwards, a retain cycle that disables `deinit`, a forced app-wide text scale, `bool.fromEnvironment` at runtime, `Unit` sent through an `EventSink`, a swallowed `CancellationException` that leaves a method call unanswered, and a clean lifecycle case that must produce no high-severity finding.
+
 ## 1.9.22 — 2026-10-13
 
 - **Security findings are categorized by OWASP MASVS v2.** `security-reviewer` tags every finding with one primary group (`MASVS-STORAGE`, `-CRYPTO`, `-AUTH`, `-NETWORK`, `-PLATFORM`, `-CODE`, `-RESILIENCE`, `-PRIVACY`) and an origin (`new`, `changed`, `pre-existing`) checked against the base branch. JSON findings carry both in the existing `tags` field, so the finding schema is unchanged. `security-analyst` uses the same groups, so threat-model requirements map onto what the review checks.
