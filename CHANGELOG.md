@@ -4,6 +4,30 @@
 
 - No unreleased runtime changes.
 
+## 1.9.24 — 2026-10-13
+
+- **`security-reviewer` now checks encryption, key storage and data integrity explicitly.** A Flutter audit with 1.9.23 reviewed TLS and cleartext in depth but only touched these areas, because the checklist named them in general terms. New checklist items:
+  - **Encryption at rest:** name the cipher *and mode*. AES-CBC/CTR without a MAC is unauthenticated, so the review must say what tampering could change and what happens on decrypt failure.
+  - **Key storage and hardware:** Android Keystore with TEE or StrongBox and user-authentication binding; iOS Keychain `…ThisDeviceOnly` and the Secure Enclave. Read the storage plugin's defaults for the locked version, and judge whether hardware-backed keys are warranted instead of recommending them by default.
+  - **Platform file protection:** the iOS Data Protection class of databases, logs and caches; Android storage location; WebView cache and cookies at logout.
+  - **Other crypto:** unsalted identifier hashes, `Random` vs secure randomness, hard-coded keys and IVs, base64 or XOR presented as encryption.
+  - **Data integrity and trust:**
+    - unsigned remote config or assets that control payment keys, OAuth settings, kill switches, allow-listed hosts or force update;
+    - empty or stale config handled safely;
+    - money values and payment status recomputed or verified by the server;
+    - idempotency for order and payment calls.
+  - **Transport and pinning:** list each host and its client; `network_security_config` does not cover `dart:io`; pinning is recorded as a decision (hosts, SPKI pins, backups, rotation, kill switch) or a reasoned "no".
+  - **Attestation:** Play Integrity and App Attest/DeviceCheck for login, payment, KYC and promotion abuse.
+- The CRYPTO, NETWORK, CODE and RESILIENCE category descriptions cover these areas. The Coverage line must name the cipher mode and key storage verified, and the hosts and pinning decision.
+- `engineering-rulebook` §33 lists these as recurring failures.
+- Added six `security` subagent eval cases with fake fixtures:
+  - AES-CBC without a MAC trusted for member pricing;
+  - an AES key stored in SharedPreferences beside the data it protects;
+  - unsigned CDN config controlling the payment key and token allow-list;
+  - an order total and payment status computed by the client;
+  - an iOS session file written with `.noFileProtection`;
+  - a clean AES-GCM store that must produce no high-severity finding.
+
 ## 1.9.23 — 2026-10-13
 
 - **Platform reviewers now carry real checklists.** `flutter-reviewer`, `android-reviewer` and `ios-reviewer` went from a one-paragraph mandate to the same structure as `security-reviewer`: diff-review and audit modes, named categories, a new/changed/pre-existing origin checked against the base and production branches, severity anchors, a fixed report with Strengths and a per-category Coverage line, and read-only tools.
