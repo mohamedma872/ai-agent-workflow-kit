@@ -312,3 +312,38 @@
   ask: Review this storage code for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+# ── security: man in the middle, root and jailbreak ──
+- name: security-user-ca-trusted-in-release
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-user-ca-release/network_security_config.xml
+  ask: Identify the concrete security issue in this network configuration.
+  must_report:
+    - name: user-ca-trusted-in-release
+      severity: high
+      any_of: ["user + certificate", "user ca", "src=\"user\"", "debug-overrides", "user-installed"]
+
+- name: security-pinning-killswitch-unsigned
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-pin-killswitch/pinned_client.dart
+  ask: Identify the concrete security issue in how this pinning is controlled.
+  must_report:
+    - name: pinning-disabled-by-unsigned-config
+      severity: medium
+      any_of: ["kill switch", "pinningenabled", "unsigned + pinning", "config + disable", "remote + pinning"]
+
+- name: security-root-check-as-control
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-root-client-only/wallet_guard.dart
+  ask: Identify the concrete security issue in how this wallet flow is protected.
+  must_report:
+    - name: client-root-check-trusted-by-server
+      severity: high
+      any_of: ["devicetrusted", "attestation", "bypass + root", "frida", "server + trust"]
+
+- name: security-clean-network-config
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-clean-network-config/network_security_config.xml
+  ask: Review this network configuration for a concrete security issue. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'

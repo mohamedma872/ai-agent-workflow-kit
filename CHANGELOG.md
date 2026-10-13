@@ -4,6 +4,25 @@
 
 - No unreleased runtime changes.
 
+## 1.9.25 — 2026-10-13
+
+- **`security-reviewer` covers man-in-the-middle and root/jailbreak explicitly.**
+  - **Man in the middle:** for every traffic path (Dart `dart:io`, native SDKs, each WebView engine), the review states:
+    - which CA store the path trusts, and whether a user-installed CA is trusted (Android `<certificates src="user"/>` outside `debug-overrides`; iOS profiles with full trust);
+    - whether ATS or `network_security_config` actually applies, and whether certificate transparency is enforced;
+    - any `http` path, runtime trust anchor or debug override left in release.
+
+    Scenarios are ranked for the app. The review must say that pinning does not stop a device owner who uses root or Frida, so money values and promotions need server-side validation.
+  - **Root, jailbreak and runtime tampering:** the review records what the app detects (root/jailbreak, emulator, debugger, Frida, repackaging, installer source) and what it does on detection. It maps what a rooted-device owner can do in the app and treats client checks as signals paired with server-side attestation and validation. It also checks release hardening: R8, Dart obfuscation, no `debuggable`.
+  - **Pinning kill switch:** it must come from a compiled pin expiry or a signed flag, never from unsigned remote config.
+- The NETWORK and RESILIENCE category descriptions and the Coverage line cover these areas.
+- `engineering-rulebook` §33 lists them as recurring failures.
+- Added four `security` subagent eval cases:
+  - user CAs trusted in release;
+  - pinning switched off by an unsigned config flag;
+  - a client root check that the server trusts through a `deviceTrusted` flag;
+  - a clean network config (system CAs in release, user CAs only in `debug-overrides`) that must produce no high-severity finding.
+
 ## 1.9.24 — 2026-10-13
 
 - **`security-reviewer` now checks encryption, key storage and data integrity explicitly.** A Flutter audit with 1.9.23 reviewed TLS and cleartext in depth but only touched these areas, because the checklist named them in general terms. New checklist items:
