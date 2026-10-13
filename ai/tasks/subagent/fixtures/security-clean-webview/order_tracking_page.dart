@@ -8,10 +8,12 @@ import '../session/session_store.dart';
 
 const _trustedHosts = {'www.example-shop.com', 'm.example-shop.com'};
 
-bool _isTrusted(Uri uri) => uri.scheme == 'https' && _trustedHosts.contains(uri.host);
+/// Dart's Uri.port is 443 for an https URL without an explicit port.
+bool _isTrusted(Uri uri) =>
+    uri.scheme == 'https' && uri.port == 443 && _trustedHosts.contains(uri.host);
 
 /// Order tracking is a storefront page. The token is attached only to exact,
-/// https, allow-listed hosts; everything else opens in the system browser.
+/// https, allow-listed hosts on the default port; everything else opens in the system browser.
 class OrderTrackingPage extends StatelessWidget {
   const OrderTrackingPage({super.key, required this.orderUrl});
 
