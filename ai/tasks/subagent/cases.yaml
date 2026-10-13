@@ -256,3 +256,59 @@
   ask: Review this widget for a concrete lifecycle or async problem. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+# ── security: encryption, key storage and data integrity ──
+- name: security-cbc-without-mac
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-cbc-no-mac/profile_cache.dart
+  ask: Identify the concrete security issue in how this cache is encrypted and used.
+  must_report:
+    - name: unauthenticated-encryption-trusted-for-pricing
+      severity: medium
+      any_of: ["cbc + mac", "cbc + integrity", "unauthenticated", "cbc + tamper", "gcm"]
+
+- name: security-key-stored-beside-data
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-key-in-prefs/SessionCrypto.kt
+  ask: Identify the concrete security issue in how this token is protected.
+  must_report:
+    - name: encryption-key-in-shared-preferences
+      severity: high
+      any_of: ["key + sharedpreferences", "aes_key", "key + android keystore", "key + plaintext + prefs"]
+
+- name: security-unsigned-remote-config
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-remote-config/app_config_loader.dart
+  ask: Identify the concrete security issue in how this configuration is trusted.
+  must_report:
+    - name: remote-config-not-integrity-protected
+      severity: medium
+      any_of: ["signature", "signed", "integrity + config", "tamper + config", "empty + config"]
+
+- name: security-client-computed-total
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-client-price/place_order.dart
+  ask: Identify the concrete security issue in how this order is placed.
+  must_report:
+    - name: server-trusts-client-money-values
+      severity: high
+      any_of: ["server + recalculat", "server + recompute", "client + total", "total + trust", "price + client", "server + verif"]
+    - name: order-retry-without-idempotency-key
+      severity: medium
+      any_of: ["idempoten", "duplicate + order", "retry + duplicate"]
+
+- name: security-ios-no-file-protection
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-ios-file-protection/SessionStore.swift
+  ask: Identify the concrete security issue in how this session is stored.
+  must_report:
+    - name: session-file-without-data-protection
+      severity: high
+      any_of: ["nofileprotection", "file protection", "data protection", "keychain + token", "plaintext + token"]
+
+- name: security-clean-aes-gcm-store
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-clean-crypto/secure_note_store.dart
+  ask: Review this storage code for a concrete security issue. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'

@@ -593,7 +593,10 @@ Recurring failures to check explicitly:
 - plaintext copies left behind after migrating data to secure storage, or not cleared on every logout path;
 - signing keys, keystore passwords, CI tokens or client secrets in tracked files, and build-time obfuscation treated as secrecy;
 - payment sandbox/production chosen from a key prefix or remote config instead of the build environment;
-- card data, CVV, OTPs or client secrets in URL query strings.
+- card data, CVV, OTPs or client secrets in URL query strings;
+- local encryption without integrity (AES-CBC/CTR with no MAC), data keys stored without the platform's hardware-backed or this-device-only options when the threat model needs them, and databases or logs left without a file-protection class;
+- unsigned remote config or assets controlling security behavior, and money values or payment status that the server takes from the client without recomputing or verifying them;
+- pinning neither implemented nor explicitly decided against.
 
 A finding that involves a live credential is disclosed privately to the owner and rotated; it is not posted in a PR comment or ticket.
 
