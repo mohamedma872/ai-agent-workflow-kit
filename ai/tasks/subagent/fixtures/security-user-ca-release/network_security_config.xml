@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- android/app/src/main/res/xml/network_security_config.xml
+     Referenced from AndroidManifest.xml (android:networkSecurityConfig) for all
+     build types. QA needs Charles Proxy to work on test phones. No pinning:
+     the API host relies on the trust anchors below. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

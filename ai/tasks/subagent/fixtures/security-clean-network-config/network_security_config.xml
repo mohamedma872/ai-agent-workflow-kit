@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- android/app/src/main/res/xml/network_security_config.xml
+     Release builds trust only system CAs. User CAs are trusted in debug builds
+     only, so QA can proxy debug builds. Pinning is decided in ADR-014: not pinned
+     (Google-managed certificates rotate every ~90 days); API traffic uses
+     dart:io, which this file does not cover, so Dart trusts the system store. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>
