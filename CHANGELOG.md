@@ -4,6 +4,16 @@
 
 - No unreleased runtime changes.
 
+## 1.9.22 — 2026-10-13
+
+- **Security findings are categorized by OWASP MASVS v2.** `security-reviewer` tags every finding with one primary group (`MASVS-STORAGE`, `-CRYPTO`, `-AUTH`, `-NETWORK`, `-PLATFORM`, `-CODE`, `-RESILIENCE`, `-PRIVACY`) and an origin (`new`, `changed`, `pre-existing`) checked against the base branch. JSON findings carry both in the existing `tags` field, so the finding schema is unchanged. `security-analyst` uses the same groups, so threat-model requirements map onto what the review checks.
+- **Audit mode.** Besides threat-model and diff-review, `security-reviewer` can audit the whole codebase. Audits have no word cap, give separate verdicts for the change and the codebase, and must list a Coverage line per MASVS group, with native Android, native iOS and Dart reported separately. An unreviewed group is `not-reviewed`, never a pass.
+- **Mobile checklist from a real Flutter audit.** New checks for URL allow-lists built with `startsWith`/`contains`, tokens and HTTP-auth credentials attached in WebViews, WebView permission grants, log redaction that misses byte bodies, plaintext left behind after storage migrations and logout, committed signing keys and CI tokens, runtime-downloaded trust anchors, payment environment inferred from a key prefix, card data in URLs, and native Android/iOS/Flutter platform settings.
+- **Severity anchors.** Critical, high, medium and low are defined with security examples, so a committed release signing key is rated critical and a token sent to an unvalidated host is rated high, consistently.
+- **Disclosure rule.** Reports end with a Disclosure section naming findings that involve live credentials, which go to a private channel rather than a PR comment or ticket. Credential files are only inspected for key names.
+- `engineering-rulebook` §33 records the categories and the recurring failures, so humans and agents read the same rules.
+- Added five `security` subagent eval cases with Flutter/Kotlin fixtures: token sent to a lookalike WebView host, redaction bypassed for byte bodies, plaintext session left after migration, committed release signing key, and a clean WebView allow-list case that must produce no high-severity finding.
+
 ## 1.9.21 — 2026-10-07
 
 - **One canonical engineering rulebook.** Consolidated Clean Code, SOLID, Clean Architecture, state/concurrency/error rules, Fowler refactoring, testing, security, observability, performance, navigation, e-commerce, architecture coverage, report semantics, ADRs, fitness functions, severity/priority, and architecture Definition of Done into `ai/standards/engineering-rulebook.md`.

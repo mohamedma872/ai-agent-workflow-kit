@@ -584,6 +584,19 @@ Review:
 - PII;
 - payment/business-sensitive data.
 
+Categorize mobile security findings with one OWASP MASVS v2 group each — `MASVS-STORAGE`, `MASVS-CRYPTO`, `MASVS-AUTH`, `MASVS-NETWORK`, `MASVS-PLATFORM`, `MASVS-CODE`, `MASVS-RESILIENCE`, `MASVS-PRIVACY` — and say whether the change introduced it (`new`/`changed`) or it was already on the base branch (`pre-existing`). For Flutter and React Native, the Dart/JS layer and the native Android and iOS projects are reviewed separately; an unreviewed one is `not-reviewed`.
+
+Recurring failures to check explicitly:
+
+- host allow-lists built with `startsWith`/`contains` on URL strings instead of an exact match on the parsed host and port plus an `https` check — especially before a WebView attaches a token, cookie or HTTP-auth credential;
+- log redaction that only works on text while the client logs bodies as bytes/streams;
+- plaintext copies left behind after migrating data to secure storage, or not cleared on every logout path;
+- signing keys, keystore passwords, CI tokens or client secrets in tracked files, and build-time obfuscation treated as secrecy;
+- payment sandbox/production chosen from a key prefix or remote config instead of the build environment;
+- card data, CVV, OTPs or client secrets in URL query strings.
+
+A finding that involves a live credential is disclosed privately to the owner and rotated; it is not posted in a PR comment or ticket.
+
 Never log:
 
 - passwords;
