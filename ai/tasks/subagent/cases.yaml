@@ -150,3 +150,47 @@
   forbidden_findings:
     - '"severity":"(critical|high)"'
     - "injection"
+
+# ── security: mobile audit patterns (MASVS-categorized; from a Flutter e-commerce audit) ──
+- name: security-webview-host-prefix-token
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-webview-host/help_web_page.dart
+  ask: Identify the concrete security issue in this WebView page.
+  must_report:
+    - name: token-sent-to-lookalike-host
+      severity: high
+      any_of: ["startswith + host", "prefix + host", "lookalike", "exact + host", "uri.host"]
+
+- name: security-log-scrubber-bytes
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-log-scrubber/api_client.dart
+  ask: Identify the concrete security issue in how this client reports network traffic.
+  must_report:
+    - name: redaction-bypassed-for-byte-bodies
+      severity: high
+      any_of: ["bytes + redact", "bytes + token", "byte + scrub", "list<int> + token", "responsetype + token"]
+
+- name: security-migration-plaintext-leftover
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-migration-leftover/legacy_session_migration.dart
+  ask: Identify the concrete security issue in this storage migration.
+  must_report:
+    - name: plaintext-session-left-after-migration
+      severity: high
+      any_of: ["sharedpreferences + left", "plaintext + token", "not deleted", "never removed", "remain + sharedpreferences", "logout + sharedpreferences"]
+
+- name: security-signing-key-committed
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-signing-key/build.gradle.kts
+  ask: Identify the concrete security issue in this release build configuration.
+  must_report:
+    - name: release-signing-key-in-repo
+      severity: critical
+      any_of: ["keystore + commit", "keystore + git", "signing + commit", "keystore + tracked", "rotate + key"]
+
+- name: security-clean-webview-allowlist
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-clean-webview/order_tracking_page.dart
+  ask: Review this WebView page for a concrete security issue. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
