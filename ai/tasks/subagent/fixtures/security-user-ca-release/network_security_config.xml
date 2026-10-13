@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- android/app/src/main/res/xml/network_security_config.xml
      Referenced from AndroidManifest.xml (android:networkSecurityConfig) for all
-     build types. QA needs Charles Proxy to work on test phones. -->
+     build types. QA needs Charles Proxy to work on test phones. No pinning:
+     the API host relies on the trust anchors below. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
@@ -9,10 +10,4 @@
             <certificates src="user" />
         </trust-anchors>
     </base-config>
-    <domain-config>
-        <domain includeSubdomains="true">api.example-shop.com</domain>
-        <pin-set expiration="2027-01-01">
-            <pin digest="SHA-256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</pin>
-        </pin-set>
-    </domain-config>
 </network-security-config>

@@ -320,8 +320,8 @@
   ask: Identify the concrete security issue in this network configuration.
   must_report:
     - name: user-ca-trusted-in-release
-      severity: high
-      any_of: ["user + certificate", "user ca", "src=\"user\"", "debug-overrides", "user-installed"]
+      severity: medium
+      any_of: ["user + release + ca", "user-installed + release", "src=\"user\" + release", "user + certificate + release"]
 
 - name: security-pinning-killswitch-unsigned
   role: security

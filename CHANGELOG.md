@@ -14,7 +14,7 @@
 
     Scenarios are ranked for the app. The review must say that pinning does not stop a device owner who uses root or Frida, so money values and promotions need server-side validation.
   - **Root, jailbreak and runtime tampering:** the review records what the app detects (root/jailbreak, emulator, debugger, Frida, repackaging, installer source) and what it does on detection. It maps what a rooted-device owner can do in the app and treats client checks as signals paired with server-side attestation and validation. It also checks release hardening: R8, Dart obfuscation, no `debuggable`.
-  - **Pinning kill switch:** it must come from a compiled pin expiry or a signed flag, never from unsigned remote config.
+  - **Pinning kill switch:** it must come from a compiled pin expiry, or from a signed flag with an expiry and an anti-rollback version, never from unsigned remote config.
 - The NETWORK and RESILIENCE category descriptions and the Coverage line cover these areas.
 - `engineering-rulebook` §33 lists them as recurring failures.
 - Added four `security` subagent eval cases:
