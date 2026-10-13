@@ -1,0 +1,29 @@
+# Change under review: merge of the refactor branch into the release branch.
+# The production branch shipped 4.8.2 (build 31) to the App Store last week.
+#
+# ios/Runner/Info.plist (unchanged by this diff):
+#   <key>CFBundleShortVersionString</key> <string>$(MARKETING_VERSION)</string>
+#   <key>CFBundleVersion</key>            <string>$(CURRENT_PROJECT_VERSION)</string>
+#
+# pubspec.yaml (unchanged): version: 4.9.0+52
+
+--- a/ios/Runner.xcodeproj/project.pbxproj
++++ b/ios/Runner.xcodeproj/project.pbxproj
+@@ -744,7 +744,7 @@ /* Debug */
+-				CURRENT_PROJECT_VERSION = 31;
++				CURRENT_PROJECT_VERSION = 14;
+@@ -761,7 +761,7 @@ /* Debug */
+-				MARKETING_VERSION = 4.8.2;
++				MARKETING_VERSION = 4.8.1;
+@@ -888,7 +888,7 @@ /* Release */
+-				CURRENT_PROJECT_VERSION = 31;
++				CURRENT_PROJECT_VERSION = 14;
+@@ -906,7 +906,7 @@ /* Release */
+-				MARKETING_VERSION = 4.8.2;
++				MARKETING_VERSION = 4.8.1;
+@@ -928,7 +928,7 @@ /* Profile */
+-				CURRENT_PROJECT_VERSION = 31;
++				CURRENT_PROJECT_VERSION = 14;
+@@ -946,7 +946,7 @@ /* Profile */
+-				MARKETING_VERSION = 4.8.2;
++				MARKETING_VERSION = 4.8.1;
