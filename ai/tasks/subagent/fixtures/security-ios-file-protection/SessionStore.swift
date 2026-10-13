@@ -7,7 +7,8 @@ final class SessionStore {
     static let shared = SessionStore()
 
     private var url: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.example.shop")!
             .appendingPathComponent("session.json")
     }
 

@@ -24,7 +24,7 @@
   - AES-CBC without a MAC trusted for member pricing;
   - an AES key stored in SharedPreferences beside the data it protects;
   - unsigned CDN config controlling the payment key and token allow-list;
-  - an order total and payment status computed by the client;
+  - an order total and payment status computed by the client, retried without an idempotency key;
   - an iOS session file written with `.noFileProtection`;
   - a clean AES-GCM store that must produce no high-severity finding.
 

@@ -293,6 +293,9 @@
     - name: server-trusts-client-money-values
       severity: high
       any_of: ["server + recalculat", "server + recompute", "client + total", "total + trust", "price + client", "server + verif"]
+    - name: order-retry-without-idempotency-key
+      severity: medium
+      any_of: ["idempoten", "duplicate + order", "retry + duplicate"]
 
 - name: security-ios-no-file-protection
   role: security

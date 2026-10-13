@@ -15,7 +15,12 @@ class SecureNoteStore {
   static const _keyName = 'note_data_key';
   static const _ios = IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device);
 
-  Future<SecretKey> _key() async {
+  Future<SecretKey>? _keyFuture;
+
+  /// Created once per store; concurrent first calls share the same future.
+  Future<SecretKey> _key() => _keyFuture ??= _loadOrCreateKey();
+
+  Future<SecretKey> _loadOrCreateKey() async {
     final existing = await _storage.read(key: _keyName, iOptions: _ios);
     if (existing != null) return SecretKey(base64Decode(existing));
     final key = await _algorithm.newSecretKey();
