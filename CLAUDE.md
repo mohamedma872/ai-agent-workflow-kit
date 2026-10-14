@@ -22,14 +22,17 @@ enforces them). Architecture for guardrails, evals and AI tasks: `ai/README.md`.
   are part of done.
 - **Specialists** (`.claude/agents/`): mobile-architect, android-expert,
   ios-expert, flutter-expert, security-reviewer, qa-engineer,
-  performance-reviewer, code-reviewer, backend-expert, frontend-expert —
+  performance-reviewer, code-reviewer, backend-expert, frontend-expert,
+  impact-analyst, impact-verifier —
   example packs; keep the ones your stack needs and rename freely. They analyse
   and review, read-only; the orchestrator edits.
 - **Flutter**: `pubspec.yaml` + Flutter/Dart application sources trigger the
   `flutter` workflow role. Flutter UI features use the same final Appium
   screenshot evidence gate through their Android/iOS build. Native platform
   changes can additionally route to `android-expert` / `ios-expert`.
-- **Commands** (`.claude/commands/`): `/plan`, `/review`, `/fix-issue`, `/fence`.
+- **Commands** (`.claude/commands/`): `/plan`, `/review`, `/fix-issue`, `/fence`,
+  `/impact` (verified impact analysis of a branch vs its merge base and the
+  production branch; see `docs/impact-analysis.md`).
 - **Rules** (`.claude/rules/`): example path-scoped rules plus workflow rules,
   including Flutter routing; `ai-tasks` always. Replace examples with your
   project conventions.

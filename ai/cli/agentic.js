@@ -18,6 +18,8 @@ const RUNS_INDEX = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'runs-index.js');
 const REFACTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-cli.js');
 const REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-report.js');
 const ARCHITECTURE_REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'architecture-review-report.js');
+const IMPACT_BASELINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'impact-baseline.js');
+const IMPACT_REGISTER = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'impact-register.js');
 const RAG = path.join(RUNTIME_ROOT, 'ai', 'rag', 'hybrid-rag.js');
 const CONFLICTS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'conflicts.js');
 const VERSION = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'version.js');
@@ -388,6 +390,8 @@ Usage:
   agentic architecture <run-id> <option-id> [note]
   agentic report <run-id> [--json]
   agentic architecture-report <run-id> [--json] [--output <dir>]
+  agentic impact <run-id> --base <ref> --head <ref> [--prod <ref>] [--no-worktrees]
+  agentic impact-report <run-id> [--json] [--output <dir>]
   agentic conflicts <run-id>       Specialist disagreements blocking the plan
   agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."
   agentic rag --query "..." [--role security] [--json]
@@ -548,6 +552,16 @@ function main() {
   if (command === 'architecture-report') {
     if (!args[1]) throw new Error('architecture-report requires a run id');
     return runNode(ARCHITECTURE_REPORT, [args[1], ...args.slice(2)], project);
+  }
+  // Branch impact analysis: deterministic baseline, then the verified register
+  // built from /impact specialist findings and verifier votes.
+  if (command === 'impact') {
+    if (!args[1]) throw new Error('impact requires <run-id> --base <ref> --head <ref> [--prod <ref>]');
+    return runNode(IMPACT_BASELINE, [args[1], ...args.slice(2)], project);
+  }
+  if (command === 'impact-report') {
+    if (!args[1]) throw new Error('impact-report requires a run id');
+    return runNode(IMPACT_REGISTER, [args[1], ...args.slice(2)], project);
   }
   // Unresolved specialist conflicts block the plan stage; these expose them.
   if (command === 'conflicts') {

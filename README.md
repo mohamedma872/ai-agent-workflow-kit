@@ -424,6 +424,8 @@ agentic --project ~/projects/payment-backend \
 | `agentic architecture <id> <option>` | record the human architecture choice |
 | `agentic report <id>` | produce/read refactor verification results |
 | `agentic architecture-report <id> [--json] [--output <dir>]` | export grouped architecture findings + coverage matrix |
+| `agentic impact <id> --base <ref> --head <ref> [--prod <ref>]` | deterministic baseline for a branch impact analysis (worktrees, sizes, patterns, dependencies, production drift) |
+| `agentic impact-report <id> [--json] [--output <dir>]` | build the verified impact register (Markdown, CSV for Excel, JSON) |
 | `agentic rag --query "..."` | inspect Hybrid RAG directly |
 | `agentic worktree <id>` | inspect run worktree state |
 | `agentic cleanup <id>` | safely remove a run worktree |
@@ -585,6 +587,28 @@ The architecture specialist explicitly records coverage for feature boundaries, 
 Each grouped finding carries the current design, repository evidence, recommendation, **why**, impact, P0/P1/P2 priority, owner domain, confidence, and governing principle. Missing coverage appears as `not-reviewed`; it is never treated as a pass.
 
 Details: [docs/architecture-review-report.md](docs/architecture-review-report.md).
+
+### Branch impact analysis
+
+`/impact` measures what a branch really changed against its merge base and the production branch — built for large "behavior-preserving" refactors and long-lived branches.
+
+```bash
+/impact REVAMP-1 --head origin/feature/revamp --prod origin/master
+```
+
+1. `agentic impact` writes a deterministic baseline: read-only base/head worktrees, rename-aware change counts, source/generated/test sizes, stack pattern counts, lock-file diff, and **production commits whose files moved at head** (fixes at risk of being silently lost at merge).
+2. Layer specialists (architecture, API contract, performance, QA, platform reviewers) and one `impact-analyst` per journey run in parallel, plus six sweeps: nullable defaults, lost fixes, production drift, contracts, string-keyed contracts (routes, broadcasts, channels, storage keys), storage migration.
+3. Every finding goes to `impact-verifier` agents told to refute it — three lenses for high findings (code truth, provenance and reachability, real impact), one combined lens for the rest. A finding the production branch already has, or that does not ship, is dropped.
+4. `agentic impact-report` applies the survival rule, takes the median corrected severity, merges duplicates and exports:
+
+```text
+.agentic-runs/<run-id>/impact/report/
+├── impact-register.md
+├── impact-register.csv   # opens in Excel, with Status and Owner columns
+└── impact-register.json
+```
+
+Results are written to disk as each agent finishes, so a run stopped by a usage limit resumes without redoing work. Details: [docs/impact-analysis.md](docs/impact-analysis.md).
 
 ---
 

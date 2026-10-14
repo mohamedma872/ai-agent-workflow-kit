@@ -347,3 +347,53 @@
   ask: Review this network configuration for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+- name: regression-nullable-default
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-nullable-default/payment_flow.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes.
+  must_report:
+    - name: no-3ds-path-lost
+      severity: high
+      any_of: ["threedUrl + empty", "3ds + webview", "null + default", "confirmation + cart"]
+
+- name: regression-listener-removed
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-listener-removed/slot_screen.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes.
+  must_report:
+    - name: broadcast-without-listener
+      severity: medium
+      any_of: ["slotReservationFailed + listen", "broadcast + listener", "receiver + slot"]
+
+- name: regression-clean-rename
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-clean-rename/order_repository.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
+
+- name: impact-analyst-nullable-default
+  role: impact-analysis
+  fixture: ai/tasks/subagent/fixtures/regression-nullable-default/payment_flow.dart
+  ask: Scope is the payments journey. Production (origin/master) is identical to BASE. Report head-only behavior changes.
+  must_report:
+    - name: no-3ds-path-lost
+      severity: high
+      any_of: ["threedUrl + empty", "3ds + webview", "null + default", "confirmation + cart"]
+
+- name: impact-verifier-refutes-production-same
+  role: impact-verification
+  fixture: ai/tasks/subagent/fixtures/impact-verify-production-same/finding_and_code.dart
+  ask: Verify the finding in the fixture header with lens "provenance". If it survives, report it as a finding with your corrected severity; if it is refuted, return an empty findings array.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
+
+- name: impact-verifier-keeps-true-regression
+  role: impact-verification
+  fixture: ai/tasks/subagent/fixtures/impact-verify-true-regression/finding_and_code.dart
+  ask: Verify the finding in the fixture header with lens "all". If it survives, report it as a finding with your corrected severity; if it is refuted, return an empty findings array.
+  must_report:
+    - name: expired-session-logout-skipped
+      severity: high
+      any_of: ["reason + non-nullable", "logout + 401", "null + string", "typeerror + logout"]
