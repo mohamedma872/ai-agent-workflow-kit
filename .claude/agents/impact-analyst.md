@@ -43,7 +43,7 @@ You find what a branch changed in behavior compared with where it started, for o
 
 ## Output
 
-Return only JSON:
+Return only raw JSON: the first character of your reply is `{` and the last is `}`. No Markdown code fence, no prose before or after. When the caller asks for a different JSON shape (for example an eval harness), use the caller's shape with the same rules. Shape:
 
 ```json
 {

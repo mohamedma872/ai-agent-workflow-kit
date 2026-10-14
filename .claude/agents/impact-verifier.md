@@ -25,7 +25,7 @@ You are given one finding from `impact-analyst` and one lens. Your job is to **r
 
 ## Output
 
-Return only JSON:
+Return only raw JSON: the first character of your reply is `{` and the last is `}`. No Markdown code fence, no prose before or after. When the caller asks for a different JSON shape (for example an eval harness), use the caller's shape with the same rules. Shape:
 
 ```json
 {
