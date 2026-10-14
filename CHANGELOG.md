@@ -4,6 +4,17 @@
 
 - No unreleased runtime changes.
 
+## 1.9.26 — 2026-10-14
+
+- **Branch impact analysis (`/impact`).** Measures what a branch changed in behavior against its merge base and the production branch, and whether it can ship. Built from a real ~4,000-file Flutter refactor review, where it found 17 high-severity regressions two earlier reviews missed and refuted 49 plausible claims.
+  - **`agentic impact`** writes a deterministic baseline: read-only base/head worktrees, rename-aware change counts, source/generated/test sizes, stack pattern counts (Flutter, React Native, Android, iOS scanned in their own folders), lock-file diff, and the production commits the branch lacks whose files no longer exist at head — fixes at risk of being silently lost at merge.
+  - **`impact-analyst`** (new) reviews one journey, feature group or sweep and reports only head-only changes with `file:line` in both trees and a production-branch provenance check. Six sweeps: nullable defaults, lost fixes, production drift, contracts, string-keyed contracts (routes, broadcasts, channels, storage keys), storage migration.
+  - **`impact-verifier`** (new) tries to refute one finding through one lens: code truth, provenance and reachability (production already has it, flag-gated, dead code), or real impact. Defaults to refuted when it cannot confirm.
+  - **`agentic impact-report`** applies the survival rule (one verifier must not refute; with several, refuters must be a minority; no verdict is "unverified"), takes the median corrected severity, merges duplicates by title or reported `file:line`, and exports Markdown, CSV with a BOM for Excel (Status and Owner columns) and JSON.
+  - The `/impact` command writes every agent result to disk on arrival, so a run stopped by a usage limit resumes without redoing finished work.
+- **`behavior-regression-reviewer`** gained the patterns behind those regressions: nullable fields turned into defaults, broadcasts without listeners and missing route names, literal find-and-replace slips, dropped base fixes, a shared client adding timeouts or logging to payment calls, split storage; and it must check the production branch and the shipping path first.
+- Added three `behavior-regression-review` subagent eval cases and selftests for both new scripts (part of `npm run workflow:check`).
+
 ## 1.9.25 — 2026-10-13
 
 - **`security-reviewer` covers man-in-the-middle and root/jailbreak explicitly.**

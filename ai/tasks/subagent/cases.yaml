@@ -347,3 +347,28 @@
   ask: Review this network configuration for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+- name: regression-nullable-default
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-nullable-default/payment_flow.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes.
+  must_report:
+    - name: no-3ds-path-lost
+      severity: high
+      any_of: ["threedUrl + empty", "3ds + webview", "null + default", "confirmation + cart"]
+
+- name: regression-listener-removed
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-listener-removed/slot_screen.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes.
+  must_report:
+    - name: broadcast-without-listener
+      severity: medium
+      any_of: ["slotReservationFailed + listen", "broadcast + listener", "receiver + slot"]
+
+- name: regression-clean-rename
+  role: behavior-regression-review
+  fixture: ai/tasks/subagent/fixtures/regression-clean-rename/order_repository.dart
+  ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
