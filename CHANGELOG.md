@@ -16,6 +16,7 @@
 - **New routed roles `impact-analysis` and `impact-verification`** in `ai/workflows/feature.yaml` and `ai/subagents/contracts.yaml` (read-only, not scheduled by the feature stages), so both agents resolve through the router and are measured by subagent evals.
 - Added six subagent eval cases: three `behavior-regression-review` (nullable default, broadcast without listener, clean rename that must stay below high), one `impact-analysis` (nullable default) and two `impact-verification` (refute a claim production already has; keep a real expired-session regression). Selftests for both new scripts run in `npm run workflow:check`.
 - `CLAUDE.md` lists `/impact` and the two new specialists.
+- Live eval baseline (Claude, one trial each): all six new cases pass. The first `impact-verifier-keeps-true-regression` run reached the right verdict but wrapped its JSON in a code fence the grader could not parse; both impact agents now require raw JSON.
 
 ## 1.9.25 — 2026-10-13
 
