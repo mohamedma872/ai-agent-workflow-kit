@@ -372,3 +372,28 @@
   ask: This branch claims to preserve behavior. Compare BASE and HEAD and report externally observable behavior changes. Do not invent one when the evidence does not support it.
   forbidden_findings:
     - '"severity":"(critical|high)"'
+
+- name: impact-analyst-nullable-default
+  role: impact-analysis
+  fixture: ai/tasks/subagent/fixtures/regression-nullable-default/payment_flow.dart
+  ask: Scope is the payments journey. Production (origin/master) is identical to BASE. Report head-only behavior changes.
+  must_report:
+    - name: no-3ds-path-lost
+      severity: high
+      any_of: ["threedUrl + empty", "3ds + webview", "null + default", "confirmation + cart"]
+
+- name: impact-verifier-refutes-production-same
+  role: impact-verification
+  fixture: ai/tasks/subagent/fixtures/impact-verify-production-same/finding_and_code.dart
+  ask: Verify the finding in the fixture header with lens "provenance". If it survives, report it as a finding with your corrected severity; if it is refuted, return an empty findings array.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
+
+- name: impact-verifier-keeps-true-regression
+  role: impact-verification
+  fixture: ai/tasks/subagent/fixtures/impact-verify-true-regression/finding_and_code.dart
+  ask: Verify the finding in the fixture header with lens "all". If it survives, report it as a finding with your corrected severity; if it is refuted, return an empty findings array.
+  must_report:
+    - name: expired-session-logout-skipped
+      severity: high
+      any_of: ["reason + non-nullable", "logout + 401", "null + string", "typeerror + logout"]

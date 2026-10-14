@@ -231,6 +231,19 @@ roles:
     tools: [repository_read]
     mcps_optional: [context7, github]
 
+  impact-analysis:
+    mode: read_only
+    inputs: [repository_evidence, changed_files]
+    outputs: [findings]
+    tools: [repository_read]
+    mcps_optional: [github]
+
+  impact-verification:
+    mode: read_only
+    inputs: [repository_evidence, findings]
+    outputs: [findings]
+    tools: [repository_read]
+
   behavior-equivalence:
     mode: read_only
     inputs: [behavior_baseline, refactor_invariants, approved_plan, build_test, validated_review_findings, fixes, changed_files, refactor_verification_matrix]

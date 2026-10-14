@@ -13,7 +13,9 @@
   - **`agentic impact-report`** applies the survival rule (one verifier must not refute; with several, refuters must be a minority; no verdict is "unverified"), takes the median corrected severity, merges duplicates by title or reported `file:line`, and exports Markdown, CSV with a BOM for Excel (Status and Owner columns) and JSON.
   - The `/impact` command writes every agent result to disk on arrival, so a run stopped by a usage limit resumes without redoing finished work.
 - **`behavior-regression-reviewer`** gained the patterns behind those regressions: nullable fields turned into defaults, broadcasts without listeners and missing route names, literal find-and-replace slips, dropped base fixes, a shared client adding timeouts or logging to payment calls, split storage; and it must check the production branch and the shipping path first.
-- Added three `behavior-regression-review` subagent eval cases and selftests for both new scripts (part of `npm run workflow:check`).
+- **New routed roles `impact-analysis` and `impact-verification`** in `ai/workflows/feature.yaml` and `ai/subagents/contracts.yaml` (read-only, not scheduled by the feature stages), so both agents resolve through the router and are measured by subagent evals.
+- Added six subagent eval cases: three `behavior-regression-review` (nullable default, broadcast without listener, clean rename that must stay below high), one `impact-analysis` (nullable default) and two `impact-verification` (refute a claim production already has; keep a real expired-session regression). Selftests for both new scripts run in `npm run workflow:check`.
+- `CLAUDE.md` lists `/impact` and the two new specialists.
 
 ## 1.9.25 — 2026-10-13
 

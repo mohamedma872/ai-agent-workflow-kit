@@ -358,6 +358,23 @@ roles:
     artifact: device/mobile-device-qc.md
     optional_mcps: [appium]
 
+  # Branch impact analysis (/impact). Not scheduled by the feature stages; routed so
+  # the roles resolve to an executor and can be measured by subagent evals.
+  impact-analysis:
+    executor: claude
+    standards: [engineering-rulebook]
+    claude_subagent: impact-analyst
+    purpose: For one journey, feature group or sweep, map BASE files to HEAD files and report only head-only behavior changes with file:line in both trees and a production-branch provenance check.
+    read_only: true
+    artifact: impact/findings/analysis.json
+
+  impact-verification:
+    executor: claude
+    claude_subagent: impact-verifier
+    purpose: Try to refute one impact finding through one lens (code truth, provenance and reachability, or real impact); default to refuted when the claim cannot be confirmed from code.
+    read_only: true
+    artifact: impact/verdicts/verdict.json
+
 stages:
   - id: request
     owner: orchestrator
