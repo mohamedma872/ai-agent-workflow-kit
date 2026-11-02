@@ -4,6 +4,12 @@
 
 - No unreleased runtime changes.
 
+## 1.9.28 — 2026-11-02
+
+- **Security eval cases now test `security-reviewer`.** The 23 older `security` subagent cases used `role: security`, which resolves to `security-analyst`, the pre-implementation threat-model agent, so checklist changes to `security-reviewer` were never measured. They now use `role: security-review`, the same as the 1.9.27 cases. All 26 security cases pass live against `security-reviewer`: 21 positive cases at full recall, and the 5 clean cases with no findings.
+- The subagent eval adapter accepts output wrapped in a Markdown code fence instead of recording a harness error.
+- `security-analyst` has no eval cases left. Tuning it with hillclimb needs new threat-model cases first.
+
 ## 1.9.27 — 2026-11-02
 
 - **`security-reviewer` checks every body shape a scrubber sees, and every logged client.** A Flutter audit and two re-checks with 1.9.22–1.9.26 missed card data (CVV included) and a password-reset token reaching a crash reporter. The scrubber regex matched JSON maps only. These calls sent a body the caller had already encoded to a JSON string, which the interceptor escaped again, or a form-encoded string. Earlier fixes had moved one client at a time off the logger, and a re-check marked the scrubber fixed because keys were added.

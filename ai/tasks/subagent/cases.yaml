@@ -1,5 +1,5 @@
 - name: security-exported-component
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/android-exported/AndroidManifest.xml
   ask: Identify the concrete security issue in this manifest.
   must_report:
@@ -90,7 +90,7 @@
 
 # ── security-analyst pilot set (ai/evals/hillclimb.js needs ≥4 cases per specialist) ──
 - name: security-webview-js-bridge
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-webview/HelpActivity.kt
   ask: Identify the concrete security issue in this screen.
   must_report:
@@ -99,7 +99,7 @@
       any_of: ["addJavascriptInterface + untrusted", "javascript interface + url", "webview + bridge"]
 
 - name: security-token-logged
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-logging/AuthInterceptor.kt
   ask: Identify the concrete security issue in this interceptor.
   must_report:
@@ -108,7 +108,7 @@
       any_of: ["token + log", "credential + logcat"]
 
 - name: security-token-plain-storage
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-storage/session.ts
   ask: Identify the concrete security issue in how the session is stored.
   must_report:
@@ -117,7 +117,7 @@
       any_of: ["asyncstorage + token", "plaintext + token", "unencrypted + token"]
 
 - name: security-cleartext-traffic
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-cleartext/network_security_config.xml
   ask: Identify the concrete security issue in this network configuration.
   must_report:
@@ -126,7 +126,7 @@
       any_of: ["cleartext", "http + unencrypted", "plaintext + traffic"]
 
 - name: security-deeplink-token-redirect
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-deeplink/deeplink_handler.dart
   ask: Identify the concrete security issue in this deep-link handler.
   must_report:
@@ -135,7 +135,7 @@
       any_of: ["deep link + redirect", "redirect + validat", "token + deep link"]
 
 - name: security-hardcoded-merchant-secret
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-hardcoded/payments.ts
   ask: Identify the concrete security issue in this payments client.
   must_report:
@@ -144,7 +144,7 @@
       any_of: ["hardcoded + secret", "secret + bundle", "embedded + secret"]
 
 - name: security-clean-profile-update
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-clean/profile.ts
   ask: Review this change for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
@@ -153,7 +153,7 @@
 
 # ── security: mobile audit patterns (MASVS-categorized; from a Flutter e-commerce audit) ──
 - name: security-webview-host-prefix-token
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-webview-host/help_web_page.dart
   ask: Identify the concrete security issue in this WebView page.
   must_report:
@@ -162,7 +162,7 @@
       any_of: ["startswith + host", "prefix + host", "lookalike", "exact + host", "uri.host"]
 
 - name: security-log-scrubber-bytes
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-log-scrubber/api_client.dart
   ask: Identify the concrete security issue in how this client reports network traffic.
   must_report:
@@ -171,7 +171,7 @@
       any_of: ["bytes + redact", "bytes + token", "byte + scrub", "list<int> + token", "responsetype + token"]
 
 - name: security-migration-plaintext-leftover
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-migration-leftover/legacy_session_migration.dart
   ask: Identify the concrete security issue in this storage migration.
   must_report:
@@ -180,7 +180,7 @@
       any_of: ["sharedpreferences + left", "plaintext + token", "not deleted", "never removed", "remain + sharedpreferences", "logout + sharedpreferences"]
 
 - name: security-signing-key-committed
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-signing-key/build.gradle.kts
   ask: Identify the concrete security issue in this release build configuration.
   must_report:
@@ -189,7 +189,7 @@
       any_of: ["keystore + commit", "keystore + git", "signing + commit", "keystore + tracked", "rotate + key"]
 
 - name: security-clean-webview-allowlist
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-clean-webview/order_tracking_page.dart
   ask: Review this WebView page for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
@@ -259,7 +259,7 @@
 
 # ── security: encryption, key storage and data integrity ──
 - name: security-cbc-without-mac
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-cbc-no-mac/profile_cache.dart
   ask: Identify the concrete security issue in how this cache is encrypted and used.
   must_report:
@@ -268,7 +268,7 @@
       any_of: ["cbc + mac", "cbc + integrity", "unauthenticated", "cbc + tamper", "gcm"]
 
 - name: security-key-stored-beside-data
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-key-in-prefs/SessionCrypto.kt
   ask: Identify the concrete security issue in how this token is protected.
   must_report:
@@ -277,7 +277,7 @@
       any_of: ["key + sharedpreferences", "aes_key", "key + android keystore", "key + plaintext + prefs"]
 
 - name: security-unsigned-remote-config
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-remote-config/app_config_loader.dart
   ask: Identify the concrete security issue in how this configuration is trusted.
   must_report:
@@ -286,7 +286,7 @@
       any_of: ["signature", "signed", "integrity + config", "tamper + config", "empty + config"]
 
 - name: security-client-computed-total
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-client-price/place_order.dart
   ask: Identify the concrete security issue in how this order is placed.
   must_report:
@@ -298,7 +298,7 @@
       any_of: ["idempoten", "duplicate + order", "retry + duplicate"]
 
 - name: security-ios-no-file-protection
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-ios-file-protection/SessionStore.swift
   ask: Identify the concrete security issue in how this session is stored.
   must_report:
@@ -307,7 +307,7 @@
       any_of: ["nofileprotection", "file protection", "data protection", "keychain + token", "plaintext + token"]
 
 - name: security-clean-aes-gcm-store
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-clean-crypto/secure_note_store.dart
   ask: Review this storage code for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
@@ -315,7 +315,7 @@
 
 # ── security: man in the middle, root and jailbreak ──
 - name: security-user-ca-trusted-in-release
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-user-ca-release/network_security_config.xml
   ask: Identify the concrete security issue in this network configuration.
   must_report:
@@ -324,7 +324,7 @@
       any_of: ["user + release + ca", "user-installed + release", "src=\"user\" + release", "user + certificate + release"]
 
 - name: security-pinning-killswitch-unsigned
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-pin-killswitch/pinned_client.dart
   ask: Identify the concrete security issue in how this pinning is controlled.
   must_report:
@@ -333,7 +333,7 @@
       any_of: ["kill switch", "pinningenabled", "unsigned + pinning", "config + disable", "remote + pinning"]
 
 - name: security-root-check-as-control
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-root-client-only/wallet_guard.dart
   ask: Identify the concrete security issue in how this wallet flow is protected.
   must_report:
@@ -342,7 +342,7 @@
       any_of: ["devicetrusted", "attestation", "bypass + root", "frida", "server + trust"]
 
 - name: security-clean-network-config
-  role: security
+  role: security-review
   fixture: ai/tasks/subagent/fixtures/security-clean-network-config/network_security_config.xml
   ask: Review this network configuration for a concrete security issue. Do not invent one when the evidence does not support it.
   forbidden_findings:
