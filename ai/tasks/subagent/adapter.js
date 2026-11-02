@@ -1,7 +1,8 @@
 'use strict';
 const fs=require('fs'); const path=require('path'); const crypto=require('crypto'); const {spawnSync}=require('child_process');
 const ROOT=path.resolve(__dirname,'..','..','..'); const ROUTER=path.join(ROOT,'ai','workflow','router.js'); const WORKFLOW=path.join(ROOT,'ai','workflows','feature.yaml');
-function readJson(file){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return null;}}
+// Agents sometimes wrap the requested JSON in a Markdown code fence; accept it rather than report a harness error.
+function readJson(file){try{const raw=fs.readFileSync(file,'utf8');const fenced=raw.trim().match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```$/);return JSON.parse(fenced?fenced[1]:raw);}catch{return null;}}
 // The role's specialist instructions (.claude/agents/<claude_subagent>.md, frontmatter stripped) go into the
 // eval prompt, so a case measures the prompt /feature actually delegates with. The router path alone never
 // loads these files. AI_EVAL_AGENT_NAME + AI_EVAL_AGENT_PROMPT_FILE swap in a candidate prompt for that one
