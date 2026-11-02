@@ -23,19 +23,37 @@ class PaymentsTransport {
 
   /// Normalizes every body shape to a map before redacting, so pre-encoded
   /// JSON strings, form strings and maps are all scrubbed the same way.
+  /// Anything it cannot parse is omitted from the log, never logged raw.
   static String _redact(Object? data) {
-    Map<String, dynamic>? map;
-    if (data is Map) {
-      map = Map<String, dynamic>.from(data);
-    } else if (data is String && data.trimLeft().startsWith('{')) {
-      map = (jsonDecode(data) as Map).cast<String, dynamic>();
+    if (data == null) return '';
+    Object? parsed;
+    if (data is Map || data is List) {
+      parsed = data;
+    } else if (data is String && data.trimLeft().startsWith(RegExp(r'[{\[]'))) {
+      try {
+        parsed = jsonDecode(data);
+      } on FormatException {
+        return '[body omitted]';
+      }
     } else if (data is String && data.contains('=')) {
-      map = Uri.splitQueryString(data);
+      parsed = Uri.splitQueryString(data);
     } else if (data is FormData) {
-      map = {for (final f in data.fields) f.key: f.value};
+      parsed = {for (final f in data.fields) f.key: f.value};
     }
-    if (map == null) return data == null ? '' : '[body omitted]';
-    return jsonEncode({for (final e in map.entries) e.key: _keys.contains(e.key) ? '***' : e.value});
+    if (parsed == null) return '[body omitted]';
+    return jsonEncode(_scrub(parsed));
+  }
+
+  /// Redacts sensitive keys at any depth.
+  static Object? _scrub(Object? value) {
+    if (value is Map) {
+      return {
+        for (final e in value.entries)
+          e.key.toString(): _keys.contains(e.key) ? '***' : _scrub(e.value),
+      };
+    }
+    if (value is List) return [for (final v in value) _scrub(v)];
+    return value;
   }
 
   Future<String> tokenizeCard(Map<String, String> card, String publicKey) async {
