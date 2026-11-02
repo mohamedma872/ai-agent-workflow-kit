@@ -177,6 +177,21 @@ function executorError(stdout) {
   }
   return found.length ? found[found.length - 1] : '';
 }
+// Cost and usage as the executor reported them (claude --output-format json
+// ends with a result envelope carrying total_cost_usd, usage and modelUsage).
+// Nothing is estimated: an executor that reports none gets nulls.
+function executorMetrics(stdout) {
+  let envelope = null;
+  for (const line of String(stdout || '').split('\n').reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed[0] !== '{') continue;
+    try { const parsed = JSON.parse(trimmed); if (parsed && ('total_cost_usd' in parsed || 'usage' in parsed)) { envelope = parsed; break; } } catch { /* not a JSON line */ }
+  }
+  if (!envelope) { try { const whole = JSON.parse(stdout); if (whole && typeof whole === 'object') envelope = whole; } catch { /* plain text */ } }
+  const cost = envelope && typeof envelope.total_cost_usd === 'number' ? envelope.total_cost_usd : null;
+  const models = envelope && envelope.modelUsage && typeof envelope.modelUsage === 'object' ? Object.keys(envelope.modelUsage) : [];
+  return { cost_usd: cost, usage: (envelope && envelope.usage) || null, models, num_turns: envelope && typeof envelope.num_turns === 'number' ? envelope.num_turns : null };
+}
 function validateWorkflow(name, workflow, agents) {
   const problems = [];
   if (workflow.version !== 1) problems.push(`${name}: version must be 1`);
@@ -237,6 +252,7 @@ function execute(workflow, agents, roleName, args) {
   });
   const answer = finalAnswer(resolved.agent, res.stdout || '', lastMessageFile);
   if (args['output-file']) { const output = path.resolve(args['output-file']); fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, answer.endsWith('\n') ? answer : `${answer}\n`); }
+  if (args['meta-file']) { const meta = path.resolve(args['meta-file']); fs.mkdirSync(path.dirname(meta), { recursive: true }); fs.writeFileSync(meta, JSON.stringify({ executor: resolved.agentName, budget_usd: budget, ...executorMetrics(res.stdout || '') }, null, 2)); }
   if (res.stderr) process.stderr.write(res.stderr);
   const failed = res.error || (typeof res.status === 'number' && res.status !== 0);
   if (failed) { const why = executorError(res.stdout || ''); if (why) process.stderr.write(`${resolved.agentName}: ${why}\n`); }
@@ -258,6 +274,11 @@ function selftest() {
   assert.strictEqual(executorError('{"type":"result","is_error":false,"result":"all done"}'), '', 'a successful run reports no error');
   assert.strictEqual(executorError('not json at all'), '', 'plain output is not mistaken for an error');
   assert.strictEqual(executorError(''), '');
+  // Cost comes only from what the executor reported.
+  const claudeEnvelope = JSON.stringify({ type: 'result', is_error: false, result: '{}', total_cost_usd: 0.0421, num_turns: 3, usage: { input_tokens: 12, output_tokens: 340 }, modelUsage: { 'claude-opus-5-5': {} } });
+  assert.deepStrictEqual(executorMetrics(claudeEnvelope), { cost_usd: 0.0421, usage: { input_tokens: 12, output_tokens: 340 }, models: ['claude-opus-5-5'], num_turns: 3 });
+  assert.strictEqual(executorMetrics(`{"type":"event"}\n${claudeEnvelope}`).cost_usd, 0.0421, 'the result line is found in an event stream');
+  assert.deepStrictEqual(executorMetrics('plain text'), { cost_usd: null, usage: null, models: [], num_turns: null }, 'no report means no cost, never an estimate');
   // A role artifact is a message, not a failure: nothing in the event stream
   // other than an error node may be reported as one.
   assert.strictEqual(executorError('{"type":"response_item","payload":{"type":"message","message":"hello"}}'), '');
@@ -305,7 +326,7 @@ if (require.main === module) {
         const all = []; for (const name of listWorkflows()) { try { const { data } = loadWorkflow(name); all.push(...validateWorkflow(name, data, agents)); } catch (e) { all.push(e.message); } }
         if (all.length) { for (const p of all) console.error(`✗ ${p}`); process.exitCode = 1; } else console.log(`✓ ${listWorkflows().length} workflow(s) valid · executors: ${Object.keys(agents).join(', ')}`); break;
       }
-      default: console.error('usage: router.js list | show <workflow> [--json] | resolve <workflow> <role|stage> [--agent NAME] [--json] | exec <workflow> <role|stage> --prompt-file FILE [--run ID] [--agent NAME] [--output-file FILE] [--budget USD] [--timeout-min M] [--cwd DIR] [--dry-run] | check'); process.exitCode = 1;
+      default: console.error('usage: router.js list | show <workflow> [--json] | resolve <workflow> <role|stage> [--agent NAME] [--json] | exec <workflow> <role|stage> --prompt-file FILE [--run ID] [--agent NAME] [--output-file FILE] [--meta-file FILE] [--budget USD] [--timeout-min M] [--cwd DIR] [--dry-run] | check'); process.exitCode = 1;
     }
   } catch (e) { fail(e.message); }
 }

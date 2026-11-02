@@ -4,6 +4,13 @@
 
 - No unreleased runtime changes.
 
+## 1.9.29 — 2026-11-02
+
+- **Subagent evals report real cost.** The cost column showed `$–` for every subagent run because the adapter hard-coded `cost_usd: null`, and the router discarded Claude's result envelope.
+  - `router.js exec` takes an optional `--meta-file FILE`. It writes the executor's reported `total_cost_usd`, token `usage`, models and turns. Nothing is estimated: an executor that reports nothing gets nulls.
+  - The subagent adapter asks for that file and fills `cost_usd` and `models` in each graded row, so the run summary, `auto.js` totals and budget checks see real spend.
+- **`--budget` now reaches subagent runs.** The adapter never passed it to the router, so every run used the router's $20 default whatever `--budget` said. It is now passed through, with the task default of $3.
+
 ## 1.9.28 — 2026-11-02
 
 - **Security eval cases now test `security-reviewer`.** The 23 older `security` subagent cases used `role: security`, which resolves to `security-analyst`, the pre-implementation threat-model agent, so checklist changes to `security-reviewer` were never measured. They now use `role: security-review`, the same as the 1.9.27 cases. All 26 security cases pass live against `security-reviewer`: 21 positive cases at full recall, and the 5 clean cases with no findings.
