@@ -34,19 +34,19 @@ module.exports={
    const specMeta=spec?{name:spec.name,file:spec.file,sha:spec.sha,override:spec.override}:null;
    if(opts.dryRun)return {role:c.role,fixture:c.fixture,prompt:promptFile,specialist:specMeta};
    const t0=Date.now();
-   const res=spawnSync(process.execPath,[ROUTER,'exec','feature',c.role,'--agent','claude','--prompt-file',promptFile,'--output-file',outputFile,'--timeout-min',String(opts.timeoutMin||12)],{cwd:ROOT,env:{...process.env,AI_EVAL:'1',FEATURE_RUN_ID:'EVAL'},encoding:'utf8',timeout:(opts.timeoutMin||12)*60000,maxBuffer:64*1024*1024});
+   const res=spawnSync(process.execPath,[ROUTER,'exec','feature',c.role,'--agent','claude','--prompt-file',promptFile,'--output-file',outputFile,'--meta-file',path.join(runDir,'executor-meta.json'),'--budget',String(opts.budget||module.exports.defaults.budget),'--timeout-min',String(opts.timeoutMin||12)],{cwd:ROOT,env:{...process.env,AI_EVAL:'1',FEATURE_RUN_ID:'EVAL'},encoding:'utf8',timeout:(opts.timeoutMin||12)*60000,maxBuffer:64*1024*1024});
    fs.writeFileSync(path.join(runDir,'stderr.log'),res.stderr||'');
    fs.writeFileSync(path.join(runDir,'run-meta.json'),JSON.stringify({status:res.status,duration_min:+((Date.now()-t0)/60000).toFixed(2),role:c.role,fixture:c.fixture,specialist:specMeta},null,2));
    return {status:res.status};
  },
  collect(runDir,c){
-   const out=readJson(path.join(runDir,'subagent-output.json')); const meta=readJson(path.join(runDir,'run-meta.json'))||{};
+   const out=readJson(path.join(runDir,'subagent-output.json')); const meta=readJson(path.join(runDir,'run-meta.json'))||{}; const exe=readJson(path.join(runDir,'executor-meta.json'))||{};
    if(!out)return null;
    const findings=Array.isArray(out.findings)?out.findings:[]; const violations=[];
    for(const pat of c.forbidden_findings||[]){const re=new RegExp(pat,'i');if(findings.some(f=>re.test(JSON.stringify(f))))violations.push('forbidden finding matched '+pat);}
    const outputs=findings.map(f=>({kind:'finding',text:JSON.stringify(f)}));
    const expectedSeverity=Object.fromEntries((c.must_report||[]).map(x=>[x.name,x.severity||'medium']));
-   return {outputs,complete:meta.status===0,verdict:violations.length?'FAIL':'PASS',duration_min:meta.duration_min??null,cost_usd:null,models:[],extra:{role:c.role,fixture:c.fixture,findings:findings.length,violations,expectedSeverity,specialist:meta.specialist||null}};
+   return {outputs,complete:meta.status===0,verdict:violations.length?'FAIL':'PASS',duration_min:meta.duration_min??null,cost_usd:typeof exe.cost_usd==='number'?exe.cost_usd:null,models:Array.isArray(exe.models)?exe.models:[],extra:{role:c.role,fixture:c.fixture,findings:findings.length,violations,expectedSeverity,specialist:meta.specialist||null}};
  },
  specialist,
  matches(output,expected){const text=String(output.text||'').toLowerCase();return (expected.match||[]).some(group=>group.every(k=>text.includes(String(k).toLowerCase())));}
