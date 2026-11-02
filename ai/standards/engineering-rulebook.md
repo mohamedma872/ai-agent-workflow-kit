@@ -589,7 +589,8 @@ Categorize mobile security findings with one OWASP MASVS v2 group each — `MASV
 Recurring failures to check explicitly:
 
 - host allow-lists built with `startsWith`/`contains` on URL strings instead of an exact match on the parsed host and port plus an `https` check — especially before a WebView attaches a token, cookie or HTTP-auth credential;
-- log redaction that only works on text while the client logs bodies as bytes/streams;
+- log redaction that only works on text while the client logs bodies as bytes/streams, or only on JSON maps while callers send pre-encoded JSON strings or form-encoded bodies;
+- sensitive calls (card tokenization, password reset, OTP, KYC) left on a logged client after a fix moved only one of them to an unlogged client;
 - plaintext copies left behind after migrating data to secure storage, or not cleared on every logout path;
 - signing keys, keystore passwords, CI tokens or client secrets in tracked files, and build-time obfuscation treated as secrecy;
 - payment sandbox/production chosen from a key prefix or remote config instead of the build environment;
