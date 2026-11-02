@@ -4,6 +4,19 @@
 
 - No unreleased runtime changes.
 
+## 1.9.27 — 2026-11-02
+
+- **`security-reviewer` checks every body shape a scrubber sees, and every logged client.** A Flutter audit and two re-checks with 1.9.22–1.9.26 missed card data (CVV included) and a password-reset token reaching a crash reporter. The scrubber regex matched JSON maps only. These calls sent a body the caller had already encoded to a JSON string, which the interceptor escaped again, or a form-encoded string. Earlier fixes had moved one client at a time off the logger, and a re-check marked the scrubber fixed because keys were added.
+  - **Logging scrubbers:** the review traces one sensitive value per body shape (map, pre-encoded JSON string, form string, `FormData`, bytes) through the real interceptor and redaction code.
+  - **Logged-client inventory (new):** every client with a logging, crash-reporter or network-monitor interceptor is listed with the sensitive fields it sends and receives. A sensitive call on a logged client is a finding unless redaction is proven for that body shape. A fix to one client is checked against the others.
+  - **Report:** a new `Logged clients` table, required in audit mode and in diff-review when a client, interceptor or scrubber changes.
+  - **Re-checks:** a redaction finding is marked fixed only when every body shape has been traced and comes out redacted; adding keys to a deny-list is not enough.
+- `engineering-rulebook` §33 lists both failures.
+- Added three `security` subagent eval cases:
+  - card data in a pre-encoded JSON string body;
+  - a password-reset form body;
+  - a clean transport that normalizes every body shape and keeps card calls on an unlogged client, which must produce no high-severity finding.
+
 ## 1.9.26 — 2026-10-14
 
 - **Branch impact analysis (`/impact`).** Measures what a branch changed in behavior against its merge base and the production branch, and whether it can ship. Built from a real ~4,000-file Flutter refactor review, where it found 17 high-severity regressions two earlier reviews missed and refuted 49 plausible claims.

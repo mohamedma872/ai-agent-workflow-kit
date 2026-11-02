@@ -397,3 +397,29 @@
     - name: expired-session-logout-skipped
       severity: high
       any_of: ["reason + non-nullable", "logout + 401", "null + string", "typeerror + logout"]
+
+# ── security: body shapes the scrubber never sees, logged-client inventory ──
+- name: security-log-scrubber-string-body
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-log-scrubber-string-body/membership_payments.dart
+  ask: Identify the concrete security issue in how this client reports network traffic.
+  must_report:
+    - name: card-data-logged-via-pre-encoded-body
+      severity: high
+      any_of: ["string + redact", "string + escap", "pre-encoded", "double + encod", "jsonencode + string", "cvv + log", "card + log"]
+
+- name: security-log-scrubber-form-body
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-log-scrubber-form-body/account_api.dart
+  ask: Identify the concrete security issue in how this client reports network traffic.
+  must_report:
+    - name: password-logged-via-form-body
+      severity: high
+      any_of: ["form + redact", "form + password", "urlencoded + password", "form-encoded", "query + password", "newpassword + log", "reset + token + log"]
+
+- name: security-clean-logged-clients
+  role: security
+  fixture: ai/tasks/subagent/fixtures/security-clean-logged-clients/payments_transport.dart
+  ask: Review this transport for a concrete security issue in how it logs traffic. Do not invent one when the evidence does not support it.
+  forbidden_findings:
+    - '"severity":"(critical|high)"'
