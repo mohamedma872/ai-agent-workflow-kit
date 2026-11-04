@@ -59,6 +59,12 @@ flutter test
 
 These are examples, not mandatory commands. The workflow must use the project's actual scripts, flavors and test setup.
 
+## The pinned SDK, analyzer baseline and generated files
+
+- **Pinned Flutter.** When the product pins a version in `.fvmrc` (or `.fvm/fvm_config.json`), every role runs on that SDK if it is installed (`$FVM_CACHE_PATH`, `~/fvm` or `~/.fvm` `versions/<version>`, or any usual SDK location of that version): the engine puts its `bin` first on the role's PATH. When it is not installed, the engine warns once (`fvm install <version>`), `agentic doctor` reports `flutter:pin` as incompatible, and each role is told the versions differ: no `pub get`/`pub upgrade`/`build_runner` unless asked, `--no-pub` on `flutter test`/`analyze`/`build`. An SDK other than the pinned one re-resolves `pubspec.lock`, migrates `analysis_options.yaml` and rewrites `project.pbxproj`.
+- **Analyzer baseline.** Before Build + Tests and Final Verification the runtime compares the analyzer issues of the changed Dart files with the run's base commit (`ai/workflow/analyzer-baseline.js`). It extracts `lib/`, `test/`, `pubspec.yaml` and `analysis_options.yaml` at the base with `git archive` into a temporary directory, copies the worktree's `.dart_tool/package_config.json` and its ignored files under `lib/` (generated localizations, `env.g.dart`), runs `dart analyze --format=machine` on both trees and compares per file and diagnostic code, so moved lines do not count as new. Anything the analyzer rewrites in the worktree is put back. The result, `engine/analyzer-baseline.md` (and `.json`), is given to `qa-execute` and to the verification stage: "New issues: none" means the no-new-issues gate is met by evidence. It never fails a stage; when it cannot run it says why.
+- **Mass deletion.** A role that edits may delete files, but when one run of a role deletes 25 or more tracked files (`AI_WORKFLOW_MAX_DELETED_FILES`), the engine restores them and fails the role, naming them. This is what `build_runner build --delete-conflicting-outputs` (or even a plain `build_runner build` in a fresh worktree) does to committed `.g.dart`/`.freezed.dart` files.
+
 ## Final Appium evidence
 
 Flutter UI features use the same final mobile evidence gate as native and React Native features.

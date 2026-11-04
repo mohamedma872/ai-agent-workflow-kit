@@ -84,6 +84,34 @@ function restore(snap) {
   return restored;
 }
 
+// ---------------------------------------------------------------- mass deletion
+// A role that edits may delete files, but not hundreds at once: in a fresh
+// worktree `dart run build_runner build` deleted 602 committed generated files
+// (.g.dart, .freezed.dart, injection.config.dart) and build-test then failed
+// four times in a row. Past a threshold the engine restores what the role
+// deleted and fails it, naming the files, instead of carrying the damage on.
+const DEFAULT_MAX_DELETED = 25;
+function maxDeleted(env = process.env) {
+  const value = Number(env.AI_WORKFLOW_MAX_DELETED_FILES);
+  return Number.isInteger(value) && value >= 1 ? value : DEFAULT_MAX_DELETED;
+}
+// Tracked files missing from the worktree (deleted on disk, still in the index).
+function deletedTracked(worktree) {
+  const res = git(worktree, ['ls-files', '-z', '--deleted']);
+  return res.status === 0 ? new Set(String(res.stdout || '').split('\0').filter(Boolean)) : null;
+}
+// Compares with what was missing before the role. Over the limit, restores the
+// newly deleted files from the index and returns them; otherwise returns null.
+function guardDeletions(worktree, before, limit = maxDeleted()) {
+  if (!before) return null;
+  const now = deletedTracked(worktree);
+  if (!now) return null;
+  const fresh = [...now].filter(rel => !before.has(rel));
+  if (fresh.length < limit) return null;
+  const res = git(worktree, ['checkout', '--', ...fresh]);
+  return { deleted: fresh, restored: res.status === 0, limit };
+}
+
 function selftest() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tracked-files-'));
   const run = args => { const r = git(tmp, args); assert.strictEqual(r.status, 0, r.stderr); return r.stdout; };
@@ -119,6 +147,23 @@ function selftest() {
     assert.ok(fs.existsSync(path.join(tmp, 'build', 'out.txt')), 'untracked output is left alone');
     assert.deepStrictEqual(changedVsHead(tmp), ['feature.dart']);
     assert.deepStrictEqual(restore(snapshot(tmp)), [], 'nothing changed, nothing restored');
+    // Mass deletion: under the limit is the role's business; at it, restored.
+    const many = Array.from({ length: 30 }, (_, i) => `lib/m${i}.g.dart`);
+    fs.mkdirSync(path.join(tmp, 'lib'));
+    for (const rel of many) fs.writeFileSync(path.join(tmp, rel), 'part of x;\n');
+    run(['add', '-A']); run(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'generated']);
+    fs.rmSync(path.join(tmp, 'gone.dart'));
+    const missing = deletedTracked(tmp);
+    assert.deepStrictEqual([...missing], ['gone.dart']);
+    for (const rel of many.slice(0, 3)) fs.rmSync(path.join(tmp, rel));
+    assert.strictEqual(guardDeletions(tmp, missing, 25), null, 'a few deletions are allowed');
+    for (const rel of many.slice(3)) fs.rmSync(path.join(tmp, rel));
+    const caught = guardDeletions(tmp, missing, 25);
+    assert.deepStrictEqual([caught.deleted.length, caught.restored, caught.limit], [30, true, 25]);
+    assert.ok(many.every(rel => fs.existsSync(path.join(tmp, rel))), 'every file the role deleted is back');
+    assert.ok(!fs.existsSync(path.join(tmp, 'gone.dart')), 'a file missing before the role is left as it was');
+    assert.strictEqual(maxDeleted({ AI_WORKFLOW_MAX_DELETED_FILES: '700' }), 700);
+    assert.strictEqual(maxDeleted({ AI_WORKFLOW_MAX_DELETED_FILES: 'lots' }), DEFAULT_MAX_DELETED);
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'not-git-'));
     try { assert.strictEqual(snapshot(plain), null, 'not a checkout: nothing to restore'); }
     finally { fs.rmSync(plain, { recursive: true, force: true }); }
@@ -126,7 +171,7 @@ function selftest() {
   console.log('tracked-files selftest OK');
 }
 
-module.exports = { snapshot, restore, changedVsHead };
+module.exports = { snapshot, restore, changedVsHead, deletedTracked, guardDeletions, maxDeleted };
 
 if (require.main === module) {
   if (process.argv.includes('--selftest')) selftest();

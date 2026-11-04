@@ -45,12 +45,14 @@ function ghCommands(cmd){
  }
  return out;
 }
-const GH_PR_WRITES=new Set(['create','new','merge','ready','edit','reopen']);
+// Every gh pr subcommand that writes to the pull request or its thread:
+// approving, requesting changes and commenting are as outward as opening it.
+const GH_PR_WRITES=new Set(['create','new','merge','ready','edit','reopen','review','comment','close','lock','unlock']);
 const DELIVERY=[
  [cmd=>gitSubcommands(cmd).some(s=>s==='push'||s==='send-pack'),'git push'],
  [/\bgit\s+push\b/i,'git push'],
- [cmd=>ghCommands(cmd).some(c=>c.command==='pr'&&GH_PR_WRITES.has(c.sub)),'gh pr create/merge'],
- [/\bgh\b[^\n|;&]*\bpr\s+(?:create|new|merge|ready|edit|reopen)\b/i,'gh pr create/merge'],
+ [cmd=>ghCommands(cmd).some(c=>c.command==='pr'&&GH_PR_WRITES.has(c.sub)),'gh pr create/merge/review/comment'],
+ [/\bgh\b[^\n|;&]*\bpr\s+(?:create|new|merge|ready|edit|reopen|review|comment|close|lock|unlock)\b/i,'gh pr create/merge/review/comment'],
  [cmd=>ghCommands(cmd).some(c=>c.command==='api'&&c.rest.some(x=>/\/pulls\b/i.test(x))),'gh api …/pulls'],
  [/\bgh\s+api\b[^\n]*\/pulls\b/i,'gh api …/pulls'],
  [/\bagentic\s+pr\b/i,'agentic pr'],
@@ -149,10 +151,12 @@ function selftest(){
    for(const c of ['git push','git push -u origin HEAD:refs/heads/ai/X','gh pr create --fill','gh pr merge 3',
      // Global options before the subcommand, and the plumbing behind push.
      'git -C . push origin HEAD:refs/heads/x','git -c core.hooksPath=/dev/null push','git -c a=b push','git --no-pager push','git --git-dir=.git push','git --git-dir .git --work-tree . push','git -C. push','git send-pack origin HEAD:refs/heads/x','git-send-pack origin HEAD:refs/heads/x',
-     'gh -R o/r pr create --fill','gh --repo o/r pr create -t x -b y','gh --repo=o/r pr merge 3','gh pr -R o/r create --fill','gh --hostname h pr ready 3','gh -R o/r api repos/o/r/pulls -f title=x','agentic pr FEAT-1 --base main','node /k/ai/workflow/engine.js pr FEAT-1','node /k/ai/tasks/feature/runs.js pull-request-options FEAT-1','node /k/ai/workflow/pull-request.js --http','curl -X POST https://api.bitbucket.org/2.0/repositories/ws/app/pullrequests','gh api repos/o/r/pulls -f title=x'])
+     'gh -R o/r pr create --fill','gh --repo o/r pr create -t x -b y','gh --repo=o/r pr merge 3','gh pr -R o/r create --fill','gh --hostname h pr ready 3','gh -R o/r api repos/o/r/pulls -f title=x','agentic pr FEAT-1 --base main','node /k/ai/workflow/engine.js pr FEAT-1','node /k/ai/tasks/feature/runs.js pull-request-options FEAT-1','node /k/ai/workflow/pull-request.js --http','curl -X POST https://api.bitbucket.org/2.0/repositories/ws/app/pullrequests','gh api repos/o/r/pulls -f title=x',
+     // Approving or commenting on a pull request is a write too.
+     'gh pr review 3 --approve','gh -R o/r pr review 3 --request-changes -b x','gh pr comment 3 -b looks-good','gh pr close 3','gh --repo o/r pr lock 3','gh api repos/o/r/pulls/3/reviews -f event=APPROVE','curl -X POST https://api.bitbucket.org/2.0/repositories/ws/app/pullrequests/3/approve'])
      assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},{...env,AI_WORKFLOW_ROLE:role}).allow,false,`${role}: ${c} must be denied`);
  assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'git status && git log -1'}},impl).allow,true,'reading git state is fine');
- for(const c of ['git -C . status','git --no-pager log -1','git -c core.pager=cat diff HEAD','gh pr view 3','gh -R o/r pr list','gh pr checks 3','grep -rn "git push" docs'])
+ for(const c of ['git -C . status','git --no-pager log -1','git -c core.pager=cat diff HEAD','gh pr view 3','gh -R o/r pr list','gh pr checks 3','gh pr diff 3','gh pr view 3 --comments','grep -rn "git push" docs'])
    if(c.startsWith('grep')) assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},impl).allow,false,'a search for the text is still caught; harmless, and safer than a gap');
    else assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},impl).allow,true,`${c} only reads`);
  // A read-only role may not mutate git state through global options either.
