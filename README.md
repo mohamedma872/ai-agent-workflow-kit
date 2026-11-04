@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.21-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.31-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -231,7 +231,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.21
+1.9.31
 ```
 
 ### 2. Initialize a project
@@ -260,7 +260,7 @@ agentic feature FEAT-001 \
 agentic progress
 ```
 
-Opens the terminal dashboard on the active feature, with every other in-progress feature listed beside it. See [Progress](#progress).
+Opens the terminal dashboard on the active feature, with every other in-progress feature listed beside it. See [Progress](#progress). You do not have to watch it: the engine sends a desktop notification when the run blocks, fails, waits for your approval or completes.
 
 ### 6. Approve the generated plan
 
@@ -359,10 +359,22 @@ agentic switch FEAT-002       # make a feature the active run
 │                    │    🔄 security             in_progress      │
 │                    │ Current: Specialist Analysis → security     │
 ╰────────────────────┴─────────────────────────────────────────────╯
- ↑↓ select · enter set active · a all runs · r refresh · q quit
+ ↑↓ select · enter set active · R resume · T retry · c close · a all runs · r refresh · q quit
 ```
 
-`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+
+A run that needs you is marked `⚠` in the list, and one whose engine is running `●`. The highlighted run gets a banner with the reason and the exact command:
+
+```text
+│ ⚠ NEEDS YOU · Same failure as last time — this needs a fix outside    │
+│   Final Verification                                                  │
+│   mobile-evidence: mobile evidence is required but no Android/iOS     │
+│   target could be derived; use --platforms android,ios …              │
+│ → agentic retry FEAT-011                                              │
+```
+
+The engine sends the same text as a desktop notification (macOS `osascript`, Linux `notify-send`; local only), once per event, so it reaches you with the dashboard closed; the dashboard rings its bell. `R` and `T` start the engine detached, log to `<run>/engine/background.log`, and refuse while an engine for that run is alive. Plan approval has no key: run the `agentic approve <id>` the banner shows. Turn notifications off with `notifications: { desktop: false, bell: false }` in `.agentic/config.yaml`. "Same failure as last time" means the stage failed twice in a row for the same reason, so retrying it again will not help: the cause is outside that stage.
 
 Closing a feature whose verification has not passed records it as abandoned rather than complete, so an unfinished run never reads as done.
 
@@ -374,7 +386,29 @@ agentic progress FEAT-001 --watch
 agentic progress FEAT-001 --json
 ```
 
+Once the run's pull request is open, the single-run view, `agentic status <id>` and the dashboard show it right under the progress bar:
+
+```text
+   ████████████████████████████  100%
+ 🔗 Pull request: #7762 https://bitbucket.org/<workspace>/<repo>/pull-requests/7762
+```
+
+When the stage was skipped (the default) or is blocked, the same line says how to open it: `Pull request: not opened — run: agentic pr <id>`.
+
 Details: [docs/progress-dashboard.md](docs/progress-dashboard.md).
+
+### Pull request
+
+After final verification passes, the last stage, `pull-request`, can commit the run worktree, push it and open the pull request. It is **off** until the project's `.agentic/config.yaml` sets `pull_request.enabled: true` (see [Pull request stage](#pull-request-stage)). Opening one by hand works either way:
+
+```bash
+agentic pr FEAT-001 --dry-run                 # what it would commit, push and call; changes nothing
+agentic pr FEAT-001                           # commit, push to ai/FEAT-001, open the PR
+agentic pr FEAT-002 --base ai/FEAT-001        # stacked: based on another PR's branch
+agentic pr FEAT-003 --branch feature/login-fix --draft
+```
+
+The options are kept in the run state, so a later `agentic resume` uses them. Running it again does not open a second PR: it finds the open one for the branch, and only commits and pushes what is new.
 
 ### Resume
 
@@ -416,6 +450,8 @@ agentic --project ~/projects/payment-backend \
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
 | `agentic approve <id>` | human approval of the implementation plan |
+| `agentic retry <id> [role...]` | reset failed/blocked roles, conditional roles (`mobile-evidence`) or stages to pending and resume |
+| `agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]` | commit, push and open the run's pull request after verification (works while `pull_request` is disabled; a closed run needs `--reopen`) |
 | `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
 | `agentic runs [--all] [--json]` | list features and which one is active |
 | `agentic switch <id>` | make a feature the active run |
@@ -459,6 +495,9 @@ flowchart TD
     REV --> FIX[Validated fixes]
     FIX --> EV[Evidence / final checks]
     EV --> VER[Final verification]
+    VER --> PR{pull_request.enabled?}
+    PR -->|yes, or agentic pr| OPEN[Commit, push, open the pull request]
+    PR -->|no| SKIP[Skipped: hint agentic pr]
     VER --> GH[Commit-bound GitHub verification]
 ```
 
@@ -1579,6 +1618,8 @@ A role that reads its siblings' results runs after them, one at a time, once the
 
 Each role runs in its own process group, so stopping the stage also stops the agent a role started. Ctrl-C, a signal to the runner, or the engine process dying all stop it. A role or agent that ignores the signal is killed after 10 s. If the runner itself is killed outright, each role process notices within a second and stops its group, and the engine stops the groups listed in `engine/<stage>-parallel.pgids`. Stopped roles are marked failed with `interrupted: …`, and `resume` starts them again. While the roles run, `engine/<stage>-parallel.pid` in the run directory holds the runner's pid, and `retry` refuses to reset a running role of that stage.
 
+One engine drives a run at a time. While `start`, `resume`, `run`, `run-next` or `pr` works on a run, `engine/engine.pid` names it. A second engine for the run refuses to start and names the owner, and `retry` refuses until it stops. A role or stage whose retry policy will not re-attempt it (a deterministic failure, attempts used up) is left as it is by `resume`, with its reason; `retry` resets it.
+
 | Setting | Where | Effect |
 |---|---|---|
 | `AI_WORKFLOW_MAX_PARALLEL` | environment | Most roles of one stage running at once. Default `4`. `1` runs them one at a time and stops at the first failure, as before 1.9.30. A value that is not a whole number of at least 1 also means one at a time, with a warning. |
@@ -1587,6 +1628,28 @@ Each role runs in its own process group, so stopping the stage also stops the ag
 Each extra role at once is one more agent session at the same moment, so a higher cap uses more of your rate limit and machine. It doesn't change total cost.
 
 Run state (`state.json`) is written by several processes. Every write takes a short lock, `state.json.lock`, next to the file. A lock left by a crashed process is taken over when its pid is dead. A lock whose holder is still running on this machine is never taken over, however old; a lock from another host is taken over after 60 s. A writer gives up with an error naming the holder after 90 s. `AI_WORKFLOW_STATE_LOCK_STALE_MS` and `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` change those bounds.
+
+### Pull request stage
+
+`pull-request` runs after `verification`. The read-only `pr-description` role writes the title and body to `12-pull-request.json` / `.md`. It fills the repository's PR template (`.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `.bitbucket/pull_request_template.md` or `docs/pull_request_template.md`) from the run artifacts. Its Definition of Done is honest: what was not done stays unchecked with the reason. It lists what a human still has to run, and carries no attribution to any tool or agent. Everything else is deterministic code in `ai/workflow/pull-request.js`:
+
+1. **Preconditions.** Verification passed; the run worktree still exists; not eval mode (`AI_EVAL=1` skips); the remote, base branch and credentials are usable. The agent is only called once these hold.
+2. **Commit.** It refuses unmerged paths and conflict markers, then runs `git add -A` (respecting `.gitignore`). The staged diff is scanned with the guard's Rule 5 (`leak_patterns` in `ai/guard.yaml`), the credential-file globs and task-pack secrets; a hit blocks the stage, naming `file:line` and the kind of secret, never its value. The commit message is `<id>: <title>`. It uses the repository's own git identity (never set by the runtime), and hooks run.
+3. **Push.** `git push -u <remote> HEAD:refs/heads/<branch>`, never forced. If the remote branch has commits the run does not have, the stage blocks.
+4. **Open.** GitHub: `gh pr create --base --head --title --body-file`. Bitbucket Cloud: `POST https://api.bitbucket.org/2.0/repositories/<workspace>/<repo>/pullrequests`, with basic auth from `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` (or `BITBUCKET_USERNAME` + `BITBUCKET_APP_PASSWORD`). An open PR from the same branch is reused, never duplicated.
+
+Each step can be repeated. A resume after any partial failure, such as committed but not pushed, or pushed but no PR, continues from where it stopped. The result is in `state.pullRequest` (`provider`, `url`, `number`, `branch`, `base`, `commit`, `draft`, `status`, `createdAt`, `updatedAt`), with a `pull-request` history entry for each step. Credentials are read by environment variable name only and never reach argv, logs, state, artifacts or error messages. Agent roles cannot push or open a PR themselves (`git push`, `gh pr create`, `agentic pr` and the PR APIs are denied inside every engine-launched role).
+
+| `.agentic/config.yaml` | Default | Effect |
+|---|---|---|
+| `pull_request.enabled` | `false` | `true` opens the PR automatically after verification; anything else skips the stage (with the `agentic pr <id>` hint) |
+| `pull_request.provider` | `auto` | `github`, `bitbucket`, or `auto` to tell from the remote URL (`github.com`, `bitbucket.org`) |
+| `pull_request.remote` | `origin` | the git remote to push to |
+| `pull_request.base` | `auto` | the PR's base branch; `auto` is the branch the run's worktree was created from (older runs: `<remote>/HEAD`) |
+| `pull_request.branch` | `ai/{id}` | the pushed branch; `{id}` is the run id |
+| `pull_request.draft` | `false` | open as a draft |
+
+The block is read from the main checkout, never from the run worktree that agents edit, and `.agentic/config.yaml` is a guarded file: an agent editing it asks first.
 
 ### Agent/executor configuration
 
@@ -1622,6 +1685,8 @@ table is a summary of the same thing:
 | `config.yaml` | `rag.mode` | **Yes** | `hybrid` (default) or `off` — any other value behaves like `off` |
 | `config.yaml` | `rag.top_k` | **Yes** | Max retrieved chunks per query; overrides the `ai/subagents/contracts.yaml` default |
 | `config.yaml` | `rag.context_budget` | **Yes** | Max characters of retrieved context per role |
+| `config.yaml` | `executors.*` | **Yes** | Per-project executor for every role or per role; the workflow's own choice stays as the fallback |
+| `config.yaml` | `pull_request.*` | **Yes** | Opt-in pull request after verification: `enabled`, `provider`, `remote`, `base`, `branch`, `draft` (see [Pull request stage](#pull-request-stage)); shipped commented out, so off |
 | `knowledge.yaml` | `include` | **Yes**, except `security`/`security-review` | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
 | `knowledge.yaml` | `exclude` | **Yes**, except `security`/`security-review` | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
 | `knowledge.yaml` | `prioritize` | **Yes** (all roles) | Matched chunks get a small relevance boost (ADRs, schemas, etc.) — a boost can't hide anything, so it applies uniformly |
@@ -1710,7 +1775,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.21
+runtimeVersion         1.9.31
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

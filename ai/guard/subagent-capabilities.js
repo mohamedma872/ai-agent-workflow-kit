@@ -3,6 +3,68 @@ const fs=require('fs'); const path=require('path'); const yaml=require('js-yaml'
 function loadContracts(root){try{return yaml.load(fs.readFileSync(path.join(root,'ai','subagents','contracts.yaml'),'utf8'))||{};}catch{return {};}}
 function mcpName(tool){const m=String(tool||'').match(/^mcp__([^_]+(?:_[^_]+)*)__/);return m?m[1].toLowerCase():null;}
 function declaredMcps(c){return new Set([...(c.mcps_required||[]),...(c.mcps_optional||[])].map(x=>String(x).toLowerCase()));}
+// Publishing is the runtime's job, never an agent's. The pull-request stage
+// commits, pushes and opens the PR from Node (ai/workflow/pull-request.js),
+// which does not pass through this hook, so these denials hold for every role,
+// including those that may write product files, without touching the runtime.
+//
+// git and gh take global options between the binary and the subcommand
+// (`git -C . push`, `git -c core.hooksPath=/dev/null push`, `gh -R o/r pr
+// create`), so a regex anchored on "git push" let them through. The command is
+// split into words instead and every git/gh invocation in it is parsed the way
+// the tool reads its own argv: options (with their values) are skipped, and the
+// first word after them is the subcommand. No backtracking regex is involved,
+// so an adversarial command line cannot stall the hook either.
+const GIT_VALUE_OPTS=new Set(['-c','--git-dir','--work-tree','--namespace','--exec-path','--super-prefix','--config-env','--attr-source','--list-cmds']);
+const GH_VALUE_OPTS=new Set(['-r','--repo','--hostname']);
+function words(cmd){return String(cmd||'').split(/[\s;&|()`'"<>{}$\\]+/).filter(Boolean);}
+function skipOptions(w,j,valueOpts){
+ while(j<w.length&&w[j].startsWith('-')){const flag=w[j].toLowerCase();j+=valueOpts.has(flag)?2:1;}
+ return j;
+}
+// Every git subcommand the line runs: `git [global options] <sub>` and the
+// dashed `git-<sub>` form (git-send-pack and friends live on the exec path).
+function gitSubcommands(cmd){
+ const w=words(cmd), out=[];
+ for(let i=0;i<w.length;i++){
+   const base=w[i].split('/').pop().toLowerCase();
+   if(base==='git'){const j=skipOptions(w,i+1,GIT_VALUE_OPTS);if(j<w.length)out.push(w[j].toLowerCase());}
+   else if(/^git-[a-z-]+$/.test(base)) out.push(base.slice(4));
+ }
+ return out;
+}
+// Every `gh [options] <command> [options] <subcommand>` pair the line runs, plus
+// the words after it (for `gh api …/pulls`).
+function ghCommands(cmd){
+ const w=words(cmd), out=[];
+ for(let i=0;i<w.length;i++){
+   if(w[i].split('/').pop().toLowerCase()!=='gh') continue;
+   const j=skipOptions(w,i+1,GH_VALUE_OPTS); if(j>=w.length) continue;
+   const k=skipOptions(w,j+1,GH_VALUE_OPTS);
+   out.push({command:w[j].toLowerCase(),sub:k<w.length?w[k].toLowerCase():null,rest:w.slice(j+1)});
+ }
+ return out;
+}
+const GH_PR_WRITES=new Set(['create','new','merge','ready','edit','reopen']);
+const DELIVERY=[
+ [cmd=>gitSubcommands(cmd).some(s=>s==='push'||s==='send-pack'),'git push'],
+ [/\bgit\s+push\b/i,'git push'],
+ [cmd=>ghCommands(cmd).some(c=>c.command==='pr'&&GH_PR_WRITES.has(c.sub)),'gh pr create/merge'],
+ [/\bgh\b[^\n|;&]*\bpr\s+(?:create|new|merge|ready|edit|reopen)\b/i,'gh pr create/merge'],
+ [cmd=>ghCommands(cmd).some(c=>c.command==='api'&&c.rest.some(x=>/\/pulls\b/i.test(x))),'gh api …/pulls'],
+ [/\bgh\s+api\b[^\n]*\/pulls\b/i,'gh api …/pulls'],
+ [/\bagentic\s+pr\b/i,'agentic pr'],
+ [/\bengine\.js\s+pr\b/i,'engine.js pr'],
+ [/\bpull-request(?:\.js|-options)\b/i,'the pull-request runtime'],
+ [/\bapi\.bitbucket\.org\b[^\n]*\/pullrequests\b/i,'the Bitbucket pull request API'],
+ [/\bapi\.github\.com\b[^\n]*\/pulls\b/i,'the GitHub pull request API'],
+];
+const GIT_MUTATING=new Set(['commit','push','send-pack','reset','clean','checkout','merge','rebase']);
+const GIT_MUTATION={test:cmd=>gitSubcommands(cmd).some(s=>GIT_MUTATING.has(s))||/\bgit\s+(?:commit|push|reset|clean|checkout|merge|rebase)\b/i.test(cmd)};
+function deliveryDenial(role,cmd){
+ const hit=DELIVERY.find(([rule])=>typeof rule==='function'?rule(cmd):rule.test(cmd));
+ return hit?{allow:false,reason:`role "${role}" may not publish (${hit[1]}): the runtime pushes and opens the pull request after verification`}:null;
+}
 function capabilityDecision(payload,env=process.env){
  const role=env.AI_WORKFLOW_ROLE; if(!role) return {allow:true,reason:'no workflow role'};
  const root=env.AI_WORKFLOW_RUNTIME_ROOT||env.CLAUDE_PROJECT_DIR||process.cwd();
@@ -18,6 +80,7 @@ function capabilityDecision(payload,env=process.env){
  if(tool==='Agent') return {allow:false,reason:`role "${role}" may not spawn nested agents`};
  if(tool==='Bash'||tool==='Shell'){
    const cmd=String(input.command||'');
+   const delivery=deliveryDenial(role,cmd); if(delivery) return delivery;
    // `2>&1` duplicates a file descriptor, it does not write a file, but it
    // contains ">" and so read every read-only role's most ordinary way of
    // capturing output as a mutation: `flutter test 2>&1 | tail -5` was denied
@@ -36,7 +99,7 @@ function capabilityDecision(payload,env=process.env){
    const mutVerb=segments.some(seg=>MUTATING_VERB.test(seg.trim()));
    // These stay matched anywhere, because they are unambiguous as written: an
    // fs call needs its parenthesis, and a package install names its manager.
-   const mutInline=/\bsed\s+-i\b|\bperl\s+-p?i\b|\bgit\s+(?:commit|push|reset|clean|checkout|merge|rebase)\b|(?:>>|>)(?!=)|\b(?:writeFile|appendFile|copyFile|rename|unlink)(?:Sync)?\s*\(|\b(?:npm|yarn|pnpm|bundle|gem|pip3?|brew|pod)\s+(?:install|add|ci)\b/i.test(cmdForMut);
+   const mutInline=GIT_MUTATION.test(cmdForMut)||/\bsed\s+-i\b|\bperl\s+-p?i\b|(?:>>|>)(?!=)|\b(?:writeFile|appendFile|copyFile|rename|unlink)(?:Sync)?\s*\(|\b(?:npm|yarn|pnpm|bundle|gem|pip3?|brew|pod)\s+(?:install|add|ci)\b/i.test(cmdForMut);
    const mut=mutVerb||mutInline;
    if(!mut) return tools.has('repository_read')||tools.has('test_execute')||tools.has('device_execute')?{allow:true,reason:'read/execute capability declared'}:{allow:false,reason:`role "${role}" has no shell capability`};
    if(tools.has('product_write')) return {allow:true,reason:'product_write declared'};
@@ -80,7 +143,23 @@ function selftest(){
    assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},env).allow,false,`${c} must be denied`);
  const impl={...env,AI_WORKFLOW_ROLE:'implementation'};
  assert.strictEqual(capabilityDecision({tool_name:'Write',tool_input:{file_path:'src/a.js'}},impl).allow,true);
+ // No agent publishes, not even one that may write product files: the runtime
+ // pushes and opens the pull request itself.
+ for(const role of ['implementation','fixes','orchestration','pr-description','code-review'])
+   for(const c of ['git push','git push -u origin HEAD:refs/heads/ai/X','gh pr create --fill','gh pr merge 3',
+     // Global options before the subcommand, and the plumbing behind push.
+     'git -C . push origin HEAD:refs/heads/x','git -c core.hooksPath=/dev/null push','git -c a=b push','git --no-pager push','git --git-dir=.git push','git --git-dir .git --work-tree . push','git -C. push','git send-pack origin HEAD:refs/heads/x','git-send-pack origin HEAD:refs/heads/x',
+     'gh -R o/r pr create --fill','gh --repo o/r pr create -t x -b y','gh --repo=o/r pr merge 3','gh pr -R o/r create --fill','gh --hostname h pr ready 3','gh -R o/r api repos/o/r/pulls -f title=x','agentic pr FEAT-1 --base main','node /k/ai/workflow/engine.js pr FEAT-1','node /k/ai/tasks/feature/runs.js pull-request-options FEAT-1','node /k/ai/workflow/pull-request.js --http','curl -X POST https://api.bitbucket.org/2.0/repositories/ws/app/pullrequests','gh api repos/o/r/pulls -f title=x'])
+     assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},{...env,AI_WORKFLOW_ROLE:role}).allow,false,`${role}: ${c} must be denied`);
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'git status && git log -1'}},impl).allow,true,'reading git state is fine');
+ for(const c of ['git -C . status','git --no-pager log -1','git -c core.pager=cat diff HEAD','gh pr view 3','gh -R o/r pr list','gh pr checks 3','grep -rn "git push" docs'])
+   if(c.startsWith('grep')) assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},impl).allow,false,'a search for the text is still caught; harmless, and safer than a gap');
+   else assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},impl).allow,true,`${c} only reads`);
+ // A read-only role may not mutate git state through global options either.
+ for(const c of ['git -C . commit -m x','git -c a=b reset --hard','git --no-pager checkout main'])
+   assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:c}},env).allow,false,`${c} must be denied to a read-only role`);
+ assert.strictEqual(capabilityDecision({tool_name:'Bash',tool_input:{command:'git push'}},{AI_WORKFLOW_RUNTIME_ROOT:env.AI_WORKFLOW_RUNTIME_ROOT}).allow,true,'outside an agentic role the hook does not apply');
  console.log('subagent-capabilities selftest OK');
 }
 if(require.main===module&&process.argv.includes('--selftest')) selftest();
-module.exports={capabilityDecision,mcpName,loadContracts};
+module.exports={capabilityDecision,mcpName,loadContracts,gitSubcommands,ghCommands};

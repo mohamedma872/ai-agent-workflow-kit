@@ -199,6 +199,23 @@ roles:
     artifact: 05-analysis/arbitration.md
     artifact_schema: conflict-arbitration
 
+  pr-description:
+    executor: claude
+    purpose: >-
+      Write the pull request title and body for a run whose final verification passed. Fill the repository's pull request
+      template when one is given, keeping its headings and checkboxes; otherwise use Summary, Changes, How it was tested,
+      Definition of Done and Left for a human to run. Build it only from the run artifacts (request, acceptance criteria,
+      definition of done, build/test, reviews, fixes, verification, device evidence). The Definition of Done is honest: an
+      item that was not done, or was not done here, stays unchecked with the reason, and every check a human still has to
+      run is listed. Never include a secret, token, password or credential value, and never attribute the change to any
+      tool, model, agent or workflow (no Co-Authored-By, no "Generated with", no robot emoji, no tool names, no mention of
+      the agentic workflow). Return the title, a one-paragraph summary, the body, the template path used (or null), the
+      Definition of Done items with status done, not-done or not-applicable (a reason for each that is not done) and the
+      residual risks. The runtime commits, pushes and opens the pull request itself; do not run git or call a provider.
+    read_only: true
+    artifact: 12-pull-request.md
+    artifact_schema: pull-request
+
   implementation:
     executor: codex
     standards: [engineering-rulebook]
@@ -506,3 +523,11 @@ stages:
     artifact_schema: verification
     conditional_role: mobile-evidence
     condition: mobile_or_ui_feature
+
+  # Runtime-owned delivery (ai/workflow/pull-request.js): pr-description writes
+  # the title and body, the runtime commits, pushes and opens the pull request.
+  # Opt-in through pull_request.enabled in the project's .agentic/config.yaml;
+  # otherwise skipped, and `agentic pr <id>` opens it on request.
+  - id: pull-request
+    role: pr-description
+    needs: [verification]

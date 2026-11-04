@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-agent-workflow-runtime.local/schemas/pull-request-v1.json",
+  "title": "Pull Request Description Artifact",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "title", "summary", "body", "template", "definitionOfDone", "residualRisks"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 3 },
+    "summary": { "type": "string", "minLength": 1 },
+    "body": { "type": "string", "minLength": 20 },
+    "template": { "type": ["string", "null"] },
+    "definitionOfDone": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "status"],
+        "properties": {
+          "item": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["done", "not-done", "not-applicable"] },
+          "reason": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "residualRisks": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

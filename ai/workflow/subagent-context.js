@@ -4,11 +4,25 @@ const {retrieve,formatContext,loadRagConfig}=require('../rag/hybrid-rag');
 
 const INPUT_FILES={
  request:['00-request.md'], acceptance_criteria:['02-acceptance-criteria.md'], definition_of_done:['03-definition-of-done.md'],
- inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md'], fixes:['10-fixes.md']
+ inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md'], fixes:['10-fixes.md'],
+ device_evidence:['device/mobile-device-qc.md']
 };
+// Where repositories keep their pull request template, in the order they are used.
+const PR_TEMPLATES=['.github/pull_request_template.md','.github/PULL_REQUEST_TEMPLATE.md','.bitbucket/pull_request_template.md','docs/pull_request_template.md'];
 
 function read(file){try{return fs.readFileSync(file,'utf8');}catch{return null;}}
-function changedFiles(productRoot){const r=spawnSync('git',['diff','--name-only','HEAD'],{cwd:productRoot,encoding:'utf8'});return r.status===0?String(r.stdout||'').trim().split('\n').filter(Boolean):[];}
+// What the run changed: tracked changes against the run's base commit (so files
+// the pull-request stage already committed still count) plus untracked files.
+// `git diff HEAD` saw nothing once the runtime had committed, and never listed
+// a brand-new file. Without a usable base it falls back to HEAD.
+function changedFiles(productRoot,baseSha){
+ if(!productRoot) return [];
+ const base=baseSha&&/^[0-9a-f]{7,64}$/i.test(String(baseSha))&&spawnSync('git',['cat-file','-e',`${baseSha}^{commit}`],{cwd:productRoot,encoding:'utf8'}).status===0?String(baseSha):'HEAD';
+ const r=spawnSync('git',['diff','--name-only','--no-renames',base,'--'],{cwd:productRoot,encoding:'utf8'});
+ const u=spawnSync('git',['ls-files','--others','--exclude-standard'],{cwd:productRoot,encoding:'utf8'});
+ const lines=[...(r.status===0?String(r.stdout||'').split('\n'):[]),...(u.status===0?String(u.stdout||'').split('\n'):[])];
+ return [...new Set(lines.map(x=>x.trim()).filter(Boolean))];
+}
 function dependencyVersions(productRoot){const out=[];for(const name of ['package.json','pubspec.yaml','gradle.properties','build.gradle','build.gradle.kts','Podfile']){const t=read(path.join(productRoot,name));if(t)out.push(`## ${name}\n${t.slice(0,12000)}`);}return out.join('\n\n');}
 function reviewArtifacts(runDir){const d=path.join(runDir,'09-reviews');try{return fs.readdirSync(d).filter(f=>f.endsWith('.md')).sort().map(f=>`## 09-reviews/${f}\n${read(path.join(d,f)).slice(0,12000)}`).join('\n\n');}catch{return '';}}
 // Every specialist finding, with the ids the arbitration role must quote back.
@@ -26,6 +40,12 @@ function specialistFindings(runDir){
  }
  return lines.length?`## Specialist findings\n${lines.join('\n')}`:'';
 }
+function prTemplate(productRoot){if(!productRoot)return null;for(const rel of PR_TEMPLATES){const t=read(path.join(productRoot,rel));if(t&&t.trim())return {path:rel,text:t};}return null;}
+function prTemplateSection(productRoot){
+ const t=prTemplate(productRoot);
+ if(!t) return `## Pull request template\nThis repository has no pull request template (looked for ${PR_TEMPLATES.join(', ')}). Use these sections: Summary, Changes, How it was tested, Definition of Done, Left for a human to run. Set "template" to null.`;
+ return `## Pull request template (${t.path})\nFill every section of this template in "body", keeping its headings and checkboxes. Set "template" to "${t.path}".\n\n${t.text.slice(0,12000)}`;
+}
 function broadArtifacts(runDir,exclude){try{return fs.readdirSync(runDir).filter(f=>/^\d\d-.*\.md$/.test(f)&&f!==exclude).sort().map(f=>`## ${f}\n${read(path.join(runDir,f)).slice(0,12000)}`).join('\n\n');}catch{return '';}}
 
 // Precedence: contract's per-role `retrieval:` (if a role ever sets one) wins over
@@ -39,19 +59,19 @@ function retrievalSettings(contract,projectRag){
  const cfg={...defaults,...(projectRag||{}),...(typeof specific==='object'?specific:{})};
  return {mode:String(cfg.mode||'off').toLowerCase(),topK:Number(cfg.top_k||cfg.topK||8),maxContextChars:Number(cfg.max_context_chars||cfg.maxContextChars||24000),maxExcerptChars:Number(cfg.max_excerpt_chars||cfg.maxExcerptChars||4200),maxPerFile:Number(cfg.max_per_file||cfg.maxPerFile||2)};
 }
-function retrievalQuery(runDir,roleName,productRoot){
+function retrievalQuery(runDir,roleName,productRoot,baseSha){
  const parts=[`workflow role: ${roleName||'unknown'}`];
  for(const f of ['00-request.md','01-requirements.md','02-acceptance-criteria.md','03-definition-of-done.md','04-inspection.md']){const t=read(path.join(runDir,f));if(t)parts.push(t.slice(0,7000));}
- const changed=productRoot?changedFiles(productRoot):[];if(changed.length)parts.push('changed files:\n'+changed.join('\n'));
+ const changed=productRoot?changedFiles(productRoot,baseSha):[];if(changed.length)parts.push('changed files:\n'+changed.join('\n'));
  return parts.join('\n\n');
 }
 function safeName(v){return String(v||'role').replace(/[^A-Za-z0-9._-]+/g,'-').slice(0,100);}
-function hybridRagContext({runDir,productRoot,contract,roleName,stageId}){
+function hybridRagContext({runDir,productRoot,contract,roleName,stageId,baseSha}){
  const projectRag=productRoot?loadRagConfig(productRoot):null;
  const cfg=retrievalSettings(contract,projectRag);
  if(!['hybrid','hybrid_rag','hybrid-rag'].includes(cfg.mode))return '';
  if(!Array.isArray(contract?.tools)||!contract.tools.includes('repository_read')||!productRoot||!fs.existsSync(productRoot))return '';
- const pack=retrieve({root:productRoot,query:retrievalQuery(runDir,roleName,productRoot),role:roleName,topK:cfg.topK,maxContextChars:cfg.maxContextChars,maxExcerptChars:cfg.maxExcerptChars,maxPerFile:cfg.maxPerFile});
+ const pack=retrieve({root:productRoot,query:retrievalQuery(runDir,roleName,productRoot,baseSha),role:roleName,topK:cfg.topK,maxContextChars:cfg.maxContextChars,maxExcerptChars:cfg.maxExcerptChars,maxPerFile:cfg.maxPerFile});
  const outDir=path.join(runDir,'engine','rag-context');fs.mkdirSync(outDir,{recursive:true});
  fs.writeFileSync(path.join(outDir,`${safeName(stageId||'stage')}-${safeName(roleName||'role')}.json`),JSON.stringify(pack,null,2)+'\n');
  return formatContext(pack);
@@ -93,19 +113,20 @@ function failureFeedback(runDir,stageId,roleName){
  return `## Previous failures to address\n\nThese are recorded failures from this run. Fix the cause named here rather than re-doing the same work.\n\n${lines.join('\n')}`;
 }
 
-function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,stageId}){
+function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,stageId,baseSha}){
  const sections=[];
  const failures=failureFeedback(runDir,stageId,roleName);if(failures)sections.push(failures);
  for(const input of contract.inputs||[]){
    if(INPUT_FILES[input]) for(const f of INPUT_FILES[input]){const t=read(path.join(runDir,f));if(t)sections.push(`## ${f}\n${t.slice(0,16000)}`);}
-   else if(input==='changed_files') sections.push('## Changed files\n'+(changedFiles(productRoot).join('\n')||'(none)'));
+   else if(input==='changed_files') sections.push('## Changed files\n'+(changedFiles(productRoot,baseSha).join('\n')||'(none)'));
    else if(input==='specialist_findings'){const t=specialistFindings(runDir);if(t)sections.push(t);}
    else if(input==='validated_review_findings'){const t=reviewArtifacts(runDir);if(t)sections.push(t);}
    else if(input==='dependency_versions'){const t=dependencyVersions(productRoot);if(t)sections.push(t);}
+   else if(input==='pr_template') sections.push(prTemplateSection(productRoot));
    else if(input==='refactor_verification_matrix'){const t=read(path.join(runDir,'engine','refactor-verification-matrix.json'));if(t)sections.push('## Refactor verification matrix\n'+t);}
    else if(input==='run_artifacts'||input==='repository_evidence'){const t=broadArtifacts(runDir,excludeArtifact);if(t)sections.push(t);}
  }
- const rag=hybridRagContext({runDir,productRoot,contract,roleName,stageId});if(rag)sections.push(rag);
+ const rag=hybridRagContext({runDir,productRoot,contract,roleName,stageId,baseSha});if(rag)sections.push(rag);
  return sections.join('\n\n');
 }
-module.exports={specialistFindings,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};
+module.exports={PR_TEMPLATES,prTemplate,specialistFindings,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};

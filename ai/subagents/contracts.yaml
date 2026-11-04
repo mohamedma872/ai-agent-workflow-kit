@@ -122,6 +122,11 @@ roles:
     inputs: [acceptance_criteria, definition_of_done, specialist_findings]
     outputs: [conflicts]
     tools: [repository_read]
+  pr-description:
+    mode: read_only
+    inputs: [run_artifacts, validated_review_findings, device_evidence, changed_files, pr_template]
+    outputs: [pull_request_description]
+    tools: [repository_read]
 
   implementation:
     mode: workspace_write

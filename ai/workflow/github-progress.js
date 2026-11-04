@@ -48,7 +48,7 @@ function resolvePr(explicit) {
 }
 
 function commentBody(summary) {
-  return `${MARKER}\n${renderMarkdown(summary)}\n\n> Safe status summary only. Local run artifacts, prompts, notes, and secrets are not published.`;
+  return `${MARKER}\n${renderMarkdown(summary, { published: true })}\n\n> Safe status summary only. Local run artifacts, prompts, notes, and secrets are not published.`;
 }
 
 function findExistingComment(repo, pr) {
@@ -106,7 +106,8 @@ function main() {
 
     if (body === previousBody) return previousBody;
     repo ||= resolveRepo(args.repo);
-    pr ||= resolvePr(args.pr);
+    // The PR the pull-request stage opened, when it is a GitHub one.
+    pr ||= resolvePr(args.pr || (state.pullRequest?.provider === 'github' ? state.pullRequest.number : null));
     const result = syncComment(repo, pr, body);
     console.log(`${result.action} workflow progress comment on ${repo}#${pr} (${result.commentId})`);
     return body;

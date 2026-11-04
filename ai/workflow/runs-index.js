@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const { stateRoot } = require('./paths');
 const { buildSummary } = require('./progress');
+const { liveEngine } = require('./engine-owner');
 
 const ACTIVE_FILE = '_active';
 
@@ -73,6 +74,9 @@ function runEntry(id, root, active = activeId(root)) {
     abandoned: !!state.abandoned,
     active: id === active,
     dir: runDir(id, root),
+    // The engine process driving the run right now, if any (engine-owner.js);
+    // buildSummary has already looked, in the same run directory.
+    engine: summary.engine !== undefined ? summary.engine : liveEngine(runDir(id, root)),
   };
 }
 
@@ -121,12 +125,15 @@ function renderList(runs, options = {}) {
   const lines = [`${'  '}${'RUN'.padEnd(idWidth)}  ${'FEATURE'.padEnd(featureWidth)}  ${'PROG'.padStart(4)}  ${'STATE'.padEnd(9)}  ${'CURRENT'.padEnd(30)}  UPDATED`];
   for (const run of runs) {
     const marker = run.active ? '▸ ' : '  ';
-    const state = run.inProgress ? (run.planApproved ? 'approved' : 'plan-gate') : run.abandoned ? 'abandoned' : 'done';
+    const state = run.inProgress ? (run.engine ? 'running' : run.needsYou ? 'needs-you' : run.planApproved ? 'approved' : 'plan-gate') : run.abandoned ? 'abandoned' : 'done';
     const current = String(run.current || '').slice(0, 30);
     const feature = String(run.title || '—').slice(0, featureWidth);
     lines.push(`${marker}${String(run.id).padEnd(idWidth)}  ${feature.padEnd(featureWidth)}  ${String(run.percent).padStart(3)}%  ${state.padEnd(9)}  ${current.padEnd(30)}  ${ago(run.updatedAt)}`);
   }
   lines.push('');
+  const waiting = runs.filter(r => r.inProgress && r.needsYou && !r.engine);
+  for (const run of waiting) lines.push(`⚠ ${run.id}: ${run.needsYou.headline} — run: ${run.needsYou.command}`);
+  if (waiting.length) lines.push('');
   lines.push(`${runs.filter(r => r.inProgress).length} in progress · ▸ = active run · open the GUI with: agentic progress`);
   return lines.join('\n');
 }
@@ -186,6 +193,26 @@ function selftest() {
   assert.strictEqual(withAbandoned.find(r => r.id === 'FEAT-GAVEUP').abandoned, true);
   assert.strictEqual(withAbandoned.find(r => r.id === 'FEAT-DONE').abandoned, false);
   assert.match(renderList(withAbandoned, { all: true }), /abandoned/, 'an abandoned run does not read as done');
+
+  write('FEAT-PR', { id: 'FEAT-PR', status: 'active', updatedAt: '2026-09-06T10:00:00.000Z', phases: { verification: { status: 'pass' }, 'pull-request': { status: 'pass' } }, pullRequest: { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', commit: 'abc' } });
+  assert.deepStrictEqual(runEntry('FEAT-PR', temp).pullRequest, { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', draft: false }, 'the opened PR reaches the dashboard');
+
+  // A run that needs the human says so in the list, with its command; one
+  // whose engine is running says that instead.
+  write('FEAT-STUCK', { id: 'FEAT-STUCK', status: 'active', updatedAt: '2026-09-07T10:00:00.000Z', phases: { 'build-test': { status: 'fail', note: 'flutter test: 2 failing', updatedAt: '2026-09-07T10:00:00.000Z' } } });
+  const stuck = runEntry('FEAT-STUCK', temp);
+  assert.strictEqual(stuck.needsYou.headline, 'Build + Tests failed');
+  assert.strictEqual(stuck.engine, null);
+  const stuckTable = renderList([stuck], {});
+  assert.match(stuckTable, /needs-you/);
+  assert.match(stuckTable, /⚠ FEAT-STUCK: Build \+ Tests failed — run: /);
+  fs.mkdirSync(path.join(temp, 'FEAT-STUCK', 'engine'), { recursive: true });
+  fs.writeFileSync(path.join(temp, 'FEAT-STUCK', 'engine', 'engine.pid'), JSON.stringify({ pid: process.pid, host: os.hostname(), command: 'resume', startedAt: new Date().toISOString() }));
+  const runningEntry = runEntry('FEAT-STUCK', temp);
+  assert.strictEqual(runningEntry.engine.pid, process.pid, 'a live engine is detected');
+  assert.match(renderList([runningEntry], {}), /running/);
+  assert.ok(!/⚠ FEAT-STUCK/.test(renderList([runningEntry], {})));
+  fs.rmSync(path.join(temp, 'FEAT-STUCK'), { recursive: true });
 
   assert.match(renderList([], {}), /No features in progress/);
   const table = renderList(listRuns({ root: temp }), {});

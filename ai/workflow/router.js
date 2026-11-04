@@ -23,6 +23,23 @@ const WORKFLOWS_DIR = path.join(ROOT, 'ai', 'workflows');
 const AGENTS_FILE = path.join(ROOT, 'ai', 'agents.yaml');
 const STANDARDS_DIR = path.join(ROOT, 'ai', 'standards');
 
+// Defence in depth behind the capability hook (ai/guard/subagent-capabilities.js):
+// in an agent's environment every push URL is rewritten to a scheme git has no
+// transport for, so a gap in the hook's parsing still cannot publish anything.
+// Fetches are untouched (pub, CocoaPods and SwiftPM fetch git dependencies).
+// The runtime's own push (ai/workflow/pull-request.js) runs in the engine
+// process, which never gets this environment. A remote with an explicit
+// pushurl is not rewritten by git; the hook still denies its push.
+const NO_PUSH_URL = 'agentic-no-push://agent-roles-cannot-push/';
+const PUSH_PREFIXES = ['https://', 'http://', 'ssh://', 'git://', 'git@', 'file://', '/', '.'];
+function noPushGitEnv(env = process.env) {
+  const n = Number.parseInt(env.GIT_CONFIG_COUNT || '0', 10);
+  const start = Number.isInteger(n) && n > 0 ? n : 0;
+  const out = { GIT_CONFIG_COUNT: String(start + PUSH_PREFIXES.length) };
+  PUSH_PREFIXES.forEach((prefix, i) => { out[`GIT_CONFIG_KEY_${start + i}`] = `url.${NO_PUSH_URL}.pushInsteadOf`; out[`GIT_CONFIG_VALUE_${start + i}`] = prefix; });
+  return out;
+}
+
 function fail(message, code = 1) { console.error(`✗ ${message}`); process.exit(code); }
 function parseArgs(argv) {
   const out = { _: [] };
@@ -247,7 +264,7 @@ function execute(workflow, agents, roleName, args) {
   if (!onPath(argv[0])) throw new Error(`executor "${resolved.agentName}": "${argv[0]}" is not on PATH`);
   const res = spawnSync(argv[0], argv.slice(1), {
     cwd,
-    env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: workflow.name, AI_WORKFLOW_ROLE: roleName, ...(runId ? { FEATURE_RUN_ID: String(runId) } : {}) },
+    env: { ...process.env, ...noPushGitEnv(process.env), AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: workflow.name, AI_WORKFLOW_ROLE: roleName, ...(runId ? { FEATURE_RUN_ID: String(runId) } : {}) },
     encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, timeout: (Number(args['timeout-min']) || 60) * 60 * 1000, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const answer = finalAnswer(resolved.agent, res.stdout || '', lastMessageFile);
@@ -298,6 +315,32 @@ function selftest() {
   assert.match(standardPrompt, /Dependency Inversion Principle/);
   // An absent or malformed config must never break loading.
   assert.strictEqual(loadExecutorPrefs('/nonexistent-root-for-selftest'), null);
+  // An agent's git can fetch but not push, whatever the hook missed.
+  {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'router-no-push-'));
+    const home = path.join(tmp, 'home'); fs.mkdirSync(home);
+    const base = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+    delete base.GIT_CONFIG_COUNT;
+    const run = (cwd, args, env = base) => spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+    try {
+      const bare = path.join(tmp, 'remote.git'); const clone = path.join(tmp, 'clone');
+      assert.strictEqual(run(tmp, ['init', '-q', '--bare', bare]).status, 0);
+      assert.strictEqual(run(tmp, ['clone', '-q', bare, clone]).status, 0);
+      fs.writeFileSync(path.join(clone, 'a.txt'), 'a\n');
+      run(clone, ['add', 'a.txt']);
+      assert.strictEqual(run(clone, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'a']).status, 0);
+      const agent = { ...base, ...noPushGitEnv(base) };
+      for (const target of ['origin', bare, `file://${bare}`]) {
+        const pushed = run(clone, ['push', '-q', target, 'HEAD:refs/heads/agent'], agent);
+        assert.notStrictEqual(pushed.status, 0, `an agent cannot push to ${target}`);
+      }
+      assert.strictEqual(run(clone, ['push', '-q', 'origin', 'HEAD:refs/heads/runtime']).status, 0, 'the same push works outside the agent environment');
+      assert.strictEqual(run(clone, ['fetch', '-q', 'origin'], agent).status, 0, 'fetching still works');
+      const chained = noPushGitEnv({ GIT_CONFIG_COUNT: '2' });
+      assert.strictEqual(chained.GIT_CONFIG_COUNT, String(2 + PUSH_PREFIXES.length), 'existing GIT_CONFIG_* entries are kept');
+      assert.ok(chained.GIT_CONFIG_KEY_2 && !chained.GIT_CONFIG_KEY_0);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  }
   console.log('router selftest OK');
 }
 
@@ -331,4 +374,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, loadRoleStandards, safeRunId };
+module.exports = { noPushGitEnv, executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, loadRoleStandards, safeRunId };

@@ -217,11 +217,14 @@ function loadPacks(root) {
 // add secret/guarded files, evidence dirs, and ask/deny shell rules, but never allow or switch off
 // anything — a rule with any other decision is dropped. The file itself is always guarded.
 const PROJECT_GUARDRAILS = '.agentic/guardrails.yaml';
+// .agentic/config.yaml turns on outward writes (pull_request.enabled) and says
+// where they go, so an agent editing it asks first, like the guardrails file.
+const PROJECT_CONFIG = '.agentic/config.yaml';
 const PROJECT_GUARDRAIL_KEYS = new Set(['version', 'secret_files', 'guarded_files', 'evidence', 'shell_rules', 'project']);
 const TIGHTEN_DECISIONS = new Set(['ask', 'deny']);
 
 function loadProjectGuardrails(root) {
-  const pack = { name: `project (${PROJECT_GUARDRAILS})`, kind: 'project', secretFiles: [], guardedFiles: [globToRegex(PROJECT_GUARDRAILS)], evidence: [], shellRules: [], secrets: null, rules: null, hasYaml: false, hasJs: false, raw: null, dropped: [] };
+  const pack = { name: `project (${PROJECT_GUARDRAILS})`, kind: 'project', secretFiles: [], guardedFiles: [globToRegex(PROJECT_GUARDRAILS), globToRegex(PROJECT_CONFIG)], evidence: [], shellRules: [], secrets: null, rules: null, hasYaml: false, hasJs: false, raw: null, dropped: [] };
   const { data, error } = readYaml(path.join(root, PROJECT_GUARDRAILS), root);
   if (error) {process.stderr.write(`ai-guard: ${PROJECT_GUARDRAILS}: ${error}\n`);}
   if (data && typeof data === 'object') {
@@ -680,6 +683,7 @@ async function selftest() {
   cases.push(
     ['project: edit .agentic/guardrails.yaml → ask', P('Write', { file_path: `${root}/.agentic/guardrails.yaml`, content: 'version: 1' }), {}, 'ask'],
     ['project: shell rewrite of guardrails.yaml → ask', P('Bash', { command: 'echo "version: 1" > .agentic/guardrails.yaml' }), {}, 'ask'],
+    ['project: edit .agentic/config.yaml (pull_request.enabled) → ask', P('Edit', { file_path: `${root}/.agentic/config.yaml`, old_string: 'enabled: false', new_string: 'enabled: true' }), {}, 'ask'],
   );
   if (yamlAvailable) {
     // .agentic/guardrails.yaml: tighten-only project rules — ask/deny honored, allow/off dropped

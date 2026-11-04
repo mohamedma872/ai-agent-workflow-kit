@@ -74,6 +74,23 @@ function validate(name, data) {
   return errors;
 }
 
+// Pull request text names no tool, model or agent as its author: no trailer,
+// no "Generated with", no robot. A product feature that merely mentions AI is
+// fine; a phrase that says AI wrote, assisted or opened the change is not.
+const ATTRIBUTION = [
+  [/co-authored-by\s*:/i, 'a Co-Authored-By trailer'],
+  [/\b(?:generated|created|written|made)\s+(?:with|by|using)\s+\[?\s*(?:claude|codex|chatgpt|an?\s+ai\b|ai\b|an?\s+llm\b|llm\b)/i, 'a "Generated with" attribution'],
+  [/\u{1F916}/u, 'a robot-emoji attribution'],
+  [/\b(?:claude|codex|anthropic|openai|chatgpt)\b/i, 'the name of an AI tool'],
+  [/\b(?:ai|llm)[- ](?:generated|assisted|written|authored|agents?)\b/i, 'an AI authorship phrase'],
+  [/\b(?:written|authored|drafted|produced|opened|implemented)\s+(?:by|with|using)\s+(?:an?\s+)?(?:ai|llm|agents?|bots?)\b/i, 'an AI authorship phrase'],
+  [/\bagentic\b/i, 'a reference to the agentic workflow'],
+];
+function attributionProblems(text) {
+  const value = String(text || '');
+  return [...new Set(ATTRIBUTION.filter(([re]) => re.test(value)).map(([, label]) => label))];
+}
+
 function semanticProblems(name, data) {
   const errors = [];
   if (name === 'build-test' && data.status !== 'pass') errors.push('$.status: build/test artifact must be pass before the stage can complete');
@@ -137,6 +154,16 @@ function semanticProblems(name, data) {
       if (ac.status === 'pass' && (!Array.isArray(ac.evidence) || !ac.evidence.length)) errors.push(`$.acceptanceCriteria[${ac.id || '?'}]: passing AC needs evidence`);
     }
     for (const item of data.definitionOfDone || []) if (!['pass', 'not-applicable'].includes(item.status)) errors.push(`$.definitionOfDone[${item.item || '?'}]: status=${item.status}`);
+  }
+  if (name === 'pull-request') {
+    if (/[\r\n]/.test(data.title || '')) errors.push('$.title: must be one line');
+    if (String(data.title || '').length > 120) errors.push('$.title: must be at most 120 characters');
+    for (const item of data.definitionOfDone || []) {
+      if (item && item.status !== 'done' && !String(item.reason || '').trim()) errors.push(`$.definitionOfDone[${item.item || '?'}]: ${item.status} needs a reason`);
+    }
+    for (const [field, value] of [['title', data.title], ['summary', data.summary], ['body', data.body]]) {
+      for (const problem of attributionProblems(value)) errors.push(`$.${field}: contains ${problem}`);
+    }
   }
   return errors;
 }
@@ -384,6 +411,14 @@ function renderMarkdown(name, data) {
     if (data.mobileEvidence) lines.push('', '## Mobile evidence', '', `Attestation: ${data.mobileEvidence.attestation || data.mobileEvidence.path || 'recorded'}`);
     return lines.join('\n').trim() + '\n';
   }
+  if (name === 'pull-request') {
+    // The body is what the pull request carries; the rest is for the reader of the run.
+    const lines = [`# ${data.title}`, '', String(data.body).trim(), '', '---', '', `Template: ${data.template || 'none in this repository'}`];
+    const open = (data.definitionOfDone || []).filter(item => item.status !== 'done');
+    if (open.length) { lines.push('', 'Definition of Done not done here:'); for (const item of open) lines.push(`- ${item.item} — ${item.status}: ${item.reason}`); }
+    if ((data.residualRisks || []).length) { lines.push('', 'Left for a human to run:'); for (const risk of data.residualRisks) lines.push(`- ${risk}`); }
+    return lines.join('\n').trim() + '\n';
+  }
   throw new Error(`no Markdown renderer for schema ${name}`);
 }
 
@@ -544,6 +579,23 @@ function selftest() {
   assert.deepStrictEqual(c4('workspace {\n  model {}\n}'), [], 'an anonymous workspace is still valid');
   assert.ok(c4('a prose description of the architecture').length > 0, 'prose is not a workspace');
 
+  // A pull request description: honest Definition of Done, no attribution.
+  const pr = { schemaVersion: 1, runId: 'TEST', title: 'Add the greeting banner', summary: 'Shows a greeting on the home screen.', body: '## Summary\nShows a greeting.\n\n## Definition of Done\n- [x] unit tests\n- [ ] device run — not done: no device available\n', template: '.github/pull_request_template.md',
+    definitionOfDone: [{ item: 'unit tests', status: 'done' }, { item: 'device run', status: 'not-done', reason: 'no device available' }], residualRisks: ['run the app on an iPhone'] };
+  assert.deepStrictEqual(validateArtifactData('pull-request', pr, 'TEST'), []);
+  const prMd = path.join(temp, '12-pull-request.md');
+  materialize('pull-request', JSON.stringify(pr), path.join(temp, '12-pull-request.json'), prMd, 'TEST');
+  const prText = fs.readFileSync(prMd, 'utf8');
+  assert.ok(prText.startsWith('# Add the greeting banner') && prText.includes('device run — not-done: no device available') && prText.includes('run the app on an iPhone'));
+  assert.ok(validateArtifactData('pull-request', { ...pr, definitionOfDone: [{ item: 'device run', status: 'not-done' }] }, 'TEST').some(x => x.includes('needs a reason')), 'an unchecked DoD item says why');
+  for (const tainted of ['Co-Authored-By: Someone <a@b.c>', '🤖 Generated with [Claude Code](https://claude.com/claude-code)', 'Generated with Claude', 'Drafted by an AI agent', 'Implemented by Codex', 'opened by the agentic workflow', 'AI-generated changes']) {
+    assert.ok(validateArtifactData('pull-request', { ...pr, body: `${pr.body}\n${tainted}\n` }, 'TEST').some(x => x.startsWith('$.body: contains')), `attribution is rejected: ${tainted}`);
+  }
+  for (const clean of ['Migrates the AI shopping assistant to Order Spike', 'Freezed files generated with build_runner', 'Fixes the claudication typo']) {
+    assert.deepStrictEqual(attributionProblems(clean), [], `ordinary text passes: ${clean}`);
+  }
+  assert.ok(validateArtifactData('pull-request', { ...pr, title: 'two\nlines' }, 'TEST').some(x => x.includes('one line')));
+
   // And an unknown status is still rejected.
   assert.ok(validateArtifactData('subagent-findings', { ...findings, status: 'done' }, 'TEST').length > 0);
 
@@ -569,4 +621,4 @@ function cli() {
 }
 
 if (require.main === module) cli();
-module.exports = { validate, validateArtifactData, validateArtifactFile, materialize, renderMarkdown, sidecarForMarkdown, schemaContract, semanticProblems, checkSchemaDefinition, checkAllSchemas };
+module.exports = { validate, validateArtifactData, validateArtifactFile, materialize, renderMarkdown, sidecarForMarkdown, schemaContract, semanticProblems, attributionProblems, checkSchemaDefinition, checkAllSchemas };

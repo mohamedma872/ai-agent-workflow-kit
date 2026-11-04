@@ -53,15 +53,31 @@ function ensure(runtimeRoot, id, options = {}) {
     atomicJson(metadataFile(runtimeRoot, id), updated);
     return { ...updated, exists: true };
   }
-  const baseSha = options.baseSha || git(sourceRoot, ['rev-parse', 'HEAD']);
   const branch = options.branch || branchName(id);
   const target = path.join(worktreesRoot(sourceRoot), id);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   if (fs.existsSync(target) && fs.readdirSync(target).length) throw new Error(`worktree path already exists and is not empty: ${target}`);
   const branchExists = git(sourceRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { allowFailure: true }).status === 0;
-  if (branchExists) git(sourceRoot, ['worktree', 'add', target, branch]);
-  else git(sourceRoot, ['worktree', 'add', '-b', branch, target, baseSha]);
-  const meta = { runId: id, path: target, branch, baseSha, currentSha: currentSha(target), createdAt: new Date().toISOString(), sourceRoot, gitCommonDir: repoCommonDir(sourceRoot) };
+  let baseSha;
+  let baseBranch = null;
+  if (branchExists) {
+    // A branch created beforehand (how a human picks another base for a run)
+    // starts wherever that human put it, not at the main checkout's HEAD. Its
+    // tip is where this run's own work starts, and the main checkout's branch
+    // says nothing about its base, so none is recorded: the pull-request stage
+    // then checks the fallback base, or asks for --base.
+    git(sourceRoot, ['worktree', 'add', target, branch]);
+    baseSha = currentSha(target);
+    baseBranch = options.baseBranch || null;
+  } else {
+    baseSha = options.baseSha || git(sourceRoot, ['rev-parse', 'HEAD']);
+    git(sourceRoot, ['worktree', 'add', '-b', branch, target, baseSha]);
+    // The branch the run started from is the pull request's default base. A
+    // detached checkout has none, and the pull-request stage then asks for --base.
+    const symbolic = git(sourceRoot, ['symbolic-ref', '--short', '-q', 'HEAD'], { allowFailure: true });
+    baseBranch = options.baseBranch || (symbolic.status === 0 ? String(symbolic.stdout).trim() || null : null);
+  }
+  const meta = { runId: id, path: target, branch, baseSha, baseBranch, branchPreexisted: branchExists, currentSha: currentSha(target), createdAt: new Date().toISOString(), sourceRoot, gitCommonDir: repoCommonDir(sourceRoot) };
   atomicJson(metadataFile(runtimeRoot, id), meta);
   return { ...meta, exists: true };
 }
@@ -98,7 +114,21 @@ function selftest() {
   const mainBefore = status(repo);
   const a = ensure(repo, 'RUN-A');
   const b = ensure(repo, 'RUN-B');
+  assert.strictEqual(a.baseBranch, git(repo, ['symbolic-ref', '--short', 'HEAD']), 'the base branch is recorded');
+  assert.strictEqual(a.branchPreexisted, false);
   assert.notStrictEqual(a.path, b.path); assert.notStrictEqual(a.branch, b.branch);
+  // A run branch created beforehand from another base: its tip is the run's
+  // start, and the main checkout's branch is not recorded as its base.
+  const mainBranch = git(repo, ['symbolic-ref', '--short', 'HEAD']);
+  git(repo, ['checkout', '-q', '-b', 'revamp']);
+  fs.writeFileSync(path.join(repo, 'revamp.txt'), 'revamp\n');
+  git(repo, ['add', 'revamp.txt']); git(repo, ['commit', '-qm', 'revamp work']);
+  const revampTip = git(repo, ['rev-parse', 'HEAD']);
+  git(repo, ['branch', branchName('RUN-PRE')]);
+  git(repo, ['checkout', '-q', mainBranch]);
+  const pre = ensure(repo, 'RUN-PRE');
+  assert.deepStrictEqual([pre.branchPreexisted, pre.baseBranch, pre.baseSha], [true, null, revampTip], 'a pre-created branch keeps its own start and records no base');
+  cleanup(repo, 'RUN-PRE', { force: true });
   fs.writeFileSync(path.join(a.path, 'a.txt'), 'a');
   assert.strictEqual(fs.existsSync(path.join(b.path, 'a.txt')), false);
   assert.strictEqual(fs.existsSync(path.join(repo, 'a.txt')), false);
