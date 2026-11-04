@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
 const { stateRoot, projectRoot, relativeStatePath } = require('./paths');
@@ -154,12 +155,14 @@ function deriveRoleGroupStatus(state, group) {
   return 'in_progress';
 }
 
-// A run closed (or abandoned) before 1.9.31 has no pull-request phase. A
-// verified, closed run is finished, so the stage shows as skipped. An abandoned
-// run, or one closed unverified, never reached the stage: it is left out of the
-// percent instead of counting as done.
+// A run closed (or abandoned) before 1.9.31 has no pull-request phase, and one
+// closed with the stage disabled still stores it as pending (the skip was
+// derived, never written): the same. A verified, closed run is finished, so
+// the stage shows as skipped. An abandoned run, or one closed unverified,
+// never reached the stage: it is left out of the percent instead of counting
+// as done.
 function legacyPullRequest(state) {
-  if (state?.phases?.['pull-request'] || state?.status !== 'done') return null;
+  if (state?.status !== 'done' || rawStatusOf(state, 'pull-request') !== 'pending') return null;
   return !state.abandoned && rawStatusOf(state, 'verification') === 'pass' ? 'skipped' : 'excluded';
 }
 
@@ -178,9 +181,19 @@ function pullRequestConfig(root = projectRoot()) {
 // whether the engine recorded the skip or the run was verified before 1.9.31
 // and has no phase at all: derived here, never written. Only a raw pending
 // (missing or stored) qualifies; in_progress, blocked and fail keep their
-// meaning, and a closed run is legacyPullRequest's.
+// meaning, and a closed run is legacyPullRequest's. A block that does not
+// parse (`enabled: "yes"`, broken YAML) is not a disabled one: the stage keeps
+// waiting and the problems go into the summary's warnings, so a typo never
+// reads as "complete".
+function pullRequestOptions(state) { return pullRequest.effectiveOptions(pullRequestConfig(), state?.pullRequestOptions); }
 function disabledPullRequest(state) {
-  return state?.status !== 'done' && rawStatusOf(state, 'pull-request') === 'pending' && rawStatusOf(state, 'verification') === 'pass' && !pullRequest.effectiveOptions(pullRequestConfig(), state.pullRequestOptions).enabled;
+  if (state?.status === 'done' || rawStatusOf(state, 'pull-request') !== 'pending' || rawStatusOf(state, 'verification') !== 'pass') return false;
+  const options = pullRequestOptions(state);
+  return !options.enabled && !options.problems.length;
+}
+// What is wrong with the block, while the stage is still to run on an open run.
+function pullRequestProblems(state) {
+  return state?.status !== 'done' && rawStatusOf(state, 'pull-request') === 'pending' ? pullRequestOptions(state).problems : [];
 }
 // The one wording for a recorded and a derived skip.
 function pullRequestSkipNote(id, cli = process.env.AI_AGENTIC_CLI === '1') { return `pull_request disabled (open one with: ${commandFor('pr', id, cli)})`; }
@@ -339,7 +352,11 @@ function stageOrder() { return loadWorkflow().order; }
 function runFile(id, file, cli) { return cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`; }
 // The roles of a parallel stage that failed or blocked, plus the conditional role when one did.
 function stoppedEntries(state, phase) { return roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked'); }
-function stoppedRoles(state, phase, role) { return [...stoppedEntries(state, phase).map(([name]) => name), ...(role ? [role] : [])]; }
+// A role name as runs.js' safeRole accepts it. Role keys come straight from
+// state.json; one that fails this never becomes a `retry <role>` command (which
+// runs.js would refuse anyway), a path under the run directory, or terminal text.
+const SAFE_ROLE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
+function stoppedRoles(state, phase, role) { return [...stoppedEntries(state, phase).map(([name]) => name), ...(role ? [role] : [])].filter(name => SAFE_ROLE.test(name)); }
 // The files a stopped stage leaves behind, from the workflow: the stage's or
 // its role's artifact, the artifact of each stopped role, and the rejected
 // agent output the engine keeps (engine/<stage>-<role>.rejected). A stage the
@@ -570,14 +587,18 @@ function recoveryCommands(id, attention, options = {}) {
 // still there (a normal exit removes it, engine-owner.js) but nothing alive
 // holds it. Not a needs-you kind (needsYou stays as it is); shaped like one so
 // the same views and block serve it. A run driven by hand never writes the
-// record, so it is never called stalled. No time heuristic.
-function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1') {
+// record, so it is never called stalled. No time heuristic. A record from
+// another host cannot be checked from here (engine-owner.js only ages it out),
+// so it is never called gone either. `options.engine` is the liveEngine()
+// result the caller already has, so the stall check runs `ps` no second time.
+function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1', options = {}) {
   if (!state || state.status === 'done') return null;
   const stage = [...new Set([...stageOrder(), ...PHASES])].reverse().find(phase => effectiveStatus(state, phase) === 'in_progress');
   if (!stage) return null;
   const dir = path.join(root, id);
   const owner = readOwner(dir);
-  if (!owner || liveEngine(dir)) return null;
+  if (!owner || (owner.host && owner.host !== os.hostname())) return null;
+  if (options.engine !== undefined ? options.engine : liveEngine(dir)) return null;
   const label = labelOf(stage), at = oneLine(owner.startedAt, 40);
   return {
     kind: 'stalled',
@@ -596,7 +617,9 @@ function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
   const root = options.root || RUNS;
   const attention = needsYou(id, state, { root });
-  const stalled = options.demo ? null : stalledAttention(id, state, root);
+  // One liveness check per summary: the dashboard asks every second.
+  const engine = options.demo ? null : liveEngine(path.join(root, id));
+  const stalled = options.demo ? null : stalledAttention(id, state, root, undefined, { engine });
   return {
     id,
     status: state.status || 'active',
@@ -606,7 +629,7 @@ function buildSummary(id, state, options = {}) {
     planApproved: options.demo ? false : planApproved(id, root),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
-    warnings: consistencyIssues(state),
+    warnings: [...consistencyIssues(state), ...pullRequestProblems(state).map(problem => (problem.startsWith('.agentic/config.yaml') ? problem : `.agentic/config.yaml: ${problem}`))],
     pullRequest: pullRequestSummary(state),
     pullRequestHint: pullRequestHint(id, state),
     needsYou: attention,
@@ -615,7 +638,7 @@ function buildSummary(id, state, options = {}) {
     completedAt: completedAt(state),
     // The engine driving the run right now (engine-owner.js): while it works,
     // a block in the state is what it is re-running, not something to act on.
-    engine: options.demo ? null : liveEngine(path.join(root, id)),
+    engine,
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);

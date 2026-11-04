@@ -750,16 +750,24 @@ function selftest() {
   // A run verified with pull_request disabled and no pull-request phase (an
   // active run from before 1.9.31): the stage reads as skipped with the
   // command that opens one, nothing is left to resume or retry, and an
-  // `agentic pr` request puts the stage back to work.
+  // `agentic pr` request puts the stage back to work. The project root is
+  // pinned to an empty directory: the derived skip reads the project's
+  // .agentic/config.yaml, and the ambient one may enable the stage.
   {
     const id = 'LEG-2';
     const file = path.join(retryRoot, id, 'state.json');
-    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    const project = path.join(retryRoot, 'leg-2-project'), enabling = path.join(retryRoot, 'leg-2-enabled');
+    fs.mkdirSync(path.join(enabling, '.agentic'), { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(enabling, '.agentic', 'config.yaml'), 'pull_request:\n  enabled: true\n');
+    const cli = (argv, root = project) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id, AI_WORKFLOW_PROJECT_ROOT: root }, encoding: 'utf8' });
     cli(['start', id]);
     const st = JSON.parse(fs.readFileSync(file, 'utf8'));
     for (const p of PHASES) if (p !== 'pull-request') st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
     st.evidence = { mobileScreenshots: { requirement: 'not-required', reason: 'selftest' } };
     fs.writeFileSync(file, JSON.stringify(st));
+    const enabled = cli(['status', id], enabling).stdout;
+    assert.match(enabled, /· pull-request\s+pending/, enabled);
     const shown = cli(['status', id]).stdout;
     assert.match(shown, /~ pull-request\s+skipped\s+— pull_request disabled \(open one with: node ai\/workflow\/engine\.js pr LEG-2\)/, shown);
     assert.match(shown, /🔗 pull request\s+not opened — run: node ai\/workflow\/engine\.js pr LEG-2\n/, shown);
@@ -794,6 +802,10 @@ function selftest() {
     assert.ok(out.findIndex(l => l.startsWith('Plan:')) < out.findIndex(l => l.includes('plan approved')), approved.stdout);
     assert.strictEqual(out.at(-1), '→ next: agentic resume GATE-1');
     assert.ok(fs.existsSync(path.join(retryRoot, id, 'plan.approved')));
+    // When agentic resumes right after, the next step is not announced.
+    const continued = cli(['approve', id], { AI_AGENTIC_CLI: '1', AI_AGENTIC_APPROVE_CONTINUES: '1' });
+    assert.strictEqual(continued.status, 0, continued.stderr);
+    assert.ok(/plan approved/.test(continued.stdout) && !/→ next/.test(continued.stdout), continued.stdout);
     assert.ok(!/Needs you/.test(cli(['status', id]).stdout), 'approved: nothing waits');
   }
 
@@ -1153,7 +1165,9 @@ try {
         record(state, { kind: 'phase', phase: 'approval', action: 'approve', from, to: 'pass', executor: 'human', reason: 'human plan approval' });
         atomicSave(id, state);
         console.log(`${id}: plan approved — approval → pass; edits outside ai/runs are allowed`);
-        console.log(`→ next: ${commandFor('resume', id, cli)}`);
+        // `agentic approve` resumes on its own right after this and says so;
+        // the next step is printed only when nothing follows.
+        if (process.env.AI_AGENTIC_APPROVE_CONTINUES !== '1') console.log(`→ next: ${commandFor('resume', id, cli)}`);
       });
       break;
     }

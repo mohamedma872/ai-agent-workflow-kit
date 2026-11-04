@@ -5,6 +5,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const {
   PHASES,
   needsYou,
@@ -179,6 +180,31 @@ function staleApprovedState() {
   assert.strictEqual(currentWork(requested), 'Done', 'the config is read again when the file changes');
   config('pull_request:\n  enabled: true\n');
   assert.strictEqual(currentWork(requested), 'Waiting for Pull Request');
+  // A block that does not parse is not a disabled one: the stage waits, and the
+  // summary's warnings say what is wrong with the file (the engine records the
+  // same problems when it skips).
+  for (const text of ['pull_request:\n  enabled: "yes"\n', 'pull_request:\n  enabled: true\nother: [unclosed\n']) {
+    config(text);
+    const broken = verified();
+    assert.strictEqual(disabledPullRequest(broken), false, text);
+    assert.deepStrictEqual([currentWork(broken), effectiveStatus(broken, 'pull-request')], ['Waiting for Pull Request', 'pending'], text);
+    const brokenSummary = buildSummary('FEAT-1', broken);
+    assert.ok(brokenSummary.warnings.some(w => /^\.agentic\/config\.yaml(: pull_request\.enabled must be true or false| is not valid YAML)/.test(w)), JSON.stringify(brokenSummary.warnings));
+    assert.strictEqual(brokenSummary.phases.find(p => p.id === 'pull-request').note, null, text);
+    assert.match(renderTerminal(brokenSummary), /State reconciliation:\n {3}- \.agentic\/config\.yaml/, text);
+  }
+  // Closing a run whose skip was derived, never written: the stored pending
+  // phase still reads as skipped after the close, whatever the config says.
+  for (const text of ['pull_request:\n  enabled: true\n', 'pull_request:\n  enabled: false\n']) {
+    config(text);
+    const closed = verified();
+    closed.status = 'done';
+    closed.phases['pull-request'] = { status: 'pending' };
+    assert.deepStrictEqual([effectiveStatus(closed, 'pull-request'), percentComplete(closed), currentWork(closed)], ['skipped', 100, 'Done'], `closed, stored pending, ${text}`);
+    const closedSummary = buildSummary('FEAT-1', closed);
+    assert.deepStrictEqual([closedSummary.phases.find(p => p.id === 'pull-request').rawStatus, closedSummary.warnings], [undefined, []], text);
+    assert.ok(!/stored: pending|Waiting for Pull Request/.test(renderTerminal(closedSummary)), text);
+  }
   fs.rmSync(project, { recursive: true, force: true });
   assert.strictEqual(currentWork(requested), 'Done', 'no config: disabled');
   if (previousProject === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProject;
@@ -542,6 +568,24 @@ function staleApprovedState() {
     const hostileStage = { status: 'active', roles: {}, phases: { ...passed('build-test'), '../../evil': { status: 'fail', note: 'x', updatedAt: 't' } } };
     const hostileRec = recoveryCommands('FEAT-9', needsYou('FEAT-9', hostileStage, { root, cli: true }), { root, cli: true, state: hostileStage, exists: () => true });
     assert.ok(hostileRec.items.every(i => !i.text.includes('evil')), JSON.stringify(hostileRec.items));
+    // A role key from state.json, as a stopped parallel role and as a blocked
+    // conditional role: no control character reaches the printed block, no
+    // `retry <role>` names what runs.js would refuse, and no existence probe
+    // leaves the run directory. The valid role beside it keeps its retry.
+    const evilRole = 'x\x1b]52;c;ZXZpbA==\x07\x1b[2K/../../../../tmp/esc';
+    const hostileReviews = { status: 'active', phases: { ...passed('reviews'), reviews: { status: 'fail', updatedAt: 't' } }, roles: { reviews: { [evilRole]: { status: 'fail', note: 'bad', updatedAt: 't' }, 'security-review': { status: 'fail', note: 'leak', updatedAt: 't' } } } };
+    const hostileCond = { status: 'active', roles: {}, phases: passed('verification'), conditionals: { verification: { [evilRole]: { status: 'blocked', reason: 'no device', updatedAt: 't' } } } };
+    for (const [state, expectRetry] of [[hostileReviews, 'agentic retry FEAT-9 security-review'], [hostileCond, null]]) {
+      const probes = [];
+      const attention = needsYou('FEAT-9', state, { root, cli: true });
+      assert.ok(attention, 'the stop is reported');
+      const rec = recoveryCommands('FEAT-9', attention, { root, cli: true, state, exists: rel => { probes.push(rel); return true; } });
+      const printed = [...needsYouLines(attention, rec), ...rec.items.map(i => `${i.label} ${i.text}`)].join(' ');
+      assert.ok(!/[\x00-\x1f\x7f-\x9f]/.test(printed), JSON.stringify(printed));
+      assert.ok(rec.items.every(i => !/\.\.|tmp|esc/.test(i.text)), JSON.stringify(rec.items));
+      assert.ok(probes.length && probes.every(rel => !rel.split(/[\\/]/).includes('..') && !/[\x00-\x1f]/.test(rel)), JSON.stringify(probes));
+      assert.deepStrictEqual(rec.items.filter(i => i.label.startsWith('retry ')).map(i => i.text), expectRetry ? [expectRetry] : []);
+    }
     // Stalled: a stage in progress whose engine left its record and is gone.
     const { recordFor } = require('./engine-owner');
     const { stalledAttention } = require('./progress');
@@ -561,9 +605,39 @@ function staleApprovedState() {
     assert.strictEqual(stalledAttention('FEAT-10', { ...half, phases: passed('implementation') }, root), null, 'nothing in progress');
     assert.strictEqual(buildSummary('FEAT-10', failed, { root }).stalled, null, 'a stopped stage is a needs-you, not a stall');
     assert.strictEqual(stalledAttention('FEAT-10', half, root, true).command, 'agentic retry FEAT-10');
+    // A record from another host cannot be checked from here: never called gone
+    // (a long implementation on a second machine is not a stall), even past
+    // engine-owner's other-host age limit.
+    fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), JSON.stringify({ pid: 4242, host: 'other-laptop', command: 'resume', startedAt: new Date(Date.now() - 7 * 3600 * 1000).toISOString() }));
+    const elsewhere = buildSummary('FEAT-10', half, { root });
+    assert.deepStrictEqual([elsewhere.stalled, elsewhere.engine, elsewhere.recovery], [null, null, null], 'an other-host record is never a stall');
     fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), recordFor(process.pid, 'resume'));
     const driving = buildSummary('FEAT-10', half, { root });
     assert.deepStrictEqual([driving.stalled, driving.engine.pid], [null, process.pid], 'a live engine wins');
+    // The stall check reuses the summary's own liveness result: with a live
+    // record, a summary of an in-progress stage runs `ps` no more often than
+    // one with nothing in progress (counted through a PATH shim around ps).
+    const realPs = String(spawnSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).stdout || '').trim();
+    if (realPs && process.platform !== 'win32') {
+      const shimDir = path.join(root, 'shim'), counter = path.join(root, 'ps-calls');
+      fs.mkdirSync(shimDir);
+      fs.writeFileSync(path.join(shimDir, 'ps'), `#!/bin/sh\necho x >> "${counter}"\nexec "${realPs}" "$@"\n`, { mode: 0o755 });
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${shimDir}${path.delimiter}${previousPath}`;
+      const psCalls = () => { try { return fs.readFileSync(counter, 'utf8').split('x').length - 1; } catch { return 0; } };
+      try {
+        buildSummary('FEAT-10', half, { root });
+        const first = psCalls();
+        assert.ok(first > 0, 'the shim counts ps');
+        buildSummary('FEAT-10', { ...half, phases: passed('implementation') }, { root });
+        const second = psCalls() - first;
+        buildSummary('FEAT-10', half, { root });
+        assert.strictEqual(psCalls() - first - second, second, 'an in-progress stage adds no ps call');
+      } finally { process.env.PATH = previousPath; }
+    }
+    assert.strictEqual(stalledAttention('FEAT-10', half, root, true, { engine: { pid: 1, kind: 'engine' } }), null, 'a liveness result handed in is trusted');
+    fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), recordFor(999999, 'resume'));
+    assert.strictEqual(stalledAttention('FEAT-10', half, root, true, { engine: null }).kind, 'stalled');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

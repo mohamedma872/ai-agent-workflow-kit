@@ -18,6 +18,8 @@ const { projectRoot } = require('./paths');
 const notify = require('./notify');
 // R / T / A start the engine through the same code path as `agentic approve`.
 const { startEngine, RUNS_CLI } = require('./engine-launch');
+// A complete run is closed with the c key here; the launcher's own wording names runs.js.
+const LAUNCH = { closeHint: 'press c to close it' };
 
 // Every dashboard icon must be an unambiguous two-column emoji: ⏭ and similar
 // text-presentation symbols render one column in some terminals and two in
@@ -144,6 +146,13 @@ function wrap(text, size, max) {
   if (out.length <= max) return out;
   return [...out.slice(0, max - 1), truncate(out.slice(max - 1).join(' '), size)];
 }
+// The plan digest's summary lines, each wrapped to `size` columns, at most
+// `max` rows in all: the planner writes the summary as one paragraph, which
+// cut to a single row would show a sixth of what the digest holds.
+function planSummaryRows(summary, size, max) {
+  const rows = summary.flatMap(line => wrap(line, size, max));
+  return rows.length <= max ? rows : [...rows.slice(0, max - 1), truncate(rows.slice(max - 1).join(' '), size)];
+}
 
 // The "needs you" banner: what stopped, why (one or two lines), at the
 // approval gate the plan digest (counts, up to `planLines` of the summary, the
@@ -165,7 +174,7 @@ function bannerLines(run, color, size = 60, planLines = 6, compact = false) {
     ...wrap(attention.reason, inner, 2).map(line => `  ${line}`),
     ...(plan.length ? [
       ...wrap(plan[0], inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
-      ...attention.plan.summary.slice(0, planLines).map(line => `  ${truncate(`│ ${line}`, inner - 2)}`),
+      ...planSummaryRows(attention.plan.summary, inner - 4, planLines).map(line => `  │ ${line}`),
       ...wrap(`  Full plan: ${attention.plan.path} · P opens it · A approves`, inner, 2).map(line => `  ${line}`),
     ] : []),
     ...wrap(`→ ${attention.command}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
@@ -547,7 +556,7 @@ function run(options = {}) {
       else {
         flash(`▸ approving ${target.id}…`);
         draw();
-        flash(startEngine(target, 'approve').message);
+        flash(startEngine(target, 'approve', LAUNCH).message);
       }
       return reload();
     }
@@ -566,7 +575,7 @@ function run(options = {}) {
         // "resuming…" right away; the marker follows once the engine claims the run.
         flash(result.action === 'retry' ? `▸ retrying ${target.id}…` : `▸ resuming ${target.id}…`);
         draw();
-        flash(startEngine(target, result.action).message);
+        flash(startEngine(target, result.action, LAUNCH).message);
       }
       return reload();
     }
@@ -826,6 +835,14 @@ function selftest() {
   const gateText = gateFrame.split('\n').filter(l => l.startsWith('│')).map(l => l.split('│')[2].trim()).filter(Boolean).join(' ');
   assert(gateText.includes('Plan: 9 steps · 23 acceptance criteria · 11 risks · REVIEW AMENDMENTS present'), gateText);
   assert(gateFrame.includes('│ REVIEW AMENDMENTS (binding). The summary line'), gateFrame);
+  // A one-paragraph summary (what the planner writes) wraps to the pane: on a
+  // 120x40 terminal six rows, the last cut short, not one cut row and five
+  // empty ones; the 30-row frame above keeps four.
+  const digestRowsOf = frame => frame.split('\n').map(l => l.split('│')).filter(parts => parts.length === 5).map(parts => parts[3].trim());
+  const tallRows = digestRowsOf(renderFrame({ runs: [gate], index: 0, width: 120, height: 40, color: false }));
+  assert.strictEqual(tallRows.length, 6, JSON.stringify(tallRows));
+  assert.ok(tallRows.every(r => r.length > 30) && tallRows.at(-1).endsWith('…') && tallRows[1].includes('The summary line'), JSON.stringify(tallRows));
+  assert.strictEqual(digestRowsOf(gateFrame).length, 4, gateFrame);
   assert(gateText.includes('P opens it · A approves'), gateText);
   assert(/→ (agentic approve FEAT-G|node ai\/tasks\/feature\/runs\.js approve FEAT-G)/.test(gateFrame), gateFrame);
   for (const line of gateFrame.split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100, `digest lines keep the frame width: ${JSON.stringify(line)}`);
@@ -948,8 +965,9 @@ function selftest() {
     assert.strictEqual(calls.length, 0, 'nothing started while an engine is alive');
     assert.match(startEngine({ ...target, inProgress: false }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, /is closed/);
     // R on a complete run (verified, pull request skipped) starts nothing; T still asks runs.js.
-    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null, pullRequestHint: 'agentic pr FEAT-R' }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R is complete — press c to close it, or open its pull request: agentic pr FEAT-R' });
-    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, '✗ FEAT-R is complete — press c to close it');
+    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null, pullRequestHint: 'agentic pr FEAT-R' }, 'resume', { spawnFn: fakeSpawn, live: () => null, ...LAUNCH }), { ok: false, message: '✗ FEAT-R is complete — press c to close it, or open its pull request: agentic pr FEAT-R' });
+    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null, ...LAUNCH }).message, '✗ FEAT-R is complete — press c to close it');
+    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null, env: {} }).message, '✗ FEAT-R is complete — close it with: node ai/tasks/feature/runs.js close FEAT-R', 'only the dashboard talks of its c key');
     assert.strictEqual(calls.length, 0);
     assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'retry', { spawnFn: fakeSpawn, live: () => null, spawnSyncFn: () => ({ status: 1, stdout: '', stderr: '✗ nothing to retry — FEAT-R is complete\n' }) }), { ok: false, message: '✗ FEAT-R: nothing to retry — FEAT-R is complete' });
     // R on a stopped stage or a waiting gate starts nothing and says what to do.

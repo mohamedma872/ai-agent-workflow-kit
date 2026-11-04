@@ -1287,8 +1287,12 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   const next = drive(`(engine, wf) => engine.nextEligibleStage(wf, require(${JSON.stringify(path.join(states, 'E2E-OLD', 'state.json'))})).id`);
   assert.strictEqual(next.result, 'pull-request', 'a run verified before 1.9.31 resumes at the new stage');
   // Before any engine touches it, the views already read the run as complete
-  // (the stage is disabled, so it is derived as skipped) with the hint.
+  // (the stage is disabled, so it is derived as skipped) with the hint. The
+  // views read the project's config through the environment, so the fixture
+  // product (no .agentic) is pinned for this process too, not only `env`.
   const { buildSummary, renderTerminal } = require('./progress');
+  const previousProject = process.env.AI_WORKFLOW_PROJECT_ROOT;
+  process.env.AI_WORKFLOW_PROJECT_ROOT = fx.product;
   const derived = renderTerminal(buildSummary('E2E-OLD', stateOf('E2E-OLD'), { root: states }));
   assert.match(derived, /100%/, derived);
   assert.match(derived, /Current: Done/, derived);
@@ -1331,6 +1335,7 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   assert.strictEqual(fs.readFileSync(path.join(tmp, 'executor.log'), 'utf8').trim().split('\n').length, 1, 'the description is written once');
   assert.strictEqual(JSON.parse(fs.readFileSync(db, 'utf8')).prs.length, 1, 'one PR, however often it is asked for');
   assert.strictEqual(stateOf('E2E-OLD').pullRequestOptions.branch, 'feature/child', 'the overrides persist');
+  if (previousProject === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProject;
 
   // Enabled in config: the stage runs on its own after verification.
   fs.mkdirSync(path.join(fx.product, '.agentic'), { recursive: true });

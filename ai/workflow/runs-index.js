@@ -202,16 +202,27 @@ function selftest() {
 
   write('FEAT-PR', { id: 'FEAT-PR', status: 'active', updatedAt: '2026-09-06T10:00:00.000Z', phases: { verification: { status: 'pass' }, 'pull-request': { status: 'pass' } }, pullRequest: { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', commit: 'abc' } });
   assert.deepStrictEqual(runEntry('FEAT-PR', temp).pullRequest, { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', draft: false }, 'the opened PR reaches the dashboard');
-  // A verified run with no pull-request phase and the stage disabled (no
-  // project config here) is complete, not waiting for a pull request.
+  // A verified run with no pull-request phase and the stage disabled is
+  // complete, not waiting for a pull request. The skip is derived from the
+  // project's .agentic/config.yaml, so the project root is pinned here: an
+  // empty directory, then one that enables the stage.
   const { PHASES } = require('./progress');
   write('FEAT-VERIFIED', { id: 'FEAT-VERIFIED', status: 'active', updatedAt: '2026-09-06T11:00:00.000Z', phases: Object.fromEntries(PHASES.filter(p => p !== 'pull-request').map(p => [p, at('2026-09-06T11:00:00.000Z')])) }, { approved: true });
-  const verifiedEntry = runEntry('FEAT-VERIFIED', temp);
-  assert.deepStrictEqual([verifiedEntry.percent, verifiedEntry.current, verifiedEntry.needsYou, verifiedEntry.stalled], [100, 'Done', null, null]);
-  const verifiedTable = renderList([verifiedEntry], {});
-  assert.match(verifiedTable, /FEAT-VERIFIED .*100% .*Done/, verifiedTable);
-  assert.ok(!/⚠/.test(verifiedTable), verifiedTable);
+  const previousProject = process.env.AI_WORKFLOW_PROJECT_ROOT;
+  const project = path.join(temp, '_project');
+  fs.mkdirSync(path.join(project, '.agentic'), { recursive: true });
+  process.env.AI_WORKFLOW_PROJECT_ROOT = project;
+  try {
+    const verifiedEntry = runEntry('FEAT-VERIFIED', temp);
+    assert.deepStrictEqual([verifiedEntry.percent, verifiedEntry.current, verifiedEntry.needsYou, verifiedEntry.stalled], [100, 'Done', null, null]);
+    const verifiedTable = renderList([verifiedEntry], {});
+    assert.match(verifiedTable, /FEAT-VERIFIED .*100% .*Done/, verifiedTable);
+    assert.ok(!/⚠/.test(verifiedTable), verifiedTable);
+    fs.writeFileSync(path.join(project, '.agentic', 'config.yaml'), 'pull_request:\n  enabled: true\n');
+    assert.deepStrictEqual([runEntry('FEAT-VERIFIED', temp).percent, runEntry('FEAT-VERIFIED', temp).current], [93, 'Waiting for Pull Request'], 'enabled: the stage waits');
+  } finally { if (previousProject === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProject; }
   fs.rmSync(path.join(temp, 'FEAT-VERIFIED'), { recursive: true });
+  fs.rmSync(project, { recursive: true });
 
   // A run that needs the human says so in the list, with its command; one
   // whose engine is running says that instead.

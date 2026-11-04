@@ -26,6 +26,10 @@ const ENGINE = path.join(__dirname, 'engine.js');
 const BACKGROUND_LOG = 'background.log';
 const MODES = new Set(['resume', 'retry', 'approve']);
 
+// How the caller closes a complete run: `agentic` has no close command, so
+// under it the dashboard's key is named; the dashboard passes its own wording.
+function closeHintFor(id, env = process.env) { return env.AI_AGENTIC_CLI === '1' ? 'close it with c in agentic progress' : `close it with: node ai/tasks/feature/runs.js close ${id}`; }
+
 // `run` is a runs-index.js entry (id, dir, inProgress, needsYou). Every
 // dependency can be replaced for the selftests.
 function startEngine(run, mode, deps = {}) {
@@ -37,13 +41,14 @@ function startEngine(run, mode, deps = {}) {
     runsCli = RUNS_CLI,
     env = process.env,
     cwd = projectRoot(),
+    closeHint = closeHintFor(run?.id, env),
   } = deps;
   const verb = MODES.has(mode) ? mode : 'resume';
   if (!run || !run.dir) return { ok: false, message: `✗ nothing to ${verb}` };
   if (!run.inProgress) return { ok: false, message: `✗ ${run.id} is closed; nothing to ${verb}` };
   // A verified run whose pull-request stage is skipped has nothing left for a
   // resume to do: say so instead of starting an engine that only prints "complete".
-  if (verb === 'resume' && run.current === 'Done' && !run.needsYou) return { ok: false, message: `✗ ${run.id} is complete — press c to close it${run.pullRequestHint ? `, or open its pull request: ${run.pullRequestHint}` : ''}` };
+  if (verb === 'resume' && run.current === 'Done' && !run.needsYou) return { ok: false, message: `✗ ${run.id} is complete — ${closeHint}${run.pullRequestHint ? `, or open its pull request: ${run.pullRequestHint}` : ''}` };
   // A on a run that is not at the gate never touches state.
   if (verb === 'approve' && run.needsYou?.stage !== 'approval') return { ok: false, message: `✗ ${run.id}: nothing waits for approval` };
   const owner = live(run.dir);
@@ -138,11 +143,17 @@ function selftest() {
     const write = (id, state) => { fs.mkdirSync(path.join(states, id), { recursive: true }); fs.writeFileSync(path.join(states, id, 'state.json'), JSON.stringify(state)); };
     write('FEAT-STUCK', { id: 'FEAT-STUCK', status: 'active', phases: { 'build-test': { status: 'fail', note: 'red', updatedAt: 't' } } });
     write('FEAT-DONE', { id: 'FEAT-DONE', status: 'done', phases: { verification: { status: 'pass' } } });
-    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...process.env, AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PROJECT_ROOT: root }, encoding: 'utf8' });
+    // Verified, open, pull request disabled (no config under `root`): complete.
+    write('FEAT-COMPLETE', { id: 'FEAT-COMPLETE', status: 'active', phases: Object.fromEntries(require('./progress').PHASES.filter(p => p !== 'pull-request').map(p => [p, { status: 'pass' }])) });
+    const cli = (argv, extra = {}) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...process.env, AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PROJECT_ROOT: root, ...extra }, encoding: 'utf8' });
     const notGated = cli(['approve', 'FEAT-STUCK']);
     assert.deepStrictEqual([notGated.status, notGated.stdout.trim()], [1, '✗ FEAT-STUCK: nothing waits for approval']);
     const closed = cli(['resume', 'FEAT-DONE']);
     assert.deepStrictEqual([closed.status, closed.stdout.trim()], [1, '✗ FEAT-DONE is closed; nothing to resume']);
+    // A shell has no c key: the close is spelled as a command (the dashboard's key under agentic, which has no close command).
+    const complete = cli(['resume', 'FEAT-COMPLETE'], { AI_AGENTIC_CLI: '' });
+    assert.deepStrictEqual([complete.status, complete.stdout.trim()], [1, '✗ FEAT-COMPLETE is complete — close it with: node ai/tasks/feature/runs.js close FEAT-COMPLETE, or open its pull request: node ai/workflow/engine.js pr FEAT-COMPLETE']);
+    assert.strictEqual(cli(['resume', 'FEAT-COMPLETE'], { AI_AGENTIC_CLI: '1' }).stdout.trim(), '✗ FEAT-COMPLETE is complete — close it with c in agentic progress, or open its pull request: agentic pr FEAT-COMPLETE');
     assert.ok(!fs.existsSync(path.join(states, 'FEAT-STUCK', 'engine')), 'nothing written for a refused start');
     assert.notStrictEqual(cli(['approve']).status, 0);
     assert.notStrictEqual(cli(['bogus', 'FEAT-STUCK']).status, 0);
@@ -159,4 +170,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { startEngine, BACKGROUND_LOG, RUNS_CLI, ENGINE, selftest };
+module.exports = { startEngine, closeHintFor, BACKGROUND_LOG, RUNS_CLI, ENGINE, selftest };
