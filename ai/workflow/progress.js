@@ -2,12 +2,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
-const { stateRoot, relativeStatePath, runtimeRoot } = require('./paths');
-const { unresolvedBlocking } = require('./conflict-tracker');
-const { liveEngine, describe: describeEngine } = require('./engine-owner');
+const { stateRoot, projectRoot, relativeStatePath, runtimeRoot } = require('./paths');
+const { openConflicts } = require('./conflict-tracker');
+const { liveEngine, readOwner, describe: describeEngine } = require('./engine-owner');
 const { activityFile, latestActivity, describeRole, stageRole, ago: elapsed } = require('./role-activity');
+const pullRequest = require('./pull-request');
 
 const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
@@ -25,6 +27,7 @@ const PHASES = [
   'build-test',
   'reviews',
   'fixes',
+  'post-fix-build-test',
   'verification',
   'pull-request',
 ];
@@ -42,6 +45,7 @@ const LABELS = {
   'build-test': 'Build + Tests',
   reviews: 'Independent Reviews',
   fixes: 'Validated Fixes',
+  'post-fix-build-test': 'Post-fix Build + Tests',
   verification: 'Final Verification',
   'pull-request': 'Pull Request',
 };
@@ -152,14 +156,48 @@ function deriveRoleGroupStatus(state, group) {
   return 'in_progress';
 }
 
-// A run closed (or abandoned) before 1.9.31 has no pull-request phase. A
-// verified, closed run is finished, so the stage shows as skipped. An abandoned
-// run, or one closed unverified, never reached the stage: it is left out of the
-// percent instead of counting as done.
+// A run closed (or abandoned) before 1.9.31 has no pull-request phase, and one
+// closed with the stage disabled still stores it as pending (the skip was
+// derived, never written): the same. A verified, closed run is finished, so
+// the stage shows as skipped. An abandoned run, or one closed unverified,
+// never reached the stage: it is left out of the percent instead of counting
+// as done.
 function legacyPullRequest(state) {
-  if (state?.phases?.['pull-request'] || state?.status !== 'done') return null;
+  if (state?.status !== 'done' || rawStatusOf(state, 'pull-request') !== 'pending') return null;
   return !state.abandoned && rawStatusOf(state, 'verification') === 'pass' ? 'skipped' : 'excluded';
 }
+
+// The project's pull_request block, read once per root and config.yaml
+// mtime: the dashboard asks every second, and a selftest rewrites the file
+// between asserts.
+let prConfig = null;
+function pullRequestConfig(root = projectRoot()) {
+  let mtime = 0;
+  try { mtime = fs.statSync(path.join(root, '.agentic', 'config.yaml')).mtimeMs; } catch { /* no file: disabled */ }
+  if (!prConfig || prConfig.root !== root || prConfig.mtime !== mtime) prConfig = { root, mtime, config: pullRequest.loadConfig(root) };
+  return prConfig.config;
+}
+// The pull-request stage is opt-in (pull-request.js). With pull_request.enabled
+// not true and no `agentic pr` request, a verified run has nothing left to do,
+// whether the engine recorded the skip or the run was verified before 1.9.31
+// and has no phase at all: derived here, never written. Only a raw pending
+// (missing or stored) qualifies; in_progress, blocked and fail keep their
+// meaning, and a closed run is legacyPullRequest's. A block that does not
+// parse (`enabled: "yes"`, broken YAML) is not a disabled one: the stage keeps
+// waiting and the problems go into the summary's warnings, so a typo never
+// reads as "complete".
+function pullRequestOptions(state) { return pullRequest.effectiveOptions(pullRequestConfig(), state?.pullRequestOptions); }
+function disabledPullRequest(state) {
+  if (state?.status === 'done' || rawStatusOf(state, 'pull-request') !== 'pending' || rawStatusOf(state, 'verification') !== 'pass') return false;
+  const options = pullRequestOptions(state);
+  return !options.enabled && !options.problems.length;
+}
+// What is wrong with the block, while the stage is still to run on an open run.
+function pullRequestProblems(state) {
+  return state?.status !== 'done' && rawStatusOf(state, 'pull-request') === 'pending' ? pullRequestOptions(state).problems : [];
+}
+// The one wording for a recorded and a derived skip.
+function pullRequestSkipNote(id, cli = process.env.AI_AGENTIC_CLI === '1') { return `pull_request disabled (open one with: ${commandFor('pr', id, cli)})`; }
 
 function effectiveStatus(state, phase) {
   if (phase === 'analysis' || phase === 'reviews') {
@@ -168,9 +206,11 @@ function effectiveStatus(state, phase) {
   }
 
   const raw = rawStatusOf(state, phase);
-  // A run closed before 1.9.31 never had a pull-request stage; it is finished,
-  // not waiting on one.
-  if (phase === 'pull-request' && legacyPullRequest(state) === 'skipped') return 'skipped';
+  // A run closed before 1.9.31 never had a pull-request stage, and an active
+  // run with the stage disabled has nothing to do there: finished, not waiting.
+  if (phase === 'pull-request' && (legacyPullRequest(state) === 'skipped' || disabledPullRequest(state))) return 'skipped';
+  // A run verified before the post-fix re-run existed never needs it.
+  if (phase === 'post-fix-build-test' && !state?.phases?.[phase] && DONE.has(rawStatusOf(state, 'verification'))) return 'skipped';
   if (phase === 'plan' && rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(raw)) {
     return 'pass';
   }
@@ -275,10 +315,11 @@ function pullRequestSummary(state) {
 function pullRequestHint(id, state) {
   if (pullRequestSummary(state)) return null;
   // A run closed before the stage existed gets no hint: its PR may well have
-  // been opened by hand, and following the hint could open a second one.
-  if (!state?.phases?.['pull-request']) return null;
+  // been opened by hand, and following the hint could open a second one. An
+  // active run whose stage is disabled gets it (the stage reads as skipped).
+  if (!state?.phases?.['pull-request'] && !disabledPullRequest(state)) return null;
   if (!['skipped', 'blocked', 'fail'].includes(effectiveStatus(state, 'pull-request'))) return null;
-  const command = process.env.AI_AGENTIC_CLI === '1' ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
+  const command = commandFor('pr', id);
   // A closed run opens one only when asked for explicitly.
   return state.status === 'done' ? `${command} --reopen` : command;
 }
@@ -296,13 +337,39 @@ function pullRequestLine(summary) {
 // or architecture selection gate; or unresolved specialist conflicts that hold
 // the plan back. Returns null when nothing waits on a human.
 
-// Stage order from the workflow, so refactor-only stages sort where they run.
-let workflowOrder = null;
-function stageOrder() {
-  if (workflowOrder) return workflowOrder;
-  try { workflowOrder = (yaml.load(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'feature.yaml'), 'utf8')).stages || []).map(stage => stage.id); }
-  catch { workflowOrder = PHASES; }
-  return workflowOrder;
+// The workflow: stage order (so refactor-only stages sort where they run),
+// each stage's spec and the role specs, for the artifact a stopped stage wrote.
+let workflowSpec = null;
+function loadWorkflow() {
+  if (workflowSpec) return workflowSpec;
+  try {
+    const wf = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'feature.yaml'), 'utf8')) || {};
+    workflowSpec = { order: (wf.stages || []).map(stage => stage.id), stages: new Map((wf.stages || []).map(stage => [stage.id, stage])), roles: wf.roles || {} };
+  } catch { workflowSpec = { order: PHASES, stages: new Map(), roles: {} }; }
+  return workflowSpec;
+}
+function stageOrder() { return loadWorkflow().order; }
+// A run file as this install spells it: relative to the project with `agentic`, ai/runs/<id>/… otherwise.
+function runFile(id, file, cli) { return cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`; }
+// The roles of a parallel stage that failed or blocked, plus the conditional role when one did.
+function stoppedEntries(state, phase) { return roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked'); }
+// A role name as runs.js' safeRole accepts it. Role keys come straight from
+// state.json; one that fails this never becomes a `retry <role>` command (which
+// runs.js would refuse anyway), a path under the run directory, or terminal text.
+const SAFE_ROLE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
+function stoppedRoles(state, phase, role) { return [...stoppedEntries(state, phase).map(([name]) => name), ...(role ? [role] : [])].filter(name => SAFE_ROLE.test(name)); }
+// The files a stopped stage leaves behind, from the workflow: the stage's or
+// its role's artifact, the artifact of each stopped role, and the rejected
+// agent output the engine keeps (engine/<stage>-<role>.rejected). A stage the
+// workflow does not know yields nothing, so a stage id taken from state.json
+// never becomes a path. The caller keeps the ones that exist.
+function stageFiles(stage, role, state) {
+  const { stages, roles } = loadWorkflow();
+  const spec = stages.get(stage);
+  if (!spec) return [];
+  const stopped = stoppedRoles(state, stage, role);
+  const names = spec.role ? [spec.role] : stopped.length ? stopped : spec.owner === 'orchestrator' ? ['orchestration'] : [];
+  return [...new Set([spec.artifact, roles[spec.role]?.artifact, ...stopped.map(name => roles[name]?.artifact), ...names.map(name => `engine/${stage}-${name}.rejected`)].filter(Boolean))];
 }
 function labelOf(phase) { return LABELS[phase] || oneLine(String(phase).split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '), 60); }
 // Escape sequences (CSI, OSC such as the OSC 52 clipboard write, any other ESC)
@@ -316,16 +383,23 @@ function oneLine(text, max = 220) {
   const value = printable(text).replace(/\s+/g, ' ').trim();
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-// The command a human types next, as this install spells it.
-function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1') {
+// The command a human types next, as this install spells it. `target` is the
+// conflict a resolve names (a placeholder when there are several), or the role
+// or stage a retry-role reworks.
+function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1', target = '<conflict-id>') {
   const engine = `node ai/workflow/engine.js resume ${id}`;
   switch (action) {
     case 'retry': return cli ? `agentic retry ${id}` : `node ai/tasks/feature/runs.js retry ${id} && ${engine}`;
+    case 'retry-role': return cli ? `agentic retry ${id} ${target}` : `node ai/tasks/feature/runs.js retry ${id} ${target} && ${engine}`;
     case 'resume': return cli ? `agentic resume ${id}` : engine;
     case 'approve': return cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id} && ${engine}`;
     case 'architecture': return cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
     case 'conflicts': return cli ? `agentic conflicts ${id}` : `node ai/workflow/conflicts.js list ${id}`;
+    case 'resolve': return `${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} ${id} ${target} --decision "..." --rationale "..."`;
+    case 'status': return cli ? `agentic status ${id}` : `node ai/workflow/progress.js --run ${id}`;
+    case 'doctor': return cli ? 'agentic doctor' : 'node ai/workflow/doctor.js';
     case 'pr': return cli ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
+    case 'why': return cli ? `agentic why ${id}` : `node ai/workflow/progress.js --run ${id} --why`;
     default: throw new Error(`unknown action ${action}`);
   }
 }
@@ -384,7 +458,7 @@ function stopOptions(id, attention, details, cli) {
     const files = pending.map(entry => entry.file).join(' ');
     options.push({ label: 'Revert what its tools changed (if still changed)', command: `git ${meta?.path ? `-C ${JSON.stringify(meta.path)} ` : ''}checkout -- ${files}` });
   }
-  if (details) options.push({ label: 'Read the full report', command: cli ? `agentic why ${id}` : `node ai/workflow/progress.js --run ${id} --why` });
+  if (details) options.push({ label: 'Read the full report', command: commandFor('why', id, cli) });
   options.push({ label: 'Leave a note the retry will read (evidence, a decision)', command: `edit ${cli ? relativeStatePath(id, 'notes', `${attention.stage}.md`) : `ai/runs/${id}/notes/${attention.stage}.md`}` });
   options.push({ label: 'Retry the stage', command: attention.command });
   return options;
@@ -399,14 +473,14 @@ function needsYou(id, state, options = {}) {
   const reasonMax = options.reasonMax || 220;
   const order = stageOrder();
   const status = phase => effectiveStatus(state, phase);
-  const artifact = file => (cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`);
+  const artifact = file => runFile(id, file, cli);
 
   const stuck = [];
   for (const phase of new Set([...order, ...PHASES, ...Object.keys(state.phases || {})])) {
     const value = status(phase);
     if (value !== 'fail' && value !== 'blocked') continue;
     const entry = state.phases?.[phase] || {};
-    const roles = roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked');
+    const roles = stoppedEntries(state, phase);
     stuck.push({
       phase,
       status: value,
@@ -429,7 +503,8 @@ function needsYou(id, state, options = {}) {
     const top = stuck.sort((a, b) => order.indexOf(b.phase) - order.indexOf(a.phase))[0];
     const label = labelOf(top.phase);
     const repeated = top.repeated >= 2 ? top.repeated : 0;
-    const stuckRoles = roleEntries(state, top.phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked').map(([name]) => name);
+    // Filtered like the retry targets: a role key is a path segment of the report probe.
+    const stuckRoles = stoppedRoles(state, top.phase, null);
     const report = top.role ? null : rejectedReport(root, id, top.phase, stuckRoles.length ? stuckRoles : [stageRole(top.phase)].filter(Boolean));
     const details = report ? reportDetails(report, root, id, top.phase) : null;
     const attention = {
@@ -460,17 +535,69 @@ function needsYou(id, state, options = {}) {
     return waiting('architecture-selection', 'Architecture selection waits for you', `Review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')}, then choose an option.`, commandFor('architecture', id, cli), state.phases?.['architecture-options']?.updatedAt);
   }
   if (status('plan') === 'pass' && rawStatusOf(state, 'approval') !== 'pass' && !planApproved(id, root)) {
-    return waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt);
+    // The digest rides along; headline, reason, command and key stay as they are.
+    return { ...waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt), plan: planDigest(id, root, cli) };
   }
-  if (!DONE.has(status('plan')) && DONE.has(status('analysis'))) {
-    let conflicts = [];
-    try { conflicts = unresolvedBlocking(JSON.parse(fs.readFileSync(path.join(root, id, '05-analysis', 'conflicts.json'), 'utf8')).conflicts || []); } catch { conflicts = []; }
-    if (conflicts.length) {
-      const ids = conflicts.map(conflict => conflict.id).sort();
-      return waiting('plan', 'Specialist conflicts block the plan', `${ids.length} unresolved conflict(s): ${ids.join(', ')}. Decide each with ${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} <run-id> <conflict-id> --decision "..." --rationale "...", then resume.`, commandFor('conflicts', id, cli), ids.join(','));
+  // Open conflicts hold the plan back once it could run (feature.yaml: plan
+  // needs conflict-arbitration). Before arbitration is done again, the file
+  // still holds the previous set.
+  if (!DONE.has(status('plan')) && DONE.has(status('analysis')) && (!state.phases?.['conflict-arbitration'] || DONE.has(status('conflict-arbitration')))) {
+    const open = openConflicts(path.join(root, id)).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    if (open.length) {
+      const ids = open.map(c => oneLine(c.id, 40)), n = ids.length;
+      // Topics only (the arbitration tag), never finding titles or recommendations.
+      const named = open.map(c => `${oneLine(c.id, 40)} (${oneLine(c.topic || 'disputed', 40)})`);
+      let tail = `Decide each with: ${commandFor('resolve', id, cli, n === 1 ? ids[0] : '<conflict-id>')}, then: ${commandFor('resume', id, cli)}`;
+      const list = k => `${named.slice(0, k).join(', ')}${k < n ? ` +${n - k} more` : ''}`;
+      // Never cut a command: past the budget, keep only the resume (the list command is `command`).
+      if (`${list(1)}. ${tail}`.length > reasonMax) tail = `Decide each, then: ${commandFor('resume', id, cli)}`;
+      let shown = n; while (shown > 1 && `${list(shown)}. ${tail}`.length > reasonMax) shown--;
+      // The key names each conflict's finding pair: ids are renumbered on every synthesis.
+      const key = open.map(c => `${oneLine(c.id, 40)}=${(c.findings || []).map(f => oneLine(f, 40)).sort().join('+')}`).join(',');
+      return { ...waiting('plan', `${n} conflict${n === 1 ? ' needs' : 's need'} your decision`, oneLine(`${list(shown)}. ${tail}`, reasonMax), commandFor('conflicts', id, cli), key), conflicts: ids };
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------- plan digest
+// What the approval gate shows of the plan, so the reviewer sees what waits
+// without opening the file: the counts from 06-plan.json, the head of the
+// summary (secrets redacted, printable text only, at most PLAN_LINES lines and
+// PLAN_CHARS characters), and the file. Step, criterion and risk text is never
+// printed. Null when the run has no plan file at all.
+const PLAN_LINES = 6;
+const PLAN_CHARS = 600;
+function planDigest(id, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1') {
+  const json = path.join(root, id, '06-plan.json'), file = path.join(root, id, '06-plan.md');
+  if (!fs.existsSync(json) && !fs.existsSync(file)) return null;
+  let plan = null;
+  try { plan = JSON.parse(fs.readFileSync(json, 'utf8')); } catch { plan = null; }
+  const count = value => (Array.isArray(value) ? value.length : null);
+  let text = plan && typeof plan.summary === 'string' ? plan.summary : null;
+  // No usable JSON: the Markdown body after its "# Implementation plan" heading.
+  if (text === null) { try { text = fs.readFileSync(file, 'utf8').replace(/^#[^\n]*\n?/, ''); } catch { text = ''; } }
+  // notify.js requires progress.js at load; this call happens at run time, so there is no cycle.
+  const scrub = value => require('./notify').redactSecrets(value);
+  const summary = [];
+  let used = 0;
+  for (const raw of scrub(text).split('\n')) {
+    const line = printable(raw).trim();
+    if (!line) continue;
+    if (summary.length >= PLAN_LINES) break;
+    const room = PLAN_CHARS - used;
+    if (line.length > room) { if (room > 1) summary.push(`${line.slice(0, room - 1)}…`); break; }
+    summary.push(line);
+    used += line.length;
+  }
+  return { path: runFile(id, '06-plan.md', cli), file, summary, steps: count(plan?.steps), acceptanceCriteria: count(plan?.acceptanceCriteria), risks: count(plan?.risks), amendments: /REVIEW AMENDMENTS/i.test(text) };
+}
+function planDigestLines(plan) {
+  if (!plan) return [];
+  const counts = plan.steps === null && plan.acceptanceCriteria === null && plan.risks === null
+    ? 'counts unavailable (06-plan.json missing or invalid)'
+    : `${plan.steps ?? '?'} steps · ${plan.acceptanceCriteria ?? '?'} acceptance criteria · ${plan.risks ?? '?'} risks`;
+  return [`Plan: ${counts}${plan.amendments ? ' · REVIEW AMENDMENTS present' : ''}`, ...plan.summary.map(line => `  │ ${line}`), `  Full plan: ${plan.path}`];
 }
 
 // When the run completed, and the key its "complete" event uses. A run that
@@ -480,7 +607,9 @@ function completedAt(state) {
 }
 function completeKey(id, at) { return `${id}|run|complete${at ? `|${at}` : ''}`; }
 
-function needsYouLines(attention) {
+// The needs-you block: headline, reason, the plan digest at the approval gate,
+// the command, and the recovery commands when the caller has them.
+function needsYouLines(attention, recovery = null) {
   if (!attention) return [];
   const lines = [`⚠ Needs you: ${attention.headline}`];
   const details = attention.details;
@@ -492,10 +621,98 @@ function needsYouLines(attention) {
     for (const entry of details.sideEffects) lines.push(`  ! changed by its tools: ${entry.file}${details.restored.includes(entry.file) ? ' (restored by the runtime)' : ''}`);
     lines.push(`  Report: ${details.report}`);
   } else lines.push(`  ${attention.reason}`);
+  for (const line of planDigestLines(attention.plan)) lines.push(`  ${line}`);
   // The other things to do, then the stage's own command, last as before.
   for (const option of attention.options || []) if (option.command !== attention.command) lines.push(`  · ${option.label}: ${option.command}`);
   lines.push(`  → run: ${attention.command}`);
+  // Then the Commands: block when the caller has it (recoveryCommands).
+  if (recovery) for (const line of recovery.lines) lines.push(`  ${line}`);
   return lines;
+}
+
+// ---------------------------------------------------------------- recovery
+// The "Commands:" block under a needs-you: every command that moves the run on
+// from this stop, spelled as this install does (commandFor), with the engine
+// log and the stopped stage's artifact when those files exist. One function
+// feeds the dashboard banner, `agentic status`/`agentic runs`, the engine's
+// stop message and the desktop notification, so they cannot disagree.
+function recoveryCommands(id, attention, options = {}) {
+  if (!attention) return null;
+  const cli = options.cli !== undefined ? options.cli : process.env.AI_AGENTIC_CLI === '1';
+  const root = options.root || RUNS, state = options.state || null;
+  const exists = options.exists || (file => fs.existsSync(path.join(root, id, file)));
+  const items = []; // [{ label, text }], in display order
+  const add = (label, text) => { if (text && !items.some(item => item.text === text)) items.push({ label, text }); };
+  const file = (label, rel) => { if (exists(rel)) add(label, runFile(id, rel, cli)); };
+  const pr = attention.stage === 'pull-request';
+  switch (attention.kind) {
+    case 'fail': case 'blocked': case 'error': case 'stalled':
+      add(pr ? 'resume' : 'retry', commandFor(pr ? 'resume' : 'retry', id, cli));
+      for (const role of stoppedRoles(state, attention.stage, attention.role)) add(`retry ${role}`, commandFor('retry-role', id, cli, role));
+      if (pr) add('pr', commandFor('pr', id, cli));
+      // The agent's own rejected report explains the stop: `why` prints all of it.
+      if (attention.details) add('why', commandFor('why', id, cli));
+      break;
+    case 'waiting':
+      if (attention.conflicts) { add('conflicts', commandFor('conflicts', id, cli)); add('resolve', commandFor('resolve', id, cli, attention.conflicts.length === 1 ? attention.conflicts[0] : '<conflict-id>')); add('resume', commandFor('resume', id, cli)); }
+      else if (attention.stage === 'architecture-selection') add('select', commandFor('architecture', id, cli));
+      else if (attention.stage === 'pull-request') add('pr', commandFor('pr', id, cli));
+      else { add('approve', commandFor('approve', id, cli)); add('rework plan', commandFor('retry-role', id, cli, 'plan')); }
+      break;
+    default: break;
+  }
+  add('status', commandFor('status', id, cli));
+  add('doctor', commandFor('doctor', id, cli));
+  file('log', 'engine/background.log');
+  if (attention.kind === 'stalled') file('owner', 'engine/engine.pid');
+  // The gates' own files, then what the stopped stage left behind.
+  const gateFiles = attention.conflicts ? ['05-analysis/conflicts.json', '05-analysis/arbitration.md'] : attention.stage === 'approval' ? ['06-plan.md'] : attention.stage === 'architecture-selection' ? ['05-architecture-assessment.md', '05-architecture-options.md'] : [];
+  for (const rel of [...gateFiles, ...stageFiles(attention.stage, attention.role, state)]) file(rel.endsWith('.rejected') ? 'rejected' : 'artifact', rel);
+  // The human notes the next attempt reads (subagent-context.js humanNotes), when someone wrote them.
+  // Only a stage the workflow knows: a stage id from state.json never becomes a path.
+  if (attention.kind !== 'waiting' && loadWorkflow().stages.has(attention.stage)) file('notes', `notes/${attention.stage}.md`);
+  const primary = attention.command;
+  const width = Math.max(...items.map(item => item.label.length));
+  const lines = ['Commands:', ...items.map(item => `  ${item.label.padEnd(width)}  ${item.text}`)];
+  // The notification's short form: everything but the primary command (which it already carries), status first.
+  const short = items.filter(item => item.text !== primary).map(item => `${item.label}: ${item.text}`);
+  return { items, lines, short };
+}
+
+// A stage left in_progress by an engine that is gone: its engine.pid record is
+// still there (a normal exit removes it, engine-owner.js) but nothing alive
+// holds it. Not a needs-you kind (needsYou stays as it is); shaped like one so
+// the same views and block serve it. A run driven by hand never writes the
+// record, so it is never called stalled. No time heuristic. A record from
+// another host cannot be checked from here (engine-owner.js only ages it out),
+// so it is never called gone either. `options.engine` is the liveEngine()
+// result the caller already has, so the stall check runs `ps` no second time.
+function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1', options = {}) {
+  if (!state || state.status === 'done') return null;
+  const stage = [...new Set([...stageOrder(), ...PHASES])].reverse().find(phase => effectiveStatus(state, phase) === 'in_progress');
+  // A conditional role (verification's mobile-evidence) is in progress before
+  // its stage begins (engine.js executeConditional), so the stage still reads
+  // pending while the device run lasts: an engine killed there leaves no stage
+  // in progress, only the role. Mirrors the conditional loop in needsYou.
+  const conditional = stage ? null : Object.entries(state.conditionals || {}).flatMap(([phase, group]) => DONE.has(effectiveStatus(state, phase)) ? [] : Object.entries(group || {}).filter(([, entry]) => entry?.status === 'in_progress').map(([role]) => ({ phase, role }))).pop() || null;
+  if (!stage && !conditional) return null;
+  const dir = path.join(root, id);
+  const owner = readOwner(dir);
+  if (!owner || (owner.host && owner.host !== os.hostname())) return null;
+  if (options.engine !== undefined ? options.engine : liveEngine(dir)) return null;
+  const phase = stage || conditional.phase, role = conditional ? conditional.role : null;
+  const label = labelOf(phase), at = oneLine(owner.startedAt, 40);
+  return {
+    kind: 'stalled',
+    stage: phase,
+    role,
+    label,
+    headline: `${label}${role ? ` (${oneLine(role, 60)})` : ''} is in progress but its engine (pid ${owner.pid}) is gone`,
+    reason: `no engine has claimed ${id} since ${at || 'its last start'}; retry resets the ${role ? 'role' : 'stage'}`,
+    command: commandFor(phase === 'pull-request' ? 'resume' : 'retry', id, cli),
+    repeated: 0,
+    key: `${id}|${phase}${role ? `/${role}` : ''}|stalled|${at}`,
+  };
 }
 
 // `agentic why <id>`: everything the run knows about why it stopped.
@@ -521,22 +738,30 @@ function whyLines(id, state, options = {}) {
 
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
+  const root = options.root || RUNS;
+  const attention = needsYou(id, state, { root });
+  // One liveness check per summary: the dashboard asks every second.
+  const engine = options.demo ? null : liveEngine(path.join(root, id));
+  const stalled = options.demo ? null : stalledAttention(id, state, root, undefined, { engine });
   return {
     id,
     status: state.status || 'active',
     percent,
-    current: currentWork(state),
-    planApproved: options.demo ? false : planApproved(id, options.root || RUNS),
+    // Open conflicts hold the plan back: say so rather than "Waiting for Implementation Plan".
+    current: attention?.conflicts ? 'Waiting for conflict decisions' : currentWork(state),
+    planApproved: options.demo ? false : planApproved(id, root),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
-    warnings: consistencyIssues(state),
+    warnings: [...consistencyIssues(state), ...pullRequestProblems(state).map(problem => (problem.startsWith('.agentic/config.yaml') ? problem : `.agentic/config.yaml: ${problem}`))],
     pullRequest: pullRequestSummary(state),
     pullRequestHint: pullRequestHint(id, state),
-    needsYou: needsYou(id, state, { root: options.root || RUNS }),
+    needsYou: attention,
+    stalled,
+    recovery: recoveryCommands(id, attention || stalled, { root, state }),
     completedAt: completedAt(state),
     // The engine driving the run right now (engine-owner.js): while it works,
     // a block in the state is what it is re-running, not something to act on.
-    engine: options.demo ? null : liveEngine(path.join(options.root || RUNS, id)),
+    engine,
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);
@@ -545,8 +770,8 @@ function buildSummary(id, state, options = {}) {
         id: phase,
         label: LABELS[phase],
         status,
-        ...(status !== rawStatus && !(phase === 'pull-request' && legacyPullRequest(state)) ? { rawStatus } : {}),
-        note: state?.phases?.[phase]?.note || null,
+        ...(status !== rawStatus && !(phase === 'pull-request' && (legacyPullRequest(state) || disabledPullRequest(state))) && !(phase === 'post-fix-build-test' && !state?.phases?.[phase]) ? { rawStatus } : {}),
+        note: state?.phases?.[phase]?.note || (phase === 'pull-request' && disabledPullRequest(state) ? pullRequestSkipNote(id) : null),
         // The role a single-role stage runs, and what it does, in one line.
         role,
         description: role ? describeRole(role) : null,
@@ -609,9 +834,9 @@ function renderTerminal(summary) {
   if (summary.engine) {
     lines.push('');
     lines.push(` ● engine running: ${describeEngine(summary.engine)}`);
-  } else if (summary.needsYou) {
+  } else if (summary.needsYou || summary.stalled) {
     lines.push('');
-    for (const line of needsYouLines(summary.needsYou)) lines.push(` ${line}`);
+    for (const line of needsYouLines(summary.needsYou || summary.stalled, summary.recovery)) lines.push(` ${line}`);
   }
   lines.push('');
 
@@ -665,11 +890,15 @@ function renderMarkdown(summary, options = {}) {
     })
     .join('\n');
 
-  // A published comment never names the engine's host or command.
+  // A published comment never names the engine's host or command, and never
+  // carries the plan text, the recovery block or its paths.
+  const needs = summary.needsYou || summary.stalled || null;
+  const recovery = !options.published && summary.recovery ? `  \n> Commands:  \n${summary.recovery.items.map(item => `> ${item.label}: \`${item.text}\`  `).join('\n')}` : '';
   const attention = summary.engine
     ? `\n> ● **Engine running**${options.published ? '' : `: ${describeEngine(summary.engine)}`}`
-    : summary.needsYou
-      ? `\n> ⚠ **Needs you:** ${summary.needsYou.headline}  \n${options.published ? '' : `> ${summary.needsYou.reason}  \n`}> Run: \`${summary.needsYou.command}\``
+    : needs
+      // The plan digest's counts line, never its text, and never in the published comment.
+      ? `\n> ⚠ **Needs you:** ${needs.headline}  \n${options.published ? '' : `> ${needs.reason}  \n${needs.plan ? `> ${planDigestLines(needs.plan)[0]}  \n` : ''}`}> Run: \`${needs.command}\`${recovery}`
       : '';
 
   const warnings = summary.warnings.length
@@ -780,6 +1009,10 @@ module.exports = {
   activityText,
   needsYou,
   needsYouLines,
+  recoveryCommands,
+  stalledAttention,
+  planDigest,
+  planDigestLines,
   whyLines,
   commandFor,
   completedAt,
@@ -788,6 +1021,8 @@ module.exports = {
   printable,
   labelOf,
   pullRequestLine,
+  disabledPullRequest,
+  pullRequestSkipNote,
   renderTerminal,
   renderMarkdown,
   parseArgs,

@@ -4,7 +4,7 @@ const {retrieve,formatContext,loadRagConfig}=require('../rag/hybrid-rag');
 
 const INPUT_FILES={
  request:['00-request.md'], acceptance_criteria:['02-acceptance-criteria.md'], definition_of_done:['03-definition-of-done.md'],
- inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md'], fixes:['10-fixes.md'],
+ inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md','10-post-fix-build-test.md'], fixes:['10-fixes.md'],
  device_evidence:['device/mobile-device-qc.md']
 };
 // Where repositories keep their pull request template, in the order they are used.
@@ -39,6 +39,38 @@ function specialistFindings(runDir){
   for(const x of d.findings) lines.push(`- ${x.id} [${x.severity}] ${String(x.title||'').slice(0,200)}\n  tags: ${(x.tags||[]).join(', ')||'(none)'}\n  recommendation: ${String(x.recommendation||'').slice(0,400)}`);
  }
  return lines.length?`## Specialist findings\n${lines.join('\n')}`:'';
+}
+// The human's conflict decisions (05-analysis/conflicts.json, written by
+// `agentic resolve`). Raw conflicts.json is not given to roles: it holds
+// unresolved entries, no finding titles and no size bound.
+// One decision per finding pair: a file written before 1.9.35 can hold two
+// decided pairs under one id, and both decisions bind.
+function resolvedConflicts(runDir){
+ let d=null; try{d=JSON.parse(fs.readFileSync(path.join(runDir,'05-analysis','conflicts.json'),'utf8'));}catch{return [];}
+ const seen=new Set(), key=c=>Array.isArray(c.findings)&&c.findings.length?c.findings.map(String).sort().join('|'):`id:${c.id}`;
+ return (d?.conflicts||[]).filter(c=>c&&c.status==='resolved'&&c.resolution&&/^CONFLICT-\d+$/.test(String(c.id))&&!seen.has(key(c))&&seen.add(key(c)));
+}
+function findingTitles(runDir){
+ const dir=path.join(runDir,'05-analysis'), out=new Map(); let files=[];
+ try{files=fs.readdirSync(dir).filter(f=>f.endsWith('.json')&&!['conflicts.json','synthesis.json','arbitration.json'].includes(f));}catch{return out;}
+ for(const f of files){try{const d=JSON.parse(fs.readFileSync(path.join(dir,f),'utf8'));for(const x of d.findings||[])out.set(x.id,{agent:d.agent||f.replace(/\.json$/,''),severity:x.severity,title:x.title});}catch{}}
+ return out;
+}
+// Binding for the plan (which must cite each id) and for every role after it.
+// Each entry is bounded, never the list: the plan gate demands every id, so
+// every id and decision is here, shortened with a marker when there are many.
+function conflictDecisions(runDir,stageId){
+ const list=resolvedConflicts(runDir); if(!list.length) return '';
+ const titles=findingTitles(runDir), lines=[], share=Math.floor(11000/list.length);
+ const cap=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+ const lim={decision:cap(Math.floor(share*0.55),200,1200),rationale:cap(Math.floor(share*0.15),80,400),title:cap(Math.floor(share*0.06),40,120),topic:cap(Math.floor(share*0.06),40,120)};
+ const clip=(v,n)=>{v=String(v||'');return v.length>n?`${v.slice(0,n)}… (truncated; full text in 05-analysis/conflicts.json)`:v;};
+ const finding=id=>{const t=titles.get(id);return t?`${id} (${t.agent}, ${t.severity}: ${String(t.title||'').slice(0,lim.title)})`:String(id);};
+ for(const c of list){const r=c.resolution;lines.push(`### ${c.id} · ${String(c.topic||'disputed').slice(0,lim.topic)}\n- findings: ${(c.findings||[]).map(finding).join(' vs ')}\n- decision: ${clip(r.decision,lim.decision)}\n- rationale: ${clip(r.rationale,lim.rationale)}\n- owner: ${r.owner||'human'} (${String(r.resolvedAt||'').slice(0,10)})`);}
+ const how=stageId==='plan'
+  ?'Apply every decision in the steps and cite each conflict id in "conflictDecisions" (rendered as "Conflict decisions applied"): one entry per id saying how and in which steps it is applied. The engine rejects a plan that leaves out any id below.'
+  :'The approved plan applies these under "Conflict decisions applied". Where the plan, AC or DoD still contradicts a decision, follow the decision and say so.';
+ return `## Binding conflict decisions (05-analysis/conflicts.json)\nA human resolved these specialist disagreements. Each decision is binding: it overrides any specialist recommendation, and any acceptance-criteria, definition-of-done or plan wording, that it contradicts.\n${how}\n\n${lines.join('\n\n')}`;
 }
 function prTemplate(productRoot){if(!productRoot)return null;for(const rel of PR_TEMPLATES){const t=read(path.join(productRoot,rel));if(t&&t.trim())return {path:rel,text:t};}return null;}
 function prTemplateSection(productRoot){
@@ -132,16 +164,17 @@ function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,
    if(INPUT_FILES[input]) for(const f of INPUT_FILES[input]){const t=read(path.join(runDir,f));if(t)sections.push(`## ${f}\n${t.slice(0,16000)}`);}
    else if(input==='changed_files') sections.push('## Changed files\n'+(changedFiles(productRoot,baseSha).join('\n')||'(none)'));
    else if(input==='specialist_findings'){const t=specialistFindings(runDir);if(t)sections.push(t);}
+   else if(input==='conflict_decisions'){const t=conflictDecisions(runDir,stageId);if(t)sections.push(t);}
    else if(input==='validated_review_findings'){const t=reviewArtifacts(runDir);if(t)sections.push(t);}
    else if(input==='dependency_versions'){const t=dependencyVersions(productRoot);if(t)sections.push(t);}
    else if(input==='pr_template') sections.push(prTemplateSection(productRoot));
    // The runtime's analyzer comparison against the run base (analyzer-baseline.js),
    // for the stages that judge "no new analyzer issues".
-   else if(input==='analyzer_baseline'){if(['build-test','verification'].includes(stageId)){const t=read(path.join(runDir,'engine','analyzer-baseline.md'));if(t)sections.push(t.slice(0,16000));}}
+   else if(input==='analyzer_baseline'){if(['build-test','post-fix-build-test','verification'].includes(stageId)){const t=read(path.join(runDir,'engine','analyzer-baseline.md'));if(t)sections.push(t.slice(0,16000));}}
    else if(input==='refactor_verification_matrix'){const t=read(path.join(runDir,'engine','refactor-verification-matrix.json'));if(t)sections.push('## Refactor verification matrix\n'+t);}
    else if(input==='run_artifacts'||input==='repository_evidence'){const t=broadArtifacts(runDir,excludeArtifact);if(t)sections.push(t);}
  }
  const rag=hybridRagContext({runDir,productRoot,contract,roleName,stageId,baseSha});if(rag)sections.push(rag);
  return sections.join('\n\n');
 }
-module.exports={humanNotes,PR_TEMPLATES,prTemplate,specialistFindings,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};
+module.exports={humanNotes,PR_TEMPLATES,prTemplate,specialistFindings,resolvedConflicts,conflictDecisions,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};

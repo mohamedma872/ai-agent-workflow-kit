@@ -9,7 +9,7 @@ const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
 const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
 const { roleContract, assertRequiredMcps } = require('./subagent-contracts');
-const { buildRoleContext, prTemplate, changedFiles } = require('./subagent-context');
+const { buildRoleContext, prTemplate, changedFiles, resolvedConflicts } = require('./subagent-context');
 const { detectRefactorMode } = require('./refactor-mode');
 const { canImplement, loadWaivers } = require('./refactor-coverage');
 const { problems: refactorCheckpointProblems } = require('./refactor-checkpoints');
@@ -27,7 +27,8 @@ const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
 const pullRequest = require('./pull-request');
 const notify = require('./notify');
 const engineOwner = require('./engine-owner');
-const { needsYou, commandFor } = require('./progress');
+const { needsYou, needsYouLines, recoveryCommands, commandFor, labelOf, oneLine, pullRequestSkipNote } = require('./progress');
+const { workspaceFingerprint, gitSha } = require('../tasks/feature/evidence-attestation');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -45,7 +46,7 @@ const DEFAULT_MAX_PARALLEL = 4;
 const WORKFLOW_FILE = path.join(RUNTIME_ROOT, 'ai', 'workflows', 'feature.yaml');
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
-const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
+const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor', 'changed_since_build_test']);
 const PR_STAGE = 'pull-request';
 const PR_ROLE = 'pr-description';
 
@@ -209,6 +210,12 @@ function noopFailure(wf, roleName, worktree, baseSha = null) {
   return changedFileList(worktree, baseSha).length ? null : `${roleName} reported success but changed no files in the worktree`;
 }
 
+// The tree a build/test run saw: HEAD plus the uncommitted diff and untracked files. null when git cannot say.
+function treeFingerprint(root) { try { return `${gitSha(root)}:${workspaceFingerprint(root)}`; } catch { return null; } }
+function testsTree(stage) { return stage.id === 'build-test' || stage.repeats === 'build-test'; }
+// Build + Tests passed on this tree; a later change to it is tested again before verification.
+function recordTestedTree(id, stageId, fingerprint, dirtied) { withStateLock(stateFile(id), () => { const state = loadState(id); if (!state) return; const at = new Date().toISOString(); state.testedWorkspace = { stage: stageId, fingerprint, at, ...(dirtied ? { dirtied: true } : {}) }; (state.history ||= []).push({ at, actor: 'workflow-engine', kind: 'tested-workspace', phase: stageId, fingerprint, dirtied: !!dirtied }); state.updatedAt = at; writeJsonAtomic(stateFile(id), state); }); }
+
 function promoteArchitectureAsCode(id) {
   const source = runDir(id);
   const root = productRoot(id);
@@ -316,7 +323,9 @@ function synthesizeAnalysis(id) {
   try {
     const previous = JSON.parse(fs.readFileSync(path.join(dir, 'conflicts.json'), 'utf8')).conflicts || [];
     const resolved = new Map(previous.filter(x => x.status === 'resolved' && x.resolution).map(x => [x.findings.slice().sort().join('|'), x]));
-    conflicts = conflicts.map(x => resolved.get(x.findings.slice().sort().join('|')) || x);
+    // Carry the decision, never the old id: ids are renumbered here, and an old
+    // id on a carried decision can name a different, still open, pair.
+    conflicts = conflicts.map(x => { const prev = resolved.get(x.findings.slice().sort().join('|')); return prev ? { ...x, status: 'resolved', resolution: prev.resolution } : x; });
   } catch { /* first synthesis */ }
   fs.writeFileSync(path.join(dir, 'synthesis.json'), JSON.stringify({ version: 1, findings }, null, 2) + '\n');
   fs.writeFileSync(path.join(dir, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts }, null, 2) + '\n');
@@ -342,6 +351,14 @@ function evaluateCondition(name, id, state) {
   if (name === 'whole_app_refactor') {
     const value = readMode(id) === 'behavior_preserving_refactor' && readRefactorScope(id) === 'whole_app';
     return { known: true, value, reason: value ? 'whole-app behavior-preserving refactor' : 'not a whole-app refactor' };
+  }
+  if (name === 'changed_since_build_test') {
+    // Legacy only (the rule progress.js uses): a run verified before this stage existed.
+    // A stage that exists (reset by a rework of fixes) compares the tree.
+    if (!state?.phases?.['post-fix-build-test'] && TERMINAL_OK.has(phaseStatus(state, 'verification'))) return { known: true, value: false, reason: 'verification passed before the post-fix re-run existed' };
+    const tested = state?.testedWorkspace?.fingerprint, current = treeFingerprint(productRoot(id));
+    if (!tested || !current) return { known: true, value: true, reason: tested ? 'the worktree fingerprint cannot be read' : 'no record of the tree Build + Tests passed on' };
+    return current === tested ? { known: true, value: false, reason: `fixes changed no files since ${state.testedWorkspace.stage} passed` } : { known: true, value: true, reason: `the worktree changed after ${state.testedWorkspace.stage} passed` };
   }
   if (name === 'mobile_or_ui_feature') {
     const requirement = state?.evidence?.mobileScreenshots?.requirement || 'unclassified';
@@ -401,7 +418,7 @@ function dartFor(worktree) {
 // the changed Dart files' issues with the run base (analyzer-baseline.js), so
 // the role does not have to prove what was pre-existing. Flutter/Dart only;
 // never fails the stage.
-const ANALYZER_STAGES = new Set(['build-test', 'verification']);
+const ANALYZER_STAGES = new Set(['build-test', 'post-fix-build-test', 'verification']);
 function prepareAnalyzerBaseline(id) {
   const worktree = productRoot(id);
   if (!fs.existsSync(path.join(worktree, 'pubspec.yaml'))) return null;
@@ -475,7 +492,9 @@ function executeRole(id, wf, stage, roleName, output) {
         if (!rawOutput || !fs.existsSync(rawOutput)) throw new Error(`${executor} produced no artifact output`);
         const markdownFile = path.join(runDir(id), output);
         if (schemaName) {
-          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+          // The plan must cite every resolved conflict. Checked inside the attempt, so a
+          // miss is a deterministic attempt failure whose reason `retry` hands back.
+          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id, stage.id === 'plan' ? { conflictIds: resolvedConflicts(runDir(id)).map(c => c.id) } : {});
           try { artifactStatus = JSON.parse(fs.readFileSync(sidecarForMarkdown(markdownFile), 'utf8')).status || null; } catch { artifactStatus = null; }
         }
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
@@ -813,7 +832,8 @@ function executePullRequest(id, wf, stage) {
   // run closed before 1.9.31 a human may well have opened one by hand); only
   // `agentic pr <id> --reopen` does that.
   if (state?.status === 'done' && !options.manual) return skip(`the run is closed — open its pull request on request with: ${prHint(id)} --reopen`);
-  if (!options.enabled) return skip(`pull_request.enabled is not true in .agentic/config.yaml${options.problems.length ? ` (${options.problems.join('; ')})` : ''} — open it by hand with: ${prHint(id)}`);
+  // The same wording the views derive for a run that never reached the stage.
+  if (!options.enabled) return skip(`${pullRequestSkipNote(id)}${options.problems.length ? `; .agentic/config.yaml: ${options.problems.join('; ')}` : ''}`);
   const executor = (wf.roles[PR_ROLE] || {}).executor || '-';
   // in_progress means an engine stopped mid-stage (killed, crashed). Every step
   // of the stage can be repeated, so it carries on instead of failing to begin.
@@ -912,6 +932,8 @@ function executeStage(id, wf, stage, args = {}) {
     const condition = evaluateCondition(stage.when, id, state);
     if (!condition.known) throw new Error(`${stage.id}: unknown condition ${stage.when}`);
     if (!condition.value) {
+      // A stopped stage can only be skipped once begun again (runs.js skips from pending or in_progress).
+      if (['fail', 'blocked'].includes(phaseStatus(state, stage.id))) phase(id, 'begin', stage.id, 'workflow-engine', `reconsidering: ${condition.reason}`);
       phase(id, 'skip', stage.id, 'workflow-engine', condition.reason);
       return 'skipped';
     }
@@ -944,20 +966,20 @@ function executeStage(id, wf, stage, args = {}) {
         const command = cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
         console.log(`${id}: waiting for architecture selection — review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')} then run: ${command}`);
       } else {
-        const command = cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id}`;
-        console.log(`${id}: waiting for human approval — review ${artifact('06-plan.md')} then run: ${command}`);
+        // What happened; the plan digest and the commands follow from runLoop (stopMessage).
+        console.log(`${id}: waiting for human approval — review ${artifact('06-plan.md')}`);
       }
       return 'waiting';
     }
     return 'pass';
   }
   if (stage.id === 'plan') {
-    const synthesis = synthesizeAnalysis(id);
-    const unresolved = unresolvedBlocking(synthesis.conflicts);
-    if (unresolved.length) throw new Error(`plan blocked by unresolved subagent conflict(s): ${unresolved.map(x => x.id).join(', ')}`);
+    const unresolved = unresolvedBlocking(synthesizeAnalysis(id).conflicts);
+    // A human decision, like the gates above: say what waits and how to continue, then wait.
+    if (unresolved.length) { console.log(`${id}: the plan waits on ${unresolved.length} unresolved conflict(s): ${unresolved.map(x => x.id).join(', ')}`); return 'waiting'; }
   }
   if (stage.strategy === 'parallel') { executeParallel(id, wf, stage); return 'pass'; }
-  if (stage.id === 'build-test' && readMode(id)==='behavior_preserving_refactor') {
+  if (testsTree(stage) && readMode(id)==='behavior_preserving_refactor') {
     const baseline=readJson(path.join(runDir(id),'04-behavior-baseline.json'))||{};
     const matrix=verificationMatrix({files:changedFileList(productRoot(id),runBaseSha(id)),baseline});
     fs.mkdirSync(engineDir(id),{recursive:true});
@@ -976,6 +998,7 @@ function executeStage(id, wf, stage, args = {}) {
     return stopped;
   }
   phase(id, 'begin', stage.id, preferredExecutor, `engine executing ${roleName}`);
+  const treeBefore = testsTree(stage) ? treeFingerprint(productRoot(id)) : null;
   try {
     const artifact = stage.artifact || (wf.roles[roleName] || {}).artifact;
     const execution = executeRole(id, wf, stage, roleName, artifact);
@@ -1004,7 +1027,16 @@ function executeStage(id, wf, stage, args = {}) {
       const telemetry=refactorTelemetry({baseline,equivalence,checkpoints,verificationMatrix:matrix});
       fs.writeFileSync(path.join(engineDir(id),'refactor-telemetry.json'),JSON.stringify(telemetry,null,2)+'\n');
     }
+    // conflicts.json follows the arbitration just written, so the views and
+    // `agentic conflicts` never show pairs it no longer declares.
+    if (stage.id === 'conflict-arbitration') synthesizeAnalysis(id);
     phase(id, 'complete', stage.id, execution.executor || preferredExecutor, `engine completed ${roleName}`);
+    // The tree it passed on, taken after the run, so its own pod install, pub get or codegen never re-trigger it.
+    if (testsTree(stage)) {
+      const after = treeFingerprint(productRoot(id)), dirtied = !!(treeBefore && after && treeBefore !== after);
+      try { recordTestedTree(id, stage.id, after, dirtied); } catch (err) { console.warn(`⚠ ${id}: the tree ${stage.id} passed on was not recorded (${err.message}); the post-fix re-run will run`); }
+      if (dirtied) console.warn(`⚠ ${id}: ${stage.id} changed the worktree (qa-execute is read-only); the tree it passed on is recorded`);
+    }
   } catch (e) {
     try { phase(id, 'fail', stage.id, preferredExecutor, e.message.slice(0, 180)); } catch { /* preserve original */ }
     throw e;
@@ -1031,6 +1063,23 @@ function claimRun(id, command) {
 // the views show), else the error that stopped it, else completion. notify.js
 // dedupes by event key in state.notifications.sent, so a resume that stops on
 // the same block does not tell them again. A notification never fails a run.
+// The attention shape for a stop the state does not record: the same mapping
+// notify.errorEvent uses, so the terminal block and the notification agree.
+function errorAttention(id, stageId, error, cli) {
+  return { kind: 'error', stage: stageId, role: null, label: labelOf(stageId), headline: `${labelOf(stageId)} stopped`, reason: oneLine(error.message, 2000), command: commandFor(stageId === PR_STAGE ? 'resume' : 'retry', id, cli), repeated: 0 };
+}
+// The engine's terminal stop message: the needs-you block (what waits, why,
+// the command) and every command that moves the run on, so a background
+// engine's log says the same as the dashboard and `agentic status`.
+function stopMessage(id, { stageId = null, error = null } = {}) {
+  try {
+    const state = loadState(id);
+    if (!state) return;
+    const cli = process.env.AI_AGENTIC_CLI === '1';
+    const attention = needsYou(id, state, { root: RUNS, cli, reasonMax: 2000 }) || (error && stageId ? errorAttention(id, stageId, error, cli) : null);
+    if (attention) console.log(needsYouLines(attention, recoveryCommands(id, attention, { root: RUNS, cli, state })).join('\n'));
+  } catch (e) { console.warn(`⚠ stop message not shown: ${e.message}`); }
+}
 function notifyRun(id, { stageId = null, error = null, complete = false } = {}) {
   try {
     const state = loadState(id);
@@ -1039,8 +1088,9 @@ function notifyRun(id, { stageId = null, error = null, complete = false } = {}) 
     // The whole reason: notify.js redacts it before it cuts it, so a cut never
     // lands inside a secret and leaves half of it in the notification.
     const attention = needsYou(id, state, { root: RUNS, cli, reasonMax: Infinity });
-    const event = attention ? notify.attentionEvent(id, attention)
-      : error && stageId ? notify.errorEvent(id, stageId, error.message, state, { cli })
+    const recovery = attention || (error && stageId) ? recoveryCommands(id, attention || errorAttention(id, stageId, error, cli), { root: RUNS, cli, state }) : null;
+    const event = attention ? notify.attentionEvent(id, attention, process.env, recovery)
+      : error && stageId ? notify.errorEvent(id, stageId, error.message, state, { cli, recovery })
         : complete ? notify.completeEvent(id, state, { cli })
           : null;
     return event ? notify.deliver(stateFile(id), event, { root: PROJECT_ROOT }) : null;
@@ -1110,11 +1160,11 @@ function runLoop(id, opts = {}) {
     console.log(`${id}: ${stage.id} (${phaseStatus(state, stage.id)})`);
     let result;
     try { result = executeStage(id, wf, stage, opts); }
-    catch (e) { if (!opts['dry-run']) notifyRun(id, { stageId: stage.id, error: e }); throw e; }
+    catch (e) { if (!opts['dry-run']) { stopMessage(id, { stageId: stage.id, error: e }); notifyRun(id, { stageId: stage.id, error: e }); } throw e; }
     if (result === 'dry-run') return result;
-    if (result === 'waiting') { notifyRun(id); return result; }
+    if (result === 'waiting') { stopMessage(id); notifyRun(id); return result; }
     const updated = loadState(id);
-    if (['fail', 'blocked'].includes(phaseStatus(updated, stage.id))) { notifyRun(id, { stageId: stage.id, error: new Error(updated.phases?.[stage.id]?.note || phaseStatus(updated, stage.id)) }); return phaseStatus(updated, stage.id); }
+    if (['fail', 'blocked'].includes(phaseStatus(updated, stage.id))) { const stop = { stageId: stage.id, error: new Error(updated.phases?.[stage.id]?.note || phaseStatus(updated, stage.id)) }; stopMessage(id, stop); notifyRun(id, stop); return phaseStatus(updated, stage.id); }
     if (opts.once) return result;
   }
   throw new Error('workflow exceeded 50 engine iterations');
@@ -1351,6 +1401,13 @@ function notificationSelftest() {
     assert.strictEqual(sent[0].key, `N-FAIL|acceptance-criteria|fail|${failed.phases['acceptance-criteria'].updatedAt}`);
     assert.strictEqual(sent[0].title, 'agentic · N-FAIL needs you');
     assert.match(sent[0].body, /^Acceptance Criteria failed: acceptance-criteria\/orchestration: artifact\/worktree validation failed.* — run: node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL$/, sent[0].body);
+    // The terminal gets the needs-you block with every recovery command and
+    // the rejected agent output; the block is printed once.
+    // The headline, the agent's own report (summary, report path, options), the
+    // command, then the Commands: block with the retry, why, status and doctor.
+    assert.match(first.stdout, /⚠ Needs you: Acceptance Criteria failed\n {2}not json at [^\n]*\n {2}Report: ai\/runs\/N-FAIL\/engine\/acceptance-criteria-orchestration\.rejected\n(?: {2}· [^\n]*\n)+ {2}→ run: node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL\n {2}Commands:\n {4}retry\s+node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL\n {4}why\s+node ai\/workflow\/progress\.js --run N-FAIL --why\n {4}status\s+node ai\/workflow\/progress\.js --run N-FAIL\n {4}doctor\s+node ai\/workflow\/doctor\.js\n/, first.stdout);
+    assert.match(first.stdout, /\n {4}rejected\s+ai\/runs\/N-FAIL\/engine\/acceptance-criteria-orchestration\.rejected\n/, first.stdout);
+    assert.strictEqual((first.stdout.match(/Commands:/g) || []).length, 1, first.stdout);
     assert.deepStrictEqual(failed.notifications.sent, [sent[0].key], 'the key is recorded in the run state');
     assert.ok(!fs.existsSync(path.join(states, 'N-FAIL', 'engine', 'engine.pid')), 'the engine released the run when it exited');
 
@@ -1385,13 +1442,58 @@ function notificationSelftest() {
     assert.match(second.result || '', new RegExp(`^ERROR run N-FAIL is already being driven by engine pid ${process.pid} \\(resume\\)`), second.stdout);
     fs.unlinkSync(path.join(states, 'N-FAIL', 'engine', 'engine.pid'));
 
-    // 6. The plan gate: two resumes, one "waits for your approval".
+    // 6. The plan gate: two resumes, one "waits for your approval". The terminal
+    // gets the plan digest and the exact command; the notification never
+    // carries the plan.
     prepare('N-GATE', stages.slice(0, stages.indexOf('approval')));
-    for (let i = 0; i < 2; i++) assert.strictEqual(resume('N-GATE').result, 'waiting');
+    fs.writeFileSync(path.join(states, 'N-GATE', '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: 'N-GATE', summary: 'Add the setting and its tests.', steps: [{ id: 'S1', description: 'x' }], acceptanceCriteria: ['AC-1', 'AC-2'], risks: [] }));
+    fs.writeFileSync(path.join(states, 'N-GATE', '06-plan.md'), '# Implementation plan\n\nAdd the setting and its tests.\n');
+    for (let i = 0; i < 2; i++) {
+      const held = resume('N-GATE');
+      assert.strictEqual(held.result, 'waiting');
+      assert.match(held.stdout, /N-GATE: waiting for human approval — review ai\/runs\/N-GATE\/06-plan\.md\n⚠ Needs you: The plan waits for your approval\n/, held.stdout);
+      assert.match(held.stdout, /\n {2}Plan: 1 steps · 2 acceptance criteria · 0 risks\n {4}│ Add the setting and its tests\.\n/, held.stdout);
+      assert.ok(held.stdout.includes(`→ run: ${commandFor('approve', 'N-GATE', false)}`), held.stdout);
+      assert.match(held.stdout, /\n {2}Commands:\n {4}approve\s+node ai\/tasks\/feature\/runs\.js approve N-GATE && node ai\/workflow\/engine\.js resume N-GATE\n {4}rework plan\s+node ai\/tasks\/feature\/runs\.js retry N-GATE plan && /, held.stdout);
+      assert.match(held.stdout, /\n {4}artifact\s+ai\/runs\/N-GATE\/06-plan\.md\n/, held.stdout);
+    }
     const gate = events().filter(e => e.key.startsWith('N-GATE|'));
     assert.strictEqual(gate.length, 1, JSON.stringify(gate));
     assert.strictEqual(gate[0].kind, 'waiting');
     assert.match(gate[0].body, /^The plan waits for your approval: Review ai\/runs\/N-GATE\/06-plan\.md.* — run: node ai\/tasks\/feature\/runs\.js approve N-GATE && node ai\/workflow\/engine\.js resume N-GATE$/);
+
+    // 6b. Open specialist conflicts: the plan waits for a human decision like
+    // the gates (never a failure), says how many and what to run, and is told
+    // once across resumes. Once decided, the plan runs (the stub fails it).
+    prepare('N-CONF', stages.slice(0, stages.indexOf('plan')));
+    const analysisDir = path.join(states, 'N-CONF', '05-analysis');
+    fs.mkdirSync(analysisDir, { recursive: true });
+    fs.writeFileSync(path.join(analysisDir, 'security-reviewer.json'), JSON.stringify({ agent: 'security-reviewer', findings: [{ id: 'SEC-1', title: 't', severity: 'high' }] }));
+    fs.writeFileSync(path.join(analysisDir, 'mobile-architect.json'), JSON.stringify({ agent: 'mobile-architect', findings: [{ id: 'ARCH-2', title: 'u', severity: 'medium' }] }));
+    fs.writeFileSync(path.join(analysisDir, 'arbitration.json'), JSON.stringify({ conflicts: [{ findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }] }));
+    for (let i = 0; i < 2; i++) {
+      const held = resume('N-CONF');
+      assert.strictEqual(held.result, 'waiting', held.stdout);
+      assert.match(held.stdout, /⚠ Needs you: 1 conflict needs your decision/);
+      assert.match(held.stdout, /→ run: node ai\/workflow\/conflicts\.js list N-CONF/);
+      assert.match(held.stdout, /\n {4}resolve\s+node ai\/workflow\/conflicts\.js resolve N-CONF CONFLICT-001 --decision "\.\.\." --rationale "\.\.\."\n {4}resume\s+node ai\/workflow\/engine\.js resume N-CONF\n/, held.stdout);
+      assert.match(held.stdout, /\n {4}artifact\s+ai\/runs\/N-CONF\/05-analysis\/conflicts\.json\n/, held.stdout);
+      assert.strictEqual(stateOf('N-CONF').phases.plan?.status || 'pending', 'pending');
+    }
+    const conf = events().filter(e => e.key.startsWith('N-CONF|'));
+    assert.strictEqual(conf.length, 1, JSON.stringify(conf));
+    assert.ok(conf[0].key.startsWith('N-CONF|plan|waiting|CONFLICT-001=ARCH-2+SEC-1'), conf[0].key);
+    assert.strictEqual(conf[0].kind, 'waiting');
+    assert.match(conf[0].body, /^1 conflict needs your decision: CONFLICT-001 \(storage\)/);
+    const conflictsJson = path.join(analysisDir, 'conflicts.json');
+    const decided = JSON.parse(fs.readFileSync(conflictsJson, 'utf8'));
+    decided.conflicts[0].status = 'resolved';
+    decided.conflicts[0].resolution = { decision: 'secure storage', rationale: 'PII', owner: 'human', resolvedAt: new Date().toISOString() };
+    fs.writeFileSync(conflictsJson, JSON.stringify(decided));
+    const planned = resume('N-CONF');
+    assert.notStrictEqual(planned.result, 'waiting', planned.stdout);
+    assert.ok(!planned.stdout.includes('Needs you: 1 conflict'), planned.stdout);
+    assert.match(planned.result || '', /^ERROR plan\/orchestration: /, 'the plan was attempted');
 
     // 7. A complete run: once, with how to open the pull request it skipped.
     prepare('N-DONE', stages.filter(st => st !== 'pull-request'));
@@ -1403,6 +1505,19 @@ function notificationSelftest() {
     const done = events().filter(e => e.key.startsWith('N-DONE|'));
     assert.deepStrictEqual(done.map(e => [e.key, e.kind, e.title]), [['N-DONE|run|complete', 'complete', 'agentic · N-DONE complete']]);
     assert.match(done[0].body, /Open the pull request with: node ai\/workflow\/engine\.js pr N-DONE$/);
+    // 7b. A run verified before 1.9.31 (no pull-request phase at all) with the
+    // stage disabled: a resume records the skip once, no agent runs, the run
+    // completes, and completion is told once.
+    prepare('N-OLD', stages.filter(st => st !== 'pull-request'));
+    assert.strictEqual(stateOf('N-OLD').phases['pull-request'], undefined);
+    for (let i = 0; i < 2; i++) assert.strictEqual(resume('N-OLD').result, 'complete');
+    const oldStage = stateOf('N-OLD').phases['pull-request'];
+    assert.deepStrictEqual([oldStage.status, oldStage.note], ['skipped', 'pull_request disabled (open one with: node ai/workflow/engine.js pr N-OLD)']);
+    assert.strictEqual(stateOf('N-OLD').executionAttempts?.['pull-request'], undefined, 'no agent ran for a disabled stage');
+    const oldDone = events().filter(e => e.key.startsWith('N-OLD|'));
+    assert.strictEqual(oldDone.length, 1, JSON.stringify(oldDone));
+    assert.strictEqual(oldDone[0].key, `N-OLD|run|complete|${oldStage.updatedAt}`);
+    assert.match(oldDone[0].body, /Open the pull request with: node ai\/workflow\/engine\.js pr N-OLD$/);
 
     // 8. The case that hurt: verification's conditional mobile-evidence blocks
     // for a reason outside verification (here: no Android/iOS target). The
@@ -1478,6 +1593,251 @@ function notificationSelftest() {
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
+// The run-loop harness of notificationSelftest for the selftests below: a temp
+// state root, a product git repo, runs.js prepare/retry and an engine driver.
+function engineHarness(prefix) {
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const states = path.join(tmp, 'runs');
+  const product = path.join(tmp, 'product');
+  const log = path.join(tmp, 'notify.log');
+  spawnSync('git', ['init', '-q', product]);
+  fs.writeFileSync(path.join(product, 'a.txt'), 'one\n');
+  spawnSync('git', ['add', '-A'], { cwd: product });
+  spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: product });
+  const baseSha = String(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: product, encoding: 'utf8' }).stdout).trim();
+  fs.mkdirSync(path.join(tmp, 'home'));
+  const env = { ...process.env, PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: path.join(tmp, 'home'), AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PRODUCT_ROOT: product, AI_WORKFLOW_PROJECT_ROOT: product, AI_WORKFLOW_SELFTEST: '1', AI_WORKFLOW_TEST_NOTIFY_LOG: log, AI_WORKFLOW_AVAILABLE_MCPS: '' };
+  delete env.AI_AGENTIC_CLI; delete env.AI_EVAL; delete env.QC_EVAL;
+  const stateOf = id => JSON.parse(fs.readFileSync(path.join(states, id, 'state.json'), 'utf8'));
+  const writeState = (id, state) => fs.writeFileSync(path.join(states, id, 'state.json'), JSON.stringify(state, null, 2) + '\n');
+  const prepare = (id, donePhases) => {
+    const started = spawnSync(process.execPath, [RUNS_TOOL, 'start', id], { env, encoding: 'utf8' });
+    assert.strictEqual(started.status, 0, started.stderr);
+    const state = stateOf(id);
+    for (const phaseId of donePhases) state.phases[phaseId] = { status: (workflow().stages.find(st => st.id === phaseId) || {}).when ? 'skipped' : 'pass' };
+    state.evidence.mobileScreenshots = { requirement: 'not-required', reason: 'selftest' };
+    writeState(id, state);
+    fs.mkdirSync(path.join(states, id, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(states, id, 'engine', 'worktree.json'), JSON.stringify({ runId: id, path: product, branch: 'test', baseSha, currentSha: baseSha, createdAt: new Date().toISOString(), sourceRoot: product }));
+  };
+  const resume = (id, extraEnv = {}, opts = {}) => {
+    const driver = `const engine = require(${JSON.stringify(__filename)}); try { console.log('RESULT ' + engine.runLoop(${JSON.stringify(id)}, ${JSON.stringify(opts)})); } catch (e) { console.log('RESULT ERROR ' + e.message); }`;
+    const res = spawnSync(process.execPath, ['-e', driver], { env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 60 * 1000 });
+    assert.strictEqual(res.status, 0, res.stderr);
+    return { result: (res.stdout.match(/^RESULT (.*)$/m) || [])[1], stdout: res.stdout, stderr: res.stderr };
+  };
+  const retry = (id, ...names) => { const r = spawnSync(process.execPath, [RUNS_TOOL, 'retry', id, ...names], { env, encoding: 'utf8' }); assert.strictEqual(r.status, 0, r.stderr); return r.stdout; };
+  const events = () => { try { return fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
+  return { tmp, states, product, env, stateOf, writeState, prepare, resume, retry, events, stages: workflow().stages.map(st => st.id), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+}
+
+// Resolved conflict decisions reach the plan prompt, and an engine-run plan
+// that leaves one out is rejected inside the attempt, so `retry` hands the
+// missing ids to the regenerated plan.
+function conflictDecisionSelftest() {
+  const h = engineHarness('engine-conflict-decisions-');
+  try {
+    const stub = path.join(h.tmp, 'plan-executor.js');
+    fs.writeFileSync(stub, `
+      const fs = require('fs');
+      const args = process.argv.slice(2);
+      const cites = (process.env.STUB_PLAN_CITES || '').split(',').filter(Boolean);
+      fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify({ schemaVersion: 1, runId: process.env.FEATURE_RUN_ID, summary: 'stub plan', steps: [{ id: '1', description: 'do it' }], acceptanceCriteria: ['AC-1'], conflictDecisions: cites.map(id => ({ conflictId: id, applied: 'applied in step 1', steps: ['1'] })) }));
+    `);
+    const before = h.stages.slice(0, h.stages.indexOf('plan'));
+    h.prepare('N-CONFLICT', before);
+    const analysis = path.join(h.states, 'N-CONFLICT', '05-analysis');
+    fs.mkdirSync(analysis, { recursive: true });
+    fs.writeFileSync(path.join(analysis, 'security-reviewer.json'), JSON.stringify({ agent: 'security-reviewer', findings: [{ id: 'SEC-1', title: 'Use secure storage', severity: 'high' }] }));
+    fs.writeFileSync(path.join(analysis, 'mobile-architect.json'), JSON.stringify({ agent: 'mobile-architect', findings: [{ id: 'ARCH-2', title: 'Plain prefs', severity: 'medium' }, { id: 'ARCH-3', title: 'No cache', severity: 'low' }] }));
+    fs.writeFileSync(path.join(analysis, 'arbitration.json'), JSON.stringify({ conflicts: [{ findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }, { findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }] }));
+    const resolution = decision => ({ decision, rationale: 'selftest', owner: 'human', resolvedAt: '2026-11-04T00:00:00Z' });
+    fs.writeFileSync(path.join(analysis, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts: [
+      { id: 'CONFLICT-001', topic: 'storage', findings: ['SEC-1', 'ARCH-2'], status: 'resolved', resolution: resolution('KEEP SECURE STORAGE') },
+      { id: 'CONFLICT-002', topic: 'caching', findings: ['SEC-1', 'ARCH-3'], status: 'resolved', resolution: resolution('CACHE FOR ONE HOUR ONLY') },
+    ] }));
+    const stubEnv = cites => ({ AI_WORKFLOW_TEST_EXECUTOR: stub, STUB_PLAN_CITES: cites });
+    const runFile = file => path.join(h.states, 'N-CONFLICT', file);
+    // (a) The plan cites one of two decisions: rejected, never written.
+    const first = h.resume('N-CONFLICT', stubEnv('CONFLICT-001'));
+    assert.match(first.stdout, /^RESULT ERROR plan\/orchestration: artifact\/worktree validation failed: [^]*?missing CONFLICT-002/m, first.stdout);
+    assert.match(h.stateOf('N-CONFLICT').phases.plan.note, /missing CONFLICT-002/, 'the missing id survives the phase note cut');
+    assert.strictEqual(h.stateOf('N-CONFLICT').phases.plan.status, 'fail');
+    assert.ok(!fs.existsSync(runFile('06-plan.md')), 'a plan that drops a decision is not written');
+    assert.ok(fs.existsSync(runFile('engine/plan-orchestration.rejected')), 'the rejected plan is kept');
+    const prompt = fs.readFileSync(runFile('engine/plan-orchestration.md'), 'utf8');
+    assert.ok(prompt.includes('## Binding conflict decisions') && prompt.includes('CACHE FOR ONE HOUR ONLY'), 'the decisions are in the plan prompt');
+    // (b) retry, then a plan that cites both: through to the approval gate.
+    h.retry('N-CONFLICT');
+    const second = h.resume('N-CONFLICT', stubEnv('CONFLICT-001,CONFLICT-002'));
+    assert.strictEqual(second.result, 'waiting', second.stdout);
+    const plan = fs.readFileSync(runFile('06-plan.md'), 'utf8');
+    for (const part of ['Conflict decisions applied', 'CONFLICT-001', 'CONFLICT-002']) assert.ok(plan.includes(part), part);
+    assert.match(fs.readFileSync(runFile('engine/plan-orchestration.md'), 'utf8'), /previous plan\/orchestration failure: [^\n]*\n- \$\.conflictDecisions: missing CONFLICT-002/, 'retry tells the regenerated plan what it missed');
+    // (c) No conflicts: no section, and nothing to cite.
+    h.prepare('N-NOCONFLICT', before);
+    assert.strictEqual(h.resume('N-NOCONFLICT', stubEnv('')).result, 'waiting');
+    assert.ok(!fs.readFileSync(path.join(h.states, 'N-NOCONFLICT', 'engine', 'plan-orchestration.md'), 'utf8').includes('## Binding conflict decisions'), 'no section (the schema description names it, the section is absent)');
+    // (d) Re-arbitration adds a pair that sorts ahead of a decided one: ids stay
+    // unique, the banner's exact resolve command decides the open pair (not the
+    // decided one), and both decisions reach the plan.
+    h.prepare('N-RENUM', before);
+    const renum = path.join(h.states, 'N-RENUM', '05-analysis');
+    fs.mkdirSync(renum, { recursive: true });
+    for (const f of ['security-reviewer.json', 'mobile-architect.json']) fs.copyFileSync(path.join(analysis, f), path.join(renum, f));
+    const arbitrate = pairs => fs.writeFileSync(path.join(renum, 'arbitration.json'), JSON.stringify({ conflicts: pairs }));
+    const conflictsNow = () => JSON.parse(fs.readFileSync(path.join(renum, 'conflicts.json'), 'utf8')).conflicts;
+    const resolveCli = (cid, decision) => spawnSync(process.execPath, [path.join(__dirname, 'conflicts.js'), 'resolve', 'N-RENUM', cid, '--decision', decision, '--rationale', 'selftest'], { env: h.env, encoding: 'utf8' });
+    arbitrate([{ findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }]);
+    assert.strictEqual(h.resume('N-RENUM', stubEnv('')).result, 'waiting');
+    assert.strictEqual(resolveCli(conflictsNow()[0].id, 'CACHE ONE HOUR').status, 0);
+    arbitrate([{ findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }, { findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }]);
+    const held = h.resume('N-RENUM', stubEnv(''));
+    assert.strictEqual(held.result, 'waiting', held.stdout);
+    const ids = conflictsNow().map(c => c.id);
+    assert.strictEqual(new Set(ids).size, ids.length, `ids are unique: ${ids}`);
+    const told = (held.stdout.match(/conflicts\.js resolve N-RENUM (CONFLICT-\d+) /) || [])[1];
+    assert.strictEqual(told, conflictsNow().find(c => c.status !== 'resolved').id, held.stdout);
+    assert.strictEqual(resolveCli(told, 'SECURE STORAGE').status, 0);
+    assert.ok(conflictsNow().every(c => c.status === 'resolved'), 'the printed command decided the open pair');
+    assert.strictEqual(h.resume('N-RENUM', stubEnv(ids.join(','))).result, 'waiting', 'through to the approval gate');
+    const renumPrompt = fs.readFileSync(path.join(h.states, 'N-RENUM', 'engine', 'plan-orchestration.md'), 'utf8');
+    for (const part of ['CACHE ONE HOUR', 'SECURE STORAGE']) assert.ok(renumPrompt.includes(part), part);
+  } finally { h.cleanup(); }
+}
+
+// Fixes edit code after Build + Tests passed: the post-fix re-run tests the
+// tree again only when it differs from the one a build/test pass saw.
+function postFixBuildTestSelftest() {
+  const h = engineHarness('engine-post-fix-');
+  try {
+    const calls = path.join(h.tmp, 'calls.log');
+    const stub = path.join(h.tmp, 'qa-executor.js');
+    fs.writeFileSync(stub, `
+      const fs = require('fs'), path = require('path');
+      const args = process.argv.slice(2), role = args[2], out = args[args.indexOf('--output-file') + 1];
+      fs.appendFileSync(${JSON.stringify(calls)}, role + '\\n');
+      const product = process.env.AI_WORKFLOW_PRODUCT_ROOT;
+      if (process.env.STUB_DIRTY === '1') fs.writeFileSync(path.join(product, 'generated.lock'), 'codegen\\n');
+      if (role === 'fixes') { fs.writeFileSync(out, '# Fixes\\n\\nNothing to change.\\n'); return; }
+      const status = process.env.STUB_BUILD || 'pass';
+      fs.writeFileSync(out, JSON.stringify({ schemaVersion: 1, runId: process.env.FEATURE_RUN_ID, status, commands: [{ command: 'flutter test', status, exitCode: status === 'pass' ? 0 : 1 }] }));
+    `);
+    const calledTimes = () => { try { return fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+    const stubEnv = extra => ({ AI_WORKFLOW_TEST_EXECUTOR: stub, ...extra });
+    const STAGE = 'post-fix-build-test';
+    const upTo = h.stages.slice(0, h.stages.indexOf(STAGE));
+    const fixesAttempts = [{ attempt: 1, ok: true, executor: 'codex', exitType: 'ok' }];
+    const seed = (id, done = upTo, extra = {}) => { h.prepare(id, done); const st = h.stateOf(id); st.executionAttempts = { fixes: { fixes: fixesAttempts } }; Object.assign(st, extra); h.writeState(id, st); fs.writeFileSync(path.join(h.states, id, '10-fixes.md'), '# Fixes\n\nRenamed a helper.\n'); };
+    const edit = text => fs.writeFileSync(path.join(h.product, 'a.txt'), text);
+    const once = (id, extra = {}) => h.resume(id, stubEnv(extra), { once: true });
+
+    // P1. Fixes changed nothing since Build + Tests passed: skipped, no agent.
+    seed('P-SAME', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    assert.strictEqual(once('P-SAME').result, 'skipped');
+    let st = h.stateOf('P-SAME');
+    assert.strictEqual(st.phases[STAGE].status, 'skipped');
+    assert.match(st.phases[STAGE].note, /fixes changed no files since build-test passed/);
+    assert.strictEqual(st.executionAttempts[STAGE], undefined);
+    assert.strictEqual(calledTimes(), 0, 'no agent for an unchanged tree');
+
+    // P2. Fixes edited a file: qa-execute runs again, into its own artifact and attempts.
+    seed('P-RUN', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    edit('two\n');
+    assert.strictEqual(once('P-RUN', { STUB_BUILD: 'pass' }).result, 'pass');
+    st = h.stateOf('P-RUN');
+    assert.strictEqual(st.phases[STAGE].status, 'pass');
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(h.states, 'P-RUN', '10-post-fix-build-test.json'), 'utf8')).status, 'pass');
+    assert.ok(!fs.existsSync(path.join(h.states, 'P-RUN', '08-build-test.json')), 'Build + Tests keeps its own artifact');
+    assert.strictEqual(st.executionAttempts[STAGE]['qa-execute'].length, 1);
+    assert.deepStrictEqual(st.executionAttempts.fixes, { fixes: fixesAttempts }, 'fixes keeps its attempts');
+    assert.deepStrictEqual([st.testedWorkspace.stage, st.testedWorkspace.fingerprint], [STAGE, treeFingerprint(h.product)]);
+    assert.ok(st.history.some(e => e.kind === 'phase' && e.phase === STAGE && e.action === 'complete'));
+    assert.ok(st.history.some(e => e.kind === 'tested-workspace' && e.phase === STAGE));
+    assert.ok(fs.readFileSync(path.join(h.states, 'P-RUN', 'engine', `${STAGE}-qa-execute.md`), 'utf8').includes('## 10-fixes.md'), 'the re-run sees what fixes did');
+    assert.strictEqual(nextEligibleStage(workflow(), st).id, 'architecture-compliance');
+
+    // P4. A rework of fixes resets the re-run that passed; unchanged fixes then skip it.
+    const reworked = h.retry('P-RUN', 'fixes');
+    assert.match(reworked, /post-fix-build-test \(downstream of fixes\)/);
+    st = h.stateOf('P-RUN');
+    assert.deepStrictEqual([st.phases.fixes.status, st.phases[STAGE].status], ['pending', 'pending']);
+    assert.ok(st.history.some(e => e.action === 'rework-downstream' && e.phase === STAGE));
+    assert.strictEqual(once('P-RUN').result, 'pass', 'fixes runs again');
+    assert.strictEqual(once('P-RUN').result, 'skipped');
+    assert.strictEqual(h.stateOf('P-RUN').phases[STAGE].status, 'skipped');
+
+    // P3. A red re-run fails like Build + Tests, is told once, and is bounded.
+    seed('P-FAIL', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    edit('three\n');
+    const failed = h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.match(failed.stdout, /^RESULT ERROR post-fix-build-test\/qa-execute: artifact\/worktree validation failed[^]*must be pass/m, failed.stdout);
+    st = h.stateOf('P-FAIL');
+    assert.deepStrictEqual([st.phases[STAGE].status, st.phases.fixes.status, st.phases.verification?.status || 'pending'], ['fail', 'pass', 'pending']);
+    let own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
+    assert.strictEqual(own.length, 1, JSON.stringify(own));
+    assert.match(own[0].body, /^Post-fix Build \+ Tests failed: /);
+    const before = calledTimes();
+    const again = h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.strictEqual(again.result, 'fail', again.stdout);
+    assert.match(again.stdout, /post-fix-build-test stays fail — [^]*not re-attempted on resume/);
+    assert.strictEqual(calledTimes(), before, 'not attempted again');
+    assert.strictEqual(h.events().filter(e => e.key.startsWith('P-FAIL|')).length, 1);
+    const retried = h.retry('P-FAIL');
+    assert.match(retried, /post-fix-build-test/);
+    assert.doesNotMatch(retried, /\bfixes\b(?! \()/, 'a plain retry leaves fixes alone');
+    st = h.stateOf('P-FAIL');
+    assert.deepStrictEqual([st.phases.fixes.status, st.executionAttempts.fixes], ['pass', { fixes: fixesAttempts }]);
+    h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.strictEqual(h.stateOf('P-FAIL').phases[STAGE].repeatedFailure, 2);
+    own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
+    assert.strictEqual(own.length, 2);
+    assert.match(own[1].body, /^Same failure as last time — this needs a fix outside Post-fix Build \+ Tests\./);
+    // A failed re-run whose tree is back to the tested one is begun, then skipped.
+    edit('two\n');
+    assert.strictEqual(once('P-FAIL').result, 'skipped');
+    assert.strictEqual(h.stateOf('P-FAIL').phases[STAGE].status, 'skipped');
+
+    // P5. Build + Tests itself dirtied the tree (codegen): the tree after it is
+    // the tested one, so the post-fix re-run does not fire for it.
+    seed('P-DIRTY', h.stages.slice(0, h.stages.indexOf('build-test')));
+    const dirty = once('P-DIRTY', { STUB_BUILD: 'pass', STUB_DIRTY: '1' });
+    assert.strictEqual(dirty.result, 'pass', dirty.stdout);
+    assert.match(dirty.stderr, /build-test changed the worktree/);
+    st = h.stateOf('P-DIRTY');
+    assert.deepStrictEqual([st.testedWorkspace.stage, st.testedWorkspace.dirtied, st.testedWorkspace.fingerprint], ['build-test', true, treeFingerprint(h.product)]);
+    st.phases.reviews = { status: 'pass' }; st.phases.fixes = { status: 'pass' };
+    h.writeState('P-DIRTY', st);
+    assert.strictEqual(once('P-DIRTY').result, 'skipped');
+
+    // P6. Legacy runs: no recorded tree runs the re-run; a verified run skips it.
+    seed('P-LEGACY');
+    assert.strictEqual(once('P-LEGACY', { STUB_BUILD: 'pass' }).result, 'pass');
+    assert.strictEqual(h.stateOf('P-LEGACY').phases[STAGE].status, 'pass');
+    seed('P-VERIFIED', h.stages.filter(x => x !== STAGE && x !== 'pull-request'));
+    assert.strictEqual(once('P-VERIFIED').result, 'skipped');
+    assert.match(h.stateOf('P-VERIFIED').phases[STAGE].note, /verification passed before/);
+
+    // P7. A verified run whose fixes are reworked: the re-run exists (reset to
+    // pending), so the tree is compared, not the legacy verification shortcut.
+    seed('P-REWORK', h.stages.filter(x => x !== 'pull-request'), { testedWorkspace: { stage: STAGE, fingerprint: treeFingerprint(h.product) } });
+    h.retry('P-REWORK', 'fixes');
+    st = h.stateOf('P-REWORK');
+    assert.deepStrictEqual([st.phases.fixes.status, st.phases[STAGE].status, st.phases.verification.status], ['pending', 'pending', 'pass']);
+    edit('four\n');
+    assert.strictEqual(once('P-REWORK').result, 'pass', 'fixes runs again');
+    assert.strictEqual(once('P-REWORK', { STUB_BUILD: 'pass' }).result, 'pass', 'the changed tree is tested again');
+    assert.doesNotMatch(h.stateOf('P-REWORK').phases[STAGE].note || '', /verification passed before/);
+    // The same rework on a run verified before the stage existed creates it, so it runs too.
+    seed('P-OLDREWORK', h.stages.filter(x => x !== STAGE && x !== 'pull-request'));
+    assert.match(h.retry('P-OLDREWORK', 'fixes'), /post-fix-build-test \(downstream of fixes\)/);
+    assert.strictEqual(h.stateOf('P-OLDREWORK').phases[STAGE].status, 'pending');
+    assert.strictEqual(once('P-OLDREWORK').result, 'pass');
+    assert.strictEqual(once('P-OLDREWORK', { STUB_BUILD: 'pass' }).result, 'pass', 'no recorded tree: tested again');
+  } finally { h.cleanup(); }
+}
+
 function selftest() {
   {
     const assert = require('assert');
@@ -1510,6 +1870,36 @@ function selftest() {
     assert.deepStrictEqual(changedFileList(tmp, runBase), ['new.dart']);
     assert.deepStrictEqual(require('./subagent-context').changedFiles(tmp, runBase), ['new.dart'], 'the role context lists it too');
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  {
+    // The tree a build/test pass saw: HEAD, the diff and untracked files, not ignored ones.
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+    const git = (...a) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: tmp });
+    spawnSync('git', ['init', '-q', tmp]);
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'one\n'); fs.writeFileSync(path.join(tmp, '.gitignore'), 'build/\n');
+    git('add', '-A'); git('commit', '-qm', 'base');
+    const clean = treeFingerprint(tmp);
+    assert.ok(clean && clean === treeFingerprint(tmp), 'stable across calls');
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'two\n');
+    assert.notStrictEqual(treeFingerprint(tmp), clean, 'a tracked edit');
+    git('checkout', '--', 'a.txt');
+    assert.strictEqual(treeFingerprint(tmp), clean);
+    fs.mkdirSync(path.join(tmp, 'build')); fs.writeFileSync(path.join(tmp, 'build', 'out.bin'), 'x');
+    assert.strictEqual(treeFingerprint(tmp), clean, 'gitignored files do not count');
+    fs.writeFileSync(path.join(tmp, 'new.dart'), 'class A {}\n');
+    const untracked = treeFingerprint(tmp);
+    assert.notStrictEqual(untracked, clean, 'a new untracked file');
+    git('add', '-A'); git('commit', '-qm', 'second');
+    assert.ok(![clean, untracked].includes(treeFingerprint(tmp)), 'HEAD is part of it');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'not-git-'));
+    assert.strictEqual(treeFingerprint(plain), null, 'no git, no fingerprint');
+    fs.rmSync(plain, { recursive: true, force: true });
+    assert.strictEqual(testsTree({ id: 'build-test' }), true);
+    assert.strictEqual(testsTree(workflow().stages.find(x => x.id === 'post-fix-build-test')), true);
+    assert.strictEqual(testsTree({ id: 'fixes' }), false);
+    assert.strictEqual(SUPPORTED_CONDITIONS.has('changed_since_build_test'), true);
   }
   const wf = { stages: [{ id: 'a' }, { id: 'b', needs: ['a'] }, { id: 'c', needs: ['b'] }] };
   assert.strictEqual(nextEligibleStage(wf, { phases: {} }).id, 'a');
@@ -1558,6 +1948,8 @@ function selftest() {
   }
   parallelStageSelftest();
   notificationSelftest();
+  conflictDecisionSelftest();
+  postFixBuildTestSelftest();
   console.log('workflow engine selftest OK');
 }
 
@@ -1587,4 +1979,4 @@ if (require.main === module) {
   } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 }
 
-module.exports = { workflow, executeStage, runLoop, toolFailure, claimRun, notifyRun, pullRequestCommand, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { workflow, executeStage, treeFingerprint, testsTree, recordTestedTree, runLoop, toolFailure, claimRun, notifyRun, pullRequestCommand, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

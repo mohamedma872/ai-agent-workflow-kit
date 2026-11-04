@@ -63,5 +63,51 @@ fs.writeFileSync(path.join(run,'notes','build-test.md'),'The 12 analyzer lints a
 const noted=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'qa-execute',stageId:'build-test'});
 assert.match(noted,/## Human notes for this stage \(notes\/build-test\.md\)[\s\S]*pre-existing at HEAD/,'human notes reach the role');
 assert.doesNotMatch(buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'code-review',stageId:'reviews'}),/Human notes/,'notes stay with their stage');
+// The human's conflict decisions reach the plan (which must cite each id) and
+// the roles after it, never the specialists; unresolved ones are not listed.
+const {resolvedConflicts,conflictDecisions}=require('./subagent-context');
+fs.mkdirSync(path.join(run,'05-analysis'),{recursive:true});
+fs.writeFileSync(path.join(run,'05-analysis','sec.json'),JSON.stringify({agent:'security-reviewer',findings:[{id:'SEC-1',severity:'high',title:'Use secure storage'},{id:'PERF-1',severity:'medium',title:'Plain prefs are faster'}]}));
+fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:[
+ {id:'CONFLICT-001',topic:'storage',findings:['SEC-1','PERF-1'],status:'resolved',resolution:{decision:'KEEP-SECURE '+'X'.repeat(3000),rationale:'PII requirement',owner:'human',resolvedAt:'2026-11-04T00:00:00Z'}},
+ {id:'CONFLICT-002',topic:'caching',findings:['SEC-1','PERF-1'],status:'unresolved',resolution:null}]}));
+const decisionsFor=(stageId,inputs=['conflict_decisions'])=>buildRoleContext({runDir:run,productRoot:product,contract:{inputs},excludeArtifact:null,roleName:stageId==='plan'?'orchestration':stageId,stageId});
+const planCtx=decisionsFor('plan');
+for(const re of [/## Binding conflict decisions/,/CONFLICT-001/,/SEC-1/,/Use secure storage/,/KEEP-SECURE/,/PII requirement/,/owner: human/,/overrides/,/conflictDecisions/]) assert.match(planCtx,re);
+assert.doesNotMatch(planCtx,/CONFLICT-002/,'unresolved conflicts are not listed');
+assert(!planCtx.includes('X'.repeat(1300)),'a decision is cut at 1200 characters');
+const implCtx=decisionsFor('implementation');
+assert.match(implCtx,/Binding conflict decisions/);assert.doesNotMatch(implCtx,/engine rejects a plan/);
+assert.deepStrictEqual(resolvedConflicts(run).map(c=>c.id),['CONFLICT-001']);
+assert(!decisionsFor('analysis',['request']).includes('Binding conflict decisions'),'specialists never get the decisions');
+// Many long decisions: every id and every decision is in the section (the plan
+// gate demands each id), each shortened with a marker, never dropped whole.
+for(const n of [9,30]){
+ const long=Array.from({length:n},(_,i)=>({id:`CONFLICT-${String(i+1).padStart(3,'0')}`,topic:'t'.repeat(150),findings:[`SEC-${i}`,`ARCH-${i}`],status:'resolved',resolution:{decision:`DECISION-${i+1}-START `+'d'.repeat(900),rationale:'r'.repeat(400),owner:'human',resolvedAt:'2026-11-04T00:00:00Z'}}));
+ fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:long}));
+ const sec=conflictDecisions(run,'plan');
+ for(const c of long){assert(sec.includes(`### ${c.id} ·`),`${n}: ${c.id} header`);assert(sec.includes(`DECISION-${c.id.slice(-3).replace(/^0+/,'')}-START`),`${n}: ${c.id} decision`);}
+ if(n===30) assert.match(sec,/… \(truncated; full text in 05-analysis\/conflicts\.json\)/);
+}
+// Two decided pairs under one id (a pre-1.9.35 file): both decisions bind.
+fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:[
+ {id:'CONFLICT-001',topic:'storage',findings:['SEC-1','ARCH-2'],status:'resolved',resolution:{decision:'SECURE STORAGE',rationale:'r',owner:'human'}},
+ {id:'CONFLICT-001',topic:'caching',findings:['SEC-1','ARCH-3'],status:'resolved',resolution:{decision:'CACHE ONE HOUR',rationale:'r',owner:'human'}}]}));
+assert.strictEqual(resolvedConflicts(run).length,2);for(const d of ['SECURE STORAGE','CACHE ONE HOUR']) assert(conflictDecisions(run,'plan').includes(d),d);
+fs.unlinkSync(path.join(run,'05-analysis','conflicts.json'));
+assert.strictEqual(conflictDecisions(run,'plan'),'','a run with no conflicts gets no section');
+const {roleContract}=require('./subagent-contracts');
+for(const name of ['orchestration','implementation']) assert(roleContract(name).inputs.includes('conflict_decisions'),name);
+
+// The post-fix re-run's result reaches every role that reads build_test, and
+// its rejected output never shows up as build-test's own.
+fs.writeFileSync(path.join(run,'08-build-test.md'),'FIRST BUILD GREEN');fs.writeFileSync(path.join(run,'10-post-fix-build-test.md'),'POST FIX BUILD RED');
+const bt=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['build_test']},excludeArtifact:null,roleName:'code-review',stageId:'verification'});
+assert(bt.includes('FIRST BUILD GREEN')&&bt.includes('POST FIX BUILD RED'));
+fs.writeFileSync(path.join(run,'state.json'),JSON.stringify({id:'TEST',phases:{'build-test':{status:'pass'},'post-fix-build-test':{status:'fail',note:'red'}},roles:{}}));
+fs.writeFileSync(path.join(run,'engine','post-fix-build-test-qa-execute.rejected'),'POST FIX REJECTED');
+const fb=failureFeedback(run,'verification','orchestration').split('\n').filter(l=>l.includes('.rejected'));
+assert(fb.every(l=>!l.startsWith('- build-test-qa-execute.rejected')||!l.includes('post-fix')),'build-test does not claim the re-run output');
+assert.strictEqual(fb.filter(l=>l.startsWith('- post-fix-build-test-qa-execute.rejected')).length,1,'listed once, under its own stage');
 
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');

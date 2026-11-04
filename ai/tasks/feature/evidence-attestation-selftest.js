@@ -140,6 +140,24 @@ try {
   fs.utimesSync(sessions, old, old);
   assert.throws(() => loadSessions(sessions, 'ATTEMPT-1', ['android'], startedMs), /not created\/updated by this attempt/);
 
+  // gitSha and workspaceFingerprint take another root (the engine's run
+  // worktree), and agree with the default root when the environment points there.
+  const { spawnSync } = require('child_process');
+  const repo = fs.mkdtempSync(path.join(require('os').tmpdir(), 'attestation-root-'));
+  try {
+    spawnSync('git', ['init', '-q', repo]);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+    spawnSync('git', ['add', '-A'], { cwd: repo });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: repo });
+    const head = String(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout).trim();
+    assert.strictEqual(gitSha(repo), head);
+    const clean = workspaceFingerprint(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+    assert.notStrictEqual(workspaceFingerprint(repo), clean, 'a tracked edit changes the fingerprint');
+    const viaEnv = spawnSync(process.execPath, ['-e', `const a = require(${JSON.stringify(require.resolve('./evidence-attestation'))}); console.log(a.gitSha() + ' ' + a.workspaceFingerprint());`], { env: { ...process.env, AI_WORKFLOW_PRODUCT_ROOT: repo }, encoding: 'utf8' });
+    assert.strictEqual(viaEnv.stdout.trim(), `${gitSha(repo)} ${workspaceFingerprint(repo)}`, viaEnv.stderr);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+
   console.log('evidence attestation selftest OK — exact Android/iOS builds, sessions, screenshots, manifest, commit, workspace and stale evidence covered');
 } finally {
   fs.rmSync(run, { recursive: true, force: true });

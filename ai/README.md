@@ -684,6 +684,9 @@ the orchestrator saves their reports verbatim.
 `04-inspection.md` (incl. which specialists and why), `05-analysis/<agent>.md`,
 `06-plan.md`, `plan.approved`, `07-implementation.md`, `08-build-test.md`,
 `09-reviews/<agent>.md`, `10-fixes.md` (each finding valid/rejected + reason),
+`10-post-fix-build-test.md` (engine runs: the `post-fix-build-test` stage runs
+qa-execute again when fixes changed the tree Build + Tests passed on, and is
+skipped otherwise; `state.testedWorkspace` records that tree),
 `11-verification.md` (every AC and D with evidence), `12-pull-request.md`
 (the pull request title and body, from the engine's `pull-request` stage),
 `state.json` (resume; `pullRequest` holds the opened PR, `notifications.sent`
@@ -723,7 +726,12 @@ when the run completes and when `agentic pr` opens a PR. Each event is shown onc
 comes from `needsYou` in `ai/workflow/progress.js`, which the dashboard banner,
 `runs.js status` and `agentic runs` use too. `agentic progress` marks such runs
 `⚠` (and `●` while an engine runs), rings its bell, and starts a background
-`resume` (`R`) or `retry` + resume (`T`); approval stays a command. A failure
+`resume` (`R`), `retry` + resume (`T`) or, after a confirmation, approve +
+resume (`A`; `P` opens the plan), through `ai/workflow/engine-launch.js`, the
+launcher `agentic approve` uses too. Every needs-you ends with a `Commands:`
+block (`recoveryCommands` in progress.js: retry/resume/approve/select/resolve,
+status, doctor, the log and the stopped stage's artifact), and the approval
+gate shows a plan digest (counts, the head of the summary, the file). A failure
 whose normalised reason matches the previous one sets `repeatedFailure: n`
 (`ai/workflow/repeated-failure.js`) and is reported as "Same failure as last time
 — this needs a fix outside <stage>". `resume` leaves a stage the retry policy

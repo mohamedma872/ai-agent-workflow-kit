@@ -91,6 +91,33 @@
           }
         }
       }
+    },
+    "conflictDecisions": {
+      "type": "array",
+      "description": "One entry per conflict listed under 'Binding conflict decisions': how the plan applies the human decision and in which steps. Omit when that section is absent.",
+      "items": {
+        "type": "object",
+        "required": [
+          "conflictId",
+          "applied"
+        ],
+        "properties": {
+          "conflictId": {
+            "type": "string",
+            "pattern": "^CONFLICT-\\d+$"
+          },
+          "applied": {
+            "type": "string",
+            "minLength": 3
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   },
   "additionalProperties": true

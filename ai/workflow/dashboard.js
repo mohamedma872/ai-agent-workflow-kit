@@ -11,21 +11,22 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawn, spawnSync } = require('child_process');
-const { PHASES, ICONS, buildSummary, demoState, pullRequestLine, completeKey, activityText } = require('./progress');
+const { PHASES, ICONS, buildSummary, demoState, pullRequestLine, completeKey, planDigestLines, activityText } = require('./progress');
 const { activityFile, activityFiles, readActivity, describeRole, splitKey, ago: elapsed, formatEntry } = require('./role-activity');
 const { listRuns, focusIndex, setActive, ago, runsRoot } = require('./runs-index');
-const { liveEngine, describe: describeEngine } = require('./engine-owner');
+const { describe: describeEngine } = require('./engine-owner');
 const { projectRoot } = require('./paths');
 const notify = require('./notify');
+// R / T / A start the engine through the same code path as `agentic approve`.
+const { startEngine, RUNS_CLI } = require('./engine-launch');
+// A complete run is closed with the c key here; the launcher's own wording names runs.js.
+const LAUNCH = { closeHint: 'press c to close it' };
 
 // Every dashboard icon must be an unambiguous two-column emoji: ⏭ and similar
 // text-presentation symbols render one column in some terminals and two in
 // others, which would drift the box borders by a character.
 const DASH_ICONS = { ...ICONS, skipped: '➖' };
 
-const RUNS_CLI = path.join(__dirname, '..', 'tasks', 'feature', 'runs.js');
-const ENGINE = path.join(__dirname, 'engine.js');
-const BACKGROUND_LOG = 'background.log';
 const ABANDON_REASON = 'closed from the dashboard before verification';
 
 const MIN_SPLIT_WIDTH = 78;
@@ -146,16 +147,28 @@ function wrap(text, size, max) {
   if (out.length <= max) return out;
   return [...out.slice(0, max - 1), truncate(out.slice(max - 1).join(' '), size)];
 }
+// The plan digest's summary lines, each wrapped to `size` columns, at most
+// `max` rows in all: the planner writes the summary as one paragraph, which
+// cut to a single row would show a sixth of what the digest holds.
+function planSummaryRows(summary, size, max) {
+  const rows = summary.flatMap(line => wrap(line, size, max));
+  return rows.length <= max ? rows : [...rows.slice(0, max - 1), truncate(rows.slice(max - 1).join(' '), size)];
+}
 
-// The "needs you" banner: what stopped, why (one or two lines) and the exact
-// command. Plan approval stays a deliberate command: it is shown, never a key.
-function bannerLines(run, color, size = 60) {
+// The "needs you" banner: what stopped, why (one or two lines), at the
+// approval gate the plan digest (counts, up to `planLines` of the summary, the
+// file and the keys), the exact command, and the recovery commands unless the
+// terminal is short (`compact`). A run whose engine died mid-stage (stalled)
+// gets the same banner. Nothing approves on highlight.
+function bannerLines(run, color, size = 60, planLines = 6, compact = false) {
   if (!run || !run.inProgress) return [];
   if (run.engine) return [paint(`${RUNNING} engine running · ${describeEngine(run.engine)}`, COLORS.cyan, color), ''];
-  const attention = run.needsYou;
+  const attention = run.needsYou || run.stalled;
   if (!attention) return [];
   const tone = attention.kind === 'waiting' ? COLORS.yellow : COLORS.red;
   const inner = Math.max(10, size - 2);
+  const plan = attention.plan ? planDigestLines(attention.plan) : [];
+  const recovery = !compact && run.recovery ? run.recovery.lines : [];
   // When the agent's own report was rejected, it says why better than the
   // stored note: what it said, the tests, the first failed checks, the report.
   const details = attention.details;
@@ -166,15 +179,22 @@ function bannerLines(run, color, size = 60) {
     ...details.sideEffects.slice(0, 2).map(entry => paint(`  ! ${truncate(`${entry.file} changed by its tools${details.restored.includes(entry.file) ? ' (restored)' : ''}`, inner - 4)}`, COLORS.yellow, color)),
   ] : wrap(attention.reason, inner, 2).map(line => `  ${line}`);
   // The other things the human can do, one line each; the stage's own command
-  // stays last and whole.
+  // stays last and whole, and the Commands: block follows it.
   const others = (attention.options || []).filter(option => option.command !== attention.command)
     .map(option => paint(`  · ${truncate(`${option.label}: ${option.command}`, inner - 4)}`, COLORS.dim, color));
   // Each part wraps to two lines, so a narrow pane still shows the whole command.
   return [
     ...wrap(`${NEEDS_YOU} NEEDS YOU · ${attention.headline}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, color ? COLORS.bold + tone : '', color)),
     ...why,
+    ...(plan.length ? [
+      ...wrap(plan[0], inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
+      ...planSummaryRows(attention.plan.summary, inner - 4, planLines).map(line => `  │ ${line}`),
+      ...wrap(`  Full plan: ${attention.plan.path} · P opens it · A approves`, inner, 2).map(line => `  ${line}`),
+    ] : []),
     ...others,
     ...wrap(`→ ${attention.command}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
+    // A line that fits keeps its column alignment; a longer one wraps to two.
+    ...recovery.flatMap((line, i) => (width(line) <= inner - 2 ? [line] : wrap(line, inner - 2, 2)).map((part, j) => paint(`  ${j ? '  ' : ''}${part}`, i === 0 ? COLORS.dim : '', color))),
     '',
   ];
 }
@@ -190,7 +210,8 @@ function detailLines(run, rows, color, size = 60) {
     // The number comes before the URL, so a narrow pane clips the URL, not the number.
     ...(pullRequestLine(run) ? [paint(pullRequestLine(run), run.pullRequest ? COLORS.cyan : COLORS.dim, color)] : []),
     '',
-    ...bannerLines(run, color, size),
+    // A short terminal keeps room for the stages: fewer summary lines, no recovery block.
+    ...bannerLines(run, color, size, Math.max(2, Math.min(6, rows - 22)), rows < 24),
   ];
   const foot = [
     '',
@@ -338,12 +359,12 @@ function renderFrame(view) {
   const fit = text => truncate(safe(text), cols - 1);
   const details = view.details ? 'd stages' : 'd details';
   const keys = [
-    `↑↓ select · enter set active · ${details} · R resume · T retry · c close · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`,
-    `↑↓ · ⏎ active · ${details} · R resume · T retry · c close · a ${view.all ? 'in progress' : 'all'} · r refresh · q quit`,
-    `↑↓ · ${details} · R resume · T retry · c close · q quit`,
-  ].find(text => width(text) <= cols - 1) || `${details} · R resume · T retry · q quit`;
+    `↑↓ select · enter set active · ${details} · R resume · T retry · A approve · P plan · c close · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`,
+    `↑↓ · ⏎ active · ${details} · R resume · T retry · A approve · P plan · c close · a ${view.all ? 'in progress' : 'all'} · r refresh · q quit`,
+    `↑↓ · ${details} · R resume · T retry · A approve · P plan · c close · q quit`,
+  ].find(text => width(text) <= cols - 1) || `${details} · R resume · T retry · A approve · P plan · q quit`;
   const hint = view.confirm
-    ? paint(fit(confirmPrompt(run)), isVerified(run) ? COLORS.yellow : COLORS.red, color)
+    ? paint(fit(confirmPrompt(run, view.confirm)), view.confirm === 'approve' || isVerified(run) ? COLORS.yellow : COLORS.red, color)
     : view.notice
       ? paint(fit(view.notice), view.notice.startsWith('✗') ? COLORS.red : view.notice.startsWith(NEEDS_YOU) ? COLORS.yellow : COLORS.green, color)
       : paint(fit(keys), COLORS.dim, color);
@@ -371,7 +392,9 @@ function closeCommand(run) {
   };
 }
 
-function confirmPrompt(run) {
+// `kind` is what the prompt confirms: 'close' or 'approve'.
+function confirmPrompt(run, kind = 'close') {
+  if (kind === 'approve') return run ? `Approve ${run.id}? The plan in ${run.needsYou?.plan?.path || '06-plan.md'} becomes binding and the engine resumes in the background.  y = confirm · any other key = cancel` : 'Nothing to approve.';
   if (!run) return 'Nothing to close.';
   const verified = isVerified(run);
   return verified
@@ -398,53 +421,24 @@ function closeRun(run) {
 }
 
 // ---------------------------------------------------------------------------
-// Resume / retry in the background (R / T)
+// Opening the plan (P)
 
-// Starts `engine.js resume <id>` detached, with its output in the run's
-// engine/background.log, after `runs.js retry <id>` for T. Refuses while an
-// engine for the run is alive. Every dependency can be replaced for the selftest.
-function startEngine(run, mode, deps = {}) {
-  const {
-    spawnFn = spawn,
-    spawnSyncFn = spawnSync,
-    live = liveEngine,
-    engine = ENGINE,
-    runsCli = RUNS_CLI,
-    env = process.env,
-    cwd = projectRoot(),
-  } = deps;
-  const verb = mode === 'retry' ? 'retry' : 'resume';
-  if (!run || !run.dir) return { ok: false, message: `✗ nothing to ${verb}` };
-  if (!run.inProgress) return { ok: false, message: `✗ ${run.id} is closed; nothing to ${verb}` };
-  const owner = live(run.dir);
-  if (owner) return { ok: false, message: `✗ ${run.id} is already running (${describeEngine(owner)}); not starting a second engine` };
-  // A plain resume of a stopped stage gets nowhere (the engine leaves a stage
-  // whose attempts are spent as it is) and a gate returns at once: say so here
-  // instead of starting an engine that changes nothing.
-  const attention = mode === 'retry' ? null : run.needsYou;
-  if (attention?.kind === 'waiting') return { ok: false, message: `✗ ${run.id} waits for you — run: ${attention.command}` };
-  if ((attention?.kind === 'fail' || attention?.kind === 'blocked') && attention.stage !== 'pull-request') {
-    return { ok: false, message: `✗ ${run.id}: ${attention.label} needs a retry first — press T (or run: ${attention.command})` };
-  }
-  if (mode === 'retry') {
-    const reset = spawnSyncFn(process.execPath, [runsCli, 'retry', run.id], { encoding: 'utf8', timeout: 20000, env, cwd });
-    if (reset.error || reset.status !== 0) {
-      const why = `${reset.stdout || ''}${reset.stderr || ''}`.trim().split(/\r?\n/).filter(Boolean).pop() || reset.error?.message || 'unknown error';
-      return { ok: false, message: `✗ ${run.id}: ${why.replace(/^✗\s*/, '')}` };
-    }
-  }
-  const log = path.join(run.dir, 'engine', BACKGROUND_LOG);
-  fs.mkdirSync(path.dirname(log), { recursive: true });
-  fs.appendFileSync(log, `\n=== ${new Date().toISOString()} ${verb} started from agentic progress ===\n`);
-  const fd = fs.openSync(log, 'a');
-  let child;
-  try { child = spawnFn(process.execPath, [engine, 'resume', run.id], { cwd, env, detached: true, shell: false, stdio: ['ignore', fd, fd] }); }
-  catch (error) { return { ok: false, message: `✗ could not start the engine for ${run.id}: ${error.message}` }; }
-  finally { fs.closeSync(fd); }
-  child.on?.('error', () => { /* reported through the log and the run state */ });
-  child.unref?.();
-  const shown = path.relative(cwd, log);
-  return { ok: true, pid: child.pid, log, message: `▸ ${verb === 'retry' ? 'retrying' : 'resuming'} ${run.id}… engine pid ${child.pid ?? '?'} · log ${shown && !shown.startsWith('..') ? shown : log}` };
+// Shows the highlighted run's 06-plan.md in $PAGER (default less), with the
+// dashboard suspended meanwhile: `suspend` leaves the alternate screen and raw
+// mode, `resume` takes them back. $PAGER is split on whitespace and spawned
+// without a shell; when it cannot run, the path is shown instead.
+function openPlan(run, deps = {}) {
+  const { spawnSyncFn = spawnSync, env = process.env, suspend = () => {}, resume = () => {} } = deps;
+  if (!run) return { ok: false, message: '✗ no run selected' };
+  const file = run.needsYou?.plan?.file || (run.dir ? path.join(run.dir, '06-plan.md') : '');
+  if (!file || !fs.existsSync(file)) return { ok: false, message: `✗ ${run.id}: no plan yet` };
+  const [bin, ...pagerArgs] = String(env.PAGER || 'less').trim().split(/\s+/).filter(Boolean);
+  suspend();
+  let result;
+  try { result = spawnSyncFn(bin || 'less', [...pagerArgs, file], { stdio: 'inherit', env, shell: false }); }
+  finally { resume(); }
+  if (!result || result.error || result.status !== 0) return { ok: false, message: `plan: ${file}` };
+  return { ok: true, message: `plan: ${file}` };
 }
 
 // What the bell rings for: a run that newly needs the human (by the same key
@@ -477,16 +471,20 @@ function handleKey(view, key = {}) {
   const count = view.count || 0;
   const move = delta => ({ view: { ...view, index: count ? (view.index + delta + count) % count : 0 }, action: null });
   if (key.ctrl && (name === 'c' || name === 'd')) return { view: { ...view, confirm: false }, action: 'quit' };
-  // While confirming a close, only y goes through; every other key cancels.
+  // While confirming (a close or an approval), only y goes through; every
+  // other key cancels. Nothing writes without this step.
   if (view.confirm) {
     return name === 'y'
-      ? { view: { ...view, confirm: false }, action: 'close-confirm' }
-      : { view: { ...view, confirm: false }, action: 'close-cancel' };
+      ? { view: { ...view, confirm: false }, action: `${view.confirm}-confirm` }
+      : { view: { ...view, confirm: false }, action: `${view.confirm}-cancel` };
   }
-  if (name === 'c') return count ? { view: { ...view, confirm: true }, action: 'close-request' } : { view, action: null };
-  // Shifted: R resumes, T retries then resumes. Plain r stays refresh.
+  if (name === 'c') return count ? { view: { ...view, confirm: 'close' }, action: 'close-request' } : { view, action: null };
+  // Shifted: R resumes, T retries then resumes, A arms the approval prompt, P
+  // opens the plan. Plain r stays refresh and plain a toggles finished runs.
   if ((name === 'r' && key.shift) || key.sequence === 'R') return count ? { view, action: 'resume' } : { view, action: null };
   if ((name === 't' && key.shift) || key.sequence === 'T') return count ? { view, action: 'retry' } : { view, action: null };
+  if ((name === 'a' && key.shift) || key.sequence === 'A') return count ? { view: { ...view, confirm: 'approve' }, action: 'approve-request' } : { view, action: null };
+  if ((name === 'p' && key.shift) || key.sequence === 'P') return count ? { view, action: 'open-plan' } : { view, action: null };
   // d switches the pane between the stages and what each running agent is
   // doing; escape leaves the details before it quits.
   if (name === 'd') return { view: { ...view, details: !view.details }, action: null };
@@ -591,19 +589,28 @@ function run(options = {}) {
     draw();
   };
 
-  out.write('\x1b[?1049h\x1b[?25l');
-  readline.emitKeypressEvents(process.stdin);
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-
-  const timer = setInterval(reload, options.interval || 1000);
-  let noticeTimer = null;
-  const cleanup = () => {
-    clearInterval(timer);
-    if (noticeTimer) clearTimeout(noticeTimer);
+  // The alternate screen, raw keys and the refresh timer: taken on start and
+  // after the pager (P), given back for the pager and on quit.
+  let timer = null;
+  const enter = () => {
+    out.write('\x1b[?1049h\x1b[?25l');
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    timer = setInterval(reload, options.interval || 1000);
+  };
+  const leave = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
     try { process.stdin.setRawMode(false); } catch {}
     process.stdin.pause();
     out.write('\x1b[?25h\x1b[?1049l');
+  };
+  enter();
+  let noticeTimer = null;
+  const cleanup = () => {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    leave();
   };
   const quit = code => { cleanup(); process.exit(code || 0); };
 
@@ -622,6 +629,33 @@ function run(options = {}) {
     if (result.action === 'reload') return reload();
     if (result.action === 'close-request') { view.notice = null; return draw(); }
     if (result.action === 'close-cancel') { flash('close cancelled'); return draw(); }
+    // A arms the prompt only for a run at the gate; y then approves through
+    // runs.js approve and resumes in the background, like R and T.
+    if (result.action === 'approve-request') {
+      const target = runs[view.index];
+      if (!target || target.engine || target.needsYou?.stage !== 'approval') { view.confirm = false; flash(`✗ ${target ? target.id : 'nothing'}: nothing waits for approval`); }
+      else view.notice = null;
+      return draw();
+    }
+    if (result.action === 'approve-cancel') { flash('approve cancelled'); return draw(); }
+    if (result.action === 'approve-confirm') {
+      const target = runs[view.index];
+      if (!target) flash('nothing to approve');
+      else if (options.demo) flash(`demo mode: ${target.id} not approved`);
+      else {
+        flash(`▸ approving ${target.id}…`);
+        draw();
+        flash(startEngine(target, 'approve', LAUNCH).message);
+      }
+      return reload();
+    }
+    if (result.action === 'open-plan') {
+      const target = runs[view.index];
+      if (!target) flash('nothing to open');
+      else if (options.demo) flash('demo mode: plan not opened');
+      else flash(openPlan(target, { suspend: leave, resume: () => { enter(); last = ''; } }).message);
+      return draw();
+    }
     if (result.action === 'resume' || result.action === 'retry') {
       const target = runs[view.index];
       if (!target) flash(`nothing to ${result.action}`);
@@ -630,7 +664,7 @@ function run(options = {}) {
         // "resuming…" right away; the marker follows once the engine claims the run.
         flash(result.action === 'retry' ? `▸ retrying ${target.id}…` : `▸ resuming ${target.id}…`);
         draw();
-        flash(startEngine(target, result.action).message);
+        flash(startEngine(target, result.action, LAUNCH).message);
       }
       return reload();
     }
@@ -680,7 +714,10 @@ function selftest() {
   const lines = frame.split('\n');
   assert(lines.some(l => l.includes('FEAT-002')), 'runs are listed');
   assert(lines.some(l => l.includes('Analysis')), 'the focused run shows stage detail');
-  assert(renderFrame({ runs, index: 0, width: 120, height: 30, color: false }).includes('enter set active'), 'key hints are shown in full when they fit');
+  assert(lines.some(l => l.includes('↑↓ · d details · R resume · T retry · A approve · P plan · c close')), 'key hints are shown (the compact form at 100 columns)');
+  assert(renderFrame({ runs, index: 0, width: 110, height: 30, color: false }).includes('⏎ active · d details · R resume · T retry · A approve · P plan'), 'the medium form at 110 columns');
+  assert(renderFrame({ runs, index: 0, width: 130, height: 30, color: false }).includes('enter set active'), 'the long form on a wide terminal');
+  assert(renderFrame({ runs, index: 0, width: 130, height: 30, color: false }).includes('enter set active'), 'key hints are shown in full when they fit');
   assert(lines.some(l => l.includes('d details')), 'the details key is advertised');
 
   // What each role does, and what a running one is doing now.
@@ -696,14 +733,17 @@ function selftest() {
   assert(tight.includes('↳ Read lib/auth/session_store.dart') && !tight.includes('Threat-model auth'), 'what a running role is doing outlasts its description');
 
   // A rejected report: the banner shows the agent's own summary, tests, failed
-  // checks and tool side effects, then the other options, then the command.
+  // checks and tool side effects, then the other options, then the command,
+  // then (unless compact) the Commands: block.
   const reported = { ...runs[2], needsYou: { ...runs[2].needsYou, kind: 'fail', headline: 'Build + Tests failed', command: 'agentic retry FEAT-011',
     details: { summary: 'All 80 tests pass; pub get rewrote pubspec.lock.', tests: '80 passed, 0 failed', failed: ['flutter analyze — fail: 1 new info lint'], acceptance: ['AC-18: fail: analyzer gate'], sideEffects: [{ file: 'pubspec.lock' }], restored: [] },
     options: [{ label: 'Revert what its tools changed', command: 'git checkout -- pubspec.lock' }, { label: 'Read the full report', command: 'agentic why FEAT-011' }, { label: 'Retry the stage', command: 'agentic retry FEAT-011' }] } };
-  const banner = bannerLines(reported, false, 90);
+  const banner = bannerLines(reported, false, 90, 6, true);
   for (const part of ['All 80 tests pass; pub get rewrote pubspec.lock.', 'Tests: 80 passed', '✗ flutter analyze — fail: 1 new info lint', '! pubspec.lock changed by its tools', '· Read the full report: agentic why FEAT-011']) assert(banner.some(l => l.includes(part)), `the banner shows ${part}`);
   assert.strictEqual(banner.filter(l => l.includes('agentic retry FEAT-011')).length, 1, 'the retry command is shown once, last');
   assert(banner[banner.length - 2].startsWith('→ agentic retry FEAT-011'));
+  const bannerFull = bannerLines(reported, false, 90);
+  assert(bannerFull.findIndex(l => l.startsWith('→ agentic retry FEAT-011')) < bannerFull.findIndex(l => l.includes('Commands:')), 'the Commands: block follows the command');
 
   // d: the details pane, read from the role activity files.
   const toggled = handleKey({ index: 0, count: runs.length }, { name: 'd' });
@@ -784,7 +824,7 @@ function selftest() {
   // Closing asks first: c arms the prompt, y closes, anything else cancels.
   const armed = handleKey(view, { name: 'c' });
   assert.strictEqual(armed.action, 'close-request');
-  assert.strictEqual(armed.view.confirm, true);
+  assert.strictEqual(armed.view.confirm, 'close');
   assert.strictEqual(handleKey(armed.view, { name: 'y' }).action, 'close-confirm');
   assert.strictEqual(handleKey(armed.view, { name: 'y' }).view.confirm, false, 'the prompt clears after confirming');
   for (const key of [{ name: 'n' }, { name: 'escape' }, { name: 'return' }, { name: 'q' }, { name: 'down' }]) {
@@ -807,7 +847,7 @@ function selftest() {
   assert.strictEqual(confirmPrompt(null), 'Nothing to close.');
 
   // The prompt replaces the key hints and still fits the frame.
-  const confirming = renderFrame({ runs, index: 0, width: 100, height: 24, color: false, confirm: true });
+  const confirming = renderFrame({ runs, index: 0, width: 100, height: 24, color: false, confirm: 'close' });
   assert(confirming.includes('y = confirm'), 'the confirmation prompt is shown');
   assert(confirming.includes(runs[0].id));
   assert(!confirming.includes('c close'), 'key hints give way to the prompt');
@@ -894,18 +934,87 @@ function selftest() {
   assert(needs.includes('R resume · T retry'), 'the footer lists the new keys');
   for (const line of needLines.filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100, `banner lines keep the frame width: ${JSON.stringify(line)}`);
   for (const line of renderFrame({ runs, index: 2, width: 60, height: 30, color: false }).split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 60);
+  // The recovery block follows the command on a normal terminal, wrapped
+  // inside the pane; a short terminal leaves it out and keeps the stages.
+  assert.ok(blockedRun.recovery && blockedRun.recovery.lines[0] === 'Commands:');
+  assert(detailText.includes('Commands:'), detailText);
+  assert(detailText.includes(`status ${blockedRun.recovery.items.find(i => i.label === 'status').text}`) || detailText.includes('status  node ai/workflow/progress.js --run FEAT-011'), detailText);
+  for (const height of [12, 16]) {
+    const short = renderFrame({ runs, index: 2, width: 100, height, color: false });
+    assert(!short.includes('Commands:'), `${height} rows: no block`);
+    assert(short.includes('NEEDS YOU'), `${height} rows: the banner stays`);
+  }
+  // A run whose engine died mid-stage: the same (red) banner from `stalled`,
+  // and no ⚠ list marker (the list marks needs-you only).
+  const stalledRun = { ...runs[1], needsYou: null, engine: null, stalled: { kind: 'stalled', stage: 'implementation', label: 'Implementation', headline: 'Implementation is in progress but its engine (pid 999) is gone', reason: 'no engine has claimed FEAT-007 since t; retry resets the stage', command: 'agentic retry FEAT-007', repeated: 0, key: 'FEAT-007|implementation|stalled|t' }, recovery: { items: [{ label: 'retry', text: 'agentic retry FEAT-007' }, { label: 'owner', text: '.agentic-runs/FEAT-007/engine/engine.pid' }], lines: ['Commands:', '  retry  agentic retry FEAT-007', '  owner  .agentic-runs/FEAT-007/engine/engine.pid'], short: [] } };
+  const stalledFrame = renderFrame({ runs: [stalledRun], index: 0, width: 100, height: 34, color: false });
+  const stalledText = stalledFrame.split('\n').filter(l => l.startsWith('│')).map(l => l.split('│')[2].trim()).filter(Boolean).join(' ');
+  assert(stalledText.includes('⚠ NEEDS YOU · Implementation is in progress but its engine (pid 999) is gone'), stalledText);
+  assert(stalledFrame.includes('owner  .agentic-runs/FEAT-007/engine/engine.pid'), 'a block line that fits keeps its alignment');
+  assert(!stalledFrame.split('\n').some(l => /⚠ FEAT-007/.test(l)), 'no list marker for a stalled run');
+  assert(renderFrame({ runs: [stalledRun], index: 0, width: 100, height: 34, color: true }).includes(`${COLORS.bold}${COLORS.red}⚠ NEEDS YOU`), 'a stall is painted red');
   // A running engine: its own marker and line, no needs-you banner.
   const running = [{ ...blockedRun, engine: { pid: 4242, kind: 'engine', command: 'resume', startedAt: null, host: os.hostname() } }];
   const runningFrame = renderFrame({ runs: running, index: 0, width: 100, height: 30, color: false });
   assert(runningFrame.includes('● FEAT-011'), 'the list marks a running engine');
   assert(runningFrame.includes('● engine running · engine pid 4242 (resume)'));
   assert(!runningFrame.includes('NEEDS YOU'), 'a running engine is not waiting on anyone');
-  // Approval stays a command in the banner; there is no approve key.
-  const gate = { ...buildSummary('FEAT-G', { status: 'active', roles: {}, phases: { ...Object.fromEntries(PHASES.slice(0, PHASES.indexOf('approval')).map(p => [p, { status: 'pass' }])) } }), inProgress: true, dir: '' };
+  // The approval gate: the banner shows the plan digest, P opens the plan and
+  // A approves, but only after y; no key returns an action that approves
+  // without an armed confirm.
+  const gateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-gate-'));
+  fs.mkdirSync(path.join(gateRoot, 'FEAT-G'), { recursive: true });
+  fs.writeFileSync(path.join(gateRoot, 'FEAT-G', '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: 'FEAT-G', summary: `REVIEW AMENDMENTS (binding). ${'The summary line of the plan, long enough to be cut to the pane. '.repeat(20)}`, steps: Array.from({ length: 9 }, (_, i) => ({ id: `S${i}`, description: 'x' })), acceptanceCriteria: Array.from({ length: 23 }, (_, i) => `AC-${i}`), risks: Array.from({ length: 11 }, () => 'r') }));
+  fs.writeFileSync(path.join(gateRoot, 'FEAT-G', '06-plan.md'), '# Implementation plan\n\nREVIEW AMENDMENTS (binding).\n');
+  const gate = { ...buildSummary('FEAT-G', { status: 'active', roles: {}, phases: { ...Object.fromEntries(PHASES.slice(0, PHASES.indexOf('approval')).map(p => [p, { status: 'pass' }])) } }, { root: gateRoot }), inProgress: true, dir: path.join(gateRoot, 'FEAT-G') };
   const gateFrame = renderFrame({ runs: [gate], index: 0, width: 100, height: 30, color: false });
   assert(gateFrame.includes('⚠ NEEDS YOU · The plan waits for your approval'));
+  // The counts line wraps like the headline; read the pane back as running text.
+  const gateText = gateFrame.split('\n').filter(l => l.startsWith('│')).map(l => l.split('│')[2].trim()).filter(Boolean).join(' ');
+  assert(gateText.includes('Plan: 9 steps · 23 acceptance criteria · 11 risks · REVIEW AMENDMENTS present'), gateText);
+  assert(gateFrame.includes('│ REVIEW AMENDMENTS (binding). The summary line'), gateFrame);
+  // A one-paragraph summary (what the planner writes) wraps to the pane: on a
+  // 120x40 terminal six rows, the last cut short, not one cut row and five
+  // empty ones; the 30-row frame above keeps four.
+  const digestRowsOf = frame => frame.split('\n').map(l => l.split('│')).filter(parts => parts.length === 5).map(parts => parts[3].trim());
+  const tallRows = digestRowsOf(renderFrame({ runs: [gate], index: 0, width: 120, height: 40, color: false }));
+  assert.strictEqual(tallRows.length, 6, JSON.stringify(tallRows));
+  assert.ok(tallRows.every(r => r.length > 30) && tallRows.at(-1).endsWith('…') && tallRows[1].includes('The summary line'), JSON.stringify(tallRows));
+  assert.strictEqual(digestRowsOf(gateFrame).length, 4, gateFrame);
+  assert(gateText.includes('P opens it · A approves'), gateText);
   assert(/→ (agentic approve FEAT-G|node ai\/tasks\/feature\/runs\.js approve FEAT-G)/.test(gateFrame), gateFrame);
-  for (const name of ['a', 'p', 'y']) assert.notStrictEqual(handleKey({ index: 0, count: 1, all: false }, { name, shift: true, sequence: name.toUpperCase() }).action, 'approve');
+  for (const line of gateFrame.split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100, `digest lines keep the frame width: ${JSON.stringify(line)}`);
+  const shortGate = renderFrame({ runs: [gate], index: 0, width: 100, height: 24, color: false });
+  assert.ok(shortGate.split('\n').filter(l => l.includes('│ REVIEW AMENDMENTS')).length <= 1 && shortGate.split('\n').length <= 25, 'a short terminal shows fewer summary lines');
+  assert(shortGate.includes('Request'), 'and still the stages');
+  const armedApprove = handleKey({ index: 0, count: 1, all: false }, { name: 'a', shift: true, sequence: 'A' });
+  assert.deepStrictEqual([armedApprove.action, armedApprove.view.confirm], ['approve-request', 'approve']);
+  assert.deepStrictEqual([handleKey(armedApprove.view, { name: 'y' }).action, handleKey(armedApprove.view, { name: 'y' }).view.confirm], ['approve-confirm', false]);
+  for (const key of [{ name: 'n' }, { name: 'escape' }, { name: 'return' }, { name: 'a', shift: true, sequence: 'A' }, { name: 'down' }]) assert.strictEqual(handleKey(armedApprove.view, key).action, 'approve-cancel', `${key.name} must cancel`);
+  assert.strictEqual(handleKey(armedApprove.view, { name: 'c', ctrl: true }).action, 'quit');
+  assert.deepStrictEqual([handleKey(view, { name: 'a' }).action, handleKey(view, { name: 'a' }).view.all], ['reload', true], 'plain a still toggles finished runs');
+  assert.strictEqual(handleKey(view, { name: 'p', shift: true, sequence: 'P' }).action, 'open-plan');
+  assert.strictEqual(handleKey(view, { name: 'p', sequence: 'p' }).action, null);
+  assert.strictEqual(handleKey({ index: 0, count: 0, all: false }, { name: 'a', shift: true, sequence: 'A' }).action, null, 'nothing to approve with no runs');
+  for (const key of [{ name: 'a', shift: true, sequence: 'A' }, { name: 'p', shift: true, sequence: 'P' }, { name: 'y' }, { name: 'return' }, { name: 'r', shift: true, sequence: 'R' }]) assert.ok(!/^approve-confirm$/.test(handleKey(view, key).action || ''), `${key.sequence || key.name} must not approve without an armed confirm`);
+  assert.match(confirmPrompt(gate, 'approve'), /^Approve FEAT-G\? The plan in .*06-plan\.md becomes binding.*y = confirm/);
+  const approving = renderFrame({ runs: [gate], index: 0, width: 100, height: 30, color: false, confirm: 'approve' });
+  assert(approving.includes('Approve FEAT-G?') && !approving.includes('A approve · P plan'), 'the approve prompt replaces the key hints');
+  for (const cols of [100, 80]) {
+    const footer = renderFrame({ runs: [gate], index: 0, width: cols, height: 30, color: false });
+    assert(footer.includes('R resume · T retry') && footer.includes('A approve · P plan'), `${cols} columns: ${footer.split('\n').at(-1)}`);
+  }
+  // P: the plan in $PAGER (split on whitespace, no shell) with the dashboard
+  // suspended meanwhile; a pager that cannot run leaves the path on screen.
+  const pagerCalls = [];
+  const order = [];
+  const opened = openPlan(gate, { spawnSyncFn: (bin, args, opts) => { pagerCalls.push({ bin, args, opts }); order.push('pager'); return { status: 0 }; }, env: { PAGER: 'less -R' }, suspend: () => order.push('suspend'), resume: () => order.push('resume') });
+  assert.strictEqual(opened.ok, true);
+  assert.deepStrictEqual([pagerCalls[0].bin, pagerCalls[0].args, pagerCalls[0].opts.stdio, pagerCalls[0].opts.shell], ['less', ['-R', path.join(gateRoot, 'FEAT-G', '06-plan.md')], 'inherit', false]);
+  assert.deepStrictEqual(order, ['suspend', 'pager', 'resume']);
+  assert.deepStrictEqual(openPlan(gate, { spawnSyncFn: () => ({ error: new Error('spawn less ENOENT') }), env: {} }), { ok: false, message: `plan: ${path.join(gateRoot, 'FEAT-G', '06-plan.md')}` });
+  assert.match(openPlan({ ...runs[0], dir: path.join(gateRoot, 'nowhere'), needsYou: null }, { spawnSyncFn: () => ({ status: 0 }) }).message, /no plan yet/);
+  fs.rmSync(gateRoot, { recursive: true, force: true });
 
   // A long run id is cut, never the marker before it.
   const longId = 'MAVS-2738-master-refactor';
@@ -935,7 +1044,7 @@ function selftest() {
   for (const cols of [80, 60, 40]) {
     for (const all of [false, true]) {
       for (const notice of notices) {
-        for (const confirm of [false, true]) {
+        for (const confirm of [false, 'close', 'approve']) {
           const fitted = renderFrame({ runs, index: 2, width: cols, height: 24, color: false, all, notice, confirm });
           for (const line of fitted.split('\n')) assert.ok(width(line) <= cols, `${cols} columns: ${width(line)} ${JSON.stringify(line)}`);
         }
@@ -970,6 +1079,14 @@ function selftest() {
   const again = [{ ...finished[0], completedAt: 'c2', pullRequest: null }];
   const rungAgain = newAttention(seenKeys, again);
   assert.deepStrictEqual(rungAgain.map(e => [e.id, e.key]), [['FEAT-007', notify.completeEvent('FEAT-007', { phases: { 'pull-request': { status: 'skipped', updatedAt: 'c2' } } }).key]]);
+  // Open conflicts: the same set rings once however often it refreshes; a
+  // changed set (one decided, or a pair renumbered) rings again.
+  const disputed = (headline, key) => [{ ...runs[1], current: 'Waiting for conflict decisions', engine: null, needsYou: { kind: 'waiting', stage: 'plan', label: 'Implementation Plan', headline, command: 'agentic conflicts FEAT-007', conflicts: ['CONFLICT-001'], key } }];
+  assert.strictEqual(newAttention(seenKeys, disputed('2 conflicts need your decision', 'FEAT-007|plan|waiting|CONFLICT-001=A+B,CONFLICT-002=C+D')).length, 1);
+  assert.deepStrictEqual(newAttention(seenKeys, disputed('2 conflicts need your decision', 'FEAT-007|plan|waiting|CONFLICT-001=A+B,CONFLICT-002=C+D')), [], 'the same conflicts ring once');
+  const fewer = newAttention(seenKeys, disputed('1 conflict needs your decision', 'FEAT-007|plan|waiting|CONFLICT-002=C+D'));
+  assert.strictEqual(fewer.length, 1);
+  assert.ok(fewer[0].message.includes('needs you — 1 conflict needs your decision → agentic conflicts FEAT-007'), fewer[0].message);
 
   // startEngine: refuses while an engine is alive; otherwise starts a detached
   // engine with no shell, its output in the run's engine/background.log.
@@ -985,11 +1102,19 @@ function selftest() {
     assert.match(refused.message, /^✗ FEAT-R is already running \(engine pid 777 \(resume\)\); not starting a second engine$/);
     assert.strictEqual(calls.length, 0, 'nothing started while an engine is alive');
     assert.match(startEngine({ ...target, inProgress: false }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, /is closed/);
+    // R on a complete run (verified, pull request skipped) starts nothing; T still asks runs.js.
+    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null, pullRequestHint: 'agentic pr FEAT-R' }, 'resume', { spawnFn: fakeSpawn, live: () => null, ...LAUNCH }), { ok: false, message: '✗ FEAT-R is complete — press c to close it, or open its pull request: agentic pr FEAT-R' });
+    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null, ...LAUNCH }).message, '✗ FEAT-R is complete — press c to close it');
+    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null, env: {} }).message, '✗ FEAT-R is complete — close it with: node ai/tasks/feature/runs.js close FEAT-R', 'only the dashboard talks of its c key');
+    assert.strictEqual(calls.length, 0);
+    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'retry', { spawnFn: fakeSpawn, live: () => null, spawnSyncFn: () => ({ status: 1, stdout: '', stderr: '✗ nothing to retry — FEAT-R is complete\n' }) }), { ok: false, message: '✗ FEAT-R: nothing to retry — FEAT-R is complete' });
     // R on a stopped stage or a waiting gate starts nothing and says what to do.
     const stuck = { ...target, needsYou: { kind: 'fail', stage: 'build-test', label: 'Build + Tests', command: 'agentic retry FEAT-R' } };
     assert.deepStrictEqual(startEngine(stuck, 'resume', { spawnFn: fakeSpawn, live: () => null, cwd: startRoot }), { ok: false, message: '✗ FEAT-R: Build + Tests needs a retry first — press T (or run: agentic retry FEAT-R)' });
     assert.deepStrictEqual(startEngine({ ...target, needsYou: { ...stuck.needsYou, kind: 'blocked', stage: 'verification', label: 'Final Verification' } }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, '✗ FEAT-R: Final Verification needs a retry first — press T (or run: agentic retry FEAT-R)');
     assert.deepStrictEqual(startEngine({ ...target, needsYou: { kind: 'waiting', stage: 'approval', label: 'Human Approval', command: 'agentic approve FEAT-R' } }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R waits for you — run: agentic approve FEAT-R' });
+    // Open conflicts: R names the decision and the command that lists them.
+    assert.deepStrictEqual(startEngine({ ...target, needsYou: { kind: 'waiting', stage: 'plan', label: 'Implementation Plan', headline: '2 conflicts need your decision', command: 'agentic conflicts FEAT-R', conflicts: ['CONFLICT-001', 'CONFLICT-002'] } }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R: 2 conflicts need your decision — run: agentic conflicts FEAT-R' });
     assert.strictEqual(calls.length, 0, 'nothing started for either');
     // A blocked pull-request stage is continued by a resume; T still retries a failed stage.
     const prResume = startEngine({ ...target, needsYou: { kind: 'blocked', stage: 'pull-request', label: 'Pull Request', command: 'agentic resume FEAT-R' } }, 'resume', { spawnFn: fakeSpawn, live: () => null, cwd: startRoot });
@@ -1014,21 +1139,14 @@ function selftest() {
     const retried = startEngine(target, 'retry', { spawnFn: fakeSpawn, live: () => null, spawnSyncFn: () => ({ status: 0, stdout: 'FEAT-R: retried build-test\n', stderr: '' }), cwd: startRoot });
     assert.match(retried.message, /^▸ retrying FEAT-R… engine pid 31337/);
     assert.strictEqual(calls.length, 2);
-
-    // For real: a stand-in engine runs detached and writes to the log; a live
-    // engine.pid (this process) makes the default liveness check refuse.
-    const stubEngine = path.join(startRoot, 'stub-engine.js');
-    fs.writeFileSync(stubEngine, "require('fs').writeFileSync(process.argv[3] + '.ran', process.argv.slice(2).join(' ')); console.log('stub engine output');\n");
-    const real = startEngine({ ...target, id: path.join(startRoot, 'marker') }, 'resume', { engine: stubEngine, cwd: startRoot, live: () => null });
-    assert.strictEqual(real.ok, true, real.message);
-    for (const until = Date.now() + 5000; !fs.existsSync(path.join(startRoot, 'marker.ran')) && Date.now() < until;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    assert.strictEqual(fs.readFileSync(path.join(startRoot, 'marker.ran'), 'utf8'), `resume ${path.join(startRoot, 'marker')}`, 'the stand-in engine ran with the resume arguments');
-    for (const until = Date.now() + 5000; !/stub engine output/.test(fs.readFileSync(real.log, 'utf8')) && Date.now() < until;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    assert.match(fs.readFileSync(real.log, 'utf8'), /stub engine output/, 'its output lands in the log');
-    fs.writeFileSync(path.join(runDir, 'engine', 'engine.pid'), JSON.stringify({ pid: process.pid, host: os.hostname(), command: 'resume', startedAt: new Date().toISOString() }));
-    const alive = startEngine(target, 'resume', { engine: stubEngine, cwd: startRoot });
-    assert.strictEqual(alive.ok, false);
-    assert.match(alive.message, new RegExp(`already running \\(engine pid ${process.pid} \\(resume\\)`));
+    // A: runs.js approve first, then the resume; a run not at the gate is refused.
+    const approved = startEngine({ ...target, needsYou: { kind: 'waiting', stage: 'approval', label: 'Human Approval', command: 'agentic approve FEAT-R' } }, 'approve', { spawnFn: fakeSpawn, live: () => null, spawnSyncFn: (file, args) => { syncCalls.push(args); return { status: 0, stdout: 'FEAT-R: plan approved\n', stderr: '' }; }, cwd: startRoot });
+    assert.match(approved.message, /^▸ approved FEAT-R · resuming… engine pid 31337/);
+    assert.deepStrictEqual(syncCalls.at(-1), [RUNS_CLI, 'approve', 'FEAT-R']);
+    assert.deepStrictEqual(startEngine(stuck, 'approve', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R: nothing waits for approval' });
+    assert.strictEqual(calls.length, 3);
+    // The real launch (a stand-in engine, a live engine.pid) is engine-launch.js' own selftest.
+    require('./engine-launch').selftest();
   } finally { fs.rmSync(startRoot, { recursive: true, force: true }); }
 
   console.log('dashboard selftest OK');
@@ -1056,4 +1174,4 @@ if (require.main === module) {
   else run(parseArgs(process.argv.slice(2)));
 }
 
-module.exports = { width, pad, truncate, safe, bar, listLines, bannerLines, detailLines, activityLines, renderFrame, handleKey, isVerified, closeCommand, confirmPrompt, closeRun, startEngine, newAttention, demoRuns, run, parseArgs };
+module.exports = { width, pad, truncate, safe, bar, listLines, bannerLines, detailLines, activityLines, renderFrame, handleKey, isVerified, closeCommand, confirmPrompt, closeRun, startEngine, openPlan, newAttention, demoRuns, run, parseArgs };

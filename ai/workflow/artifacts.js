@@ -91,8 +91,16 @@ function attributionProblems(text) {
   return [...new Set(ATTRIBUTION.filter(([re]) => re.test(value)).map(([, label]) => label))];
 }
 
-function semanticProblems(name, data) {
+// options.conflictIds: the resolved conflicts the plan must cite (engine runs only).
+function semanticProblems(name, data, options = {}) {
   const errors = [];
+  // A malformed plan (steps not an array) cannot render; search its JSON so the
+  // schema errors and the missing ids still reach the retry feedback.
+  if (name === 'plan' && options.conflictIds?.length) {
+    let text; try { text = renderMarkdown('plan', data); } catch { text = JSON.stringify(data); }
+    const missing = [...new Set(options.conflictIds)].filter(id => !new RegExp(`\\b${String(id).replace(/[^A-Za-z0-9-]/g, '')}\\b`).test(text));
+    if (missing.length) errors.push(`$.conflictDecisions: missing ${missing.join(', ')} — every resolved conflict must be cited in 06-plan.md`);
+  }
   if (name === 'build-test' && data.status !== 'pass') errors.push('$.status: build/test artifact must be pass before the stage can complete');
   if (name === 'refactor-invariants') {
     const unapproved=(data.intentionalExceptions||[]).filter(x=>x.approved!==true);
@@ -335,7 +343,13 @@ function renderMarkdown(name, data) {
     return lines.join('\n').trim() + '\n';
   }
   if (name === 'plan') {
-    const lines = ['# Implementation plan', '', data.summary, '', '## Steps', ''];
+    const lines = ['# Implementation plan', '', data.summary, ''];
+    if (Array.isArray(data.conflictDecisions) && data.conflictDecisions.length) {
+      lines.push('## Conflict decisions applied', '');
+      for (const c of data.conflictDecisions.filter(Boolean)) lines.push(`- ${c.conflictId}: ${c.applied}${Array.isArray(c.steps) && c.steps.length ? ` (steps: ${c.steps.join(', ')})` : ''}`);
+      lines.push('');
+    }
+    lines.push('## Steps', '');
     for (const step of data.steps || []) {
       lines.push(`${step.id}. ${step.description}`);
       if (Array.isArray(step.files) && step.files.length) lines.push(`   Files: ${step.files.join(', ')}`);
@@ -426,11 +440,14 @@ function validateArtifactData(name, data, expectedRunId, options = {}) {
   const errors = validate(name, data);
   if (expectedRunId && data.runId !== expectedRunId) errors.push(`$.runId: expected ${expectedRunId}, got ${data.runId || '(missing)'}`);
   if (options.semantic !== false) {
-    const semantic = semanticProblems(name, data);
+    const semantic = semanticProblems(name, data, options);
     if (!Array.isArray(semantic)) throw new Error(`${name}: semanticProblems must return an array of error strings, got ${typeof semantic}`);
     errors.push(...semantic);
   }
-  return errors;
+  // The missing conflict ids lead the message, so they survive the 180-character
+  // phase note and the 600-character retry feedback ahead of any schema errors.
+  const lead = e => e.startsWith('$.conflictDecisions: missing ');
+  return [...errors.filter(lead), ...errors.filter(e => !lead(e))];
 }
 
 function validateArtifactFile(name, file, expectedRunId, options = {}) {
@@ -447,10 +464,10 @@ function validateArtifactFile(name, file, expectedRunId, options = {}) {
 // first and the stage still fails, so the gate is unchanged and the findings
 // survive where fixes and a retried implementation can read them.
 const GATE_ONLY = [/^\$\.status: review must be pass/, /^\$\.findings: \d+ unresolved critical\/high finding/];
-function materialize(name, rawText, jsonFile, markdownFile, expectedRunId) {
+function materialize(name, rawText, jsonFile, markdownFile, expectedRunId, options = {}) {
   let data;
   try { data = parseJsonText(rawText); } catch (e) { throw new Error(`${name} output is not valid JSON: ${e.message}`); }
-  const errors = validateArtifactData(name, data, expectedRunId);
+  const errors = validateArtifactData(name, data, expectedRunId, options);
   if (errors.length) {
     const gateOnly = name === 'review' && errors.every(e => GATE_ONLY.some(rx => rx.test(e)));
     if (gateOnly) {
@@ -495,6 +512,30 @@ function selftest() {
   assert.ok(fs.readFileSync(md, 'utf8').includes('Implement safely'));
   assert.deepStrictEqual(validateArtifactFile('plan', json, 'TEST'), []);
   assert.throws(() => materialize('plan', JSON.stringify({ ...plan, runId: 'OTHER' }), json, md, 'TEST'), /runId/);
+  // Resolved conflicts: an engine-run plan must cite each id; zero conflicts never fail.
+  assert.deepStrictEqual(validateArtifactData('plan', plan, 'TEST', { conflictIds: [] }), []);
+  assert.deepStrictEqual(validateArtifactData('plan', plan, 'TEST'), []);
+  const cited = { ...plan, conflictDecisions: [{ conflictId: 'CONFLICT-001', applied: 'secure storage in step 1', steps: ['1'] }] };
+  const missingOne = validateArtifactData('plan', cited, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] });
+  assert.strictEqual(missingOne.length, 1, JSON.stringify(missingOne));
+  assert.match(missingOne[0], /missing CONFLICT-002/);
+  assert.doesNotMatch(missingOne[0], /CONFLICT-001\b/);
+  const gatedMd = path.join(temp, 'gated', '06-plan.md');
+  assert.throws(() => materialize('plan', JSON.stringify(cited), sidecarForMarkdown(gatedMd), gatedMd, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] }), /CONFLICT-002/);
+  assert.ok(!fs.existsSync(gatedMd), 'a plan that drops a decision is never written');
+  const both = { ...plan, conflictDecisions: [...cited.conflictDecisions, { conflictId: 'CONFLICT-002', applied: 'retry twice, then fail' }] };
+  assert.deepStrictEqual(validateArtifactData('plan', both, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] }), []);
+  materialize('plan', JSON.stringify(both), sidecarForMarkdown(gatedMd), gatedMd, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] });
+  const gatedText = fs.readFileSync(gatedMd, 'utf8');
+  for (const part of ['## Conflict decisions applied', 'CONFLICT-002', '(steps: 1)']) assert.ok(gatedText.includes(part), part);
+  assert.match(validateArtifactData('plan', { ...plan, summary: 'see CONFLICT-0010' }, 'TEST', { conflictIds: ['CONFLICT-001'] }).join('\n'), /missing CONFLICT-001/, 'CONFLICT-0010 does not cite CONFLICT-001');
+  // A malformed plan still reports its schema errors and the missing ids, ids first.
+  const malformed = validateArtifactData('plan', { ...plan, steps: { a: 1 } }, 'TEST', { conflictIds: ['CONFLICT-001'] });
+  assert.match(malformed[0], /missing CONFLICT-001/); assert.ok(malformed.some(e => /\$\.steps: expected type array/.test(e)), JSON.stringify(malformed));
+  const noDesc = validateArtifactData('plan', { ...plan, steps: [{ id: '1' }, { id: '2' }, { id: '3' }] }, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] });
+  assert.match(noDesc[0], /^\$\.conflictDecisions: missing CONFLICT-001, CONFLICT-002/); assert.strictEqual(noDesc.length, 4, JSON.stringify(noDesc));
+  const badEntry = validateArtifactData('plan', { ...plan, conflictDecisions: [{ conflictId: 'X' }] }, 'TEST');
+  assert.ok(badEntry.some(e => /conflictId: does not match/.test(e)) && badEntry.some(e => /applied: required/.test(e)), JSON.stringify(badEntry));
   const verification = { schemaVersion: 1, runId: 'TEST', status: 'pass', acceptanceCriteria: [{ id: 'AC-1', status: 'pass', evidence: ['test output'] }], definitionOfDone: [{ item: 'tests', status: 'pass' }] };
   assert.deepStrictEqual(validateArtifactData('verification', verification, 'TEST'), []);
   assert.ok(validateArtifactData('verification', { ...verification, acceptanceCriteria: [{ id: 'AC-1', status: 'blocked', evidence: [] }] }, 'TEST').length > 0);

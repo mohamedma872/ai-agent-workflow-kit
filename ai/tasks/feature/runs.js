@@ -17,7 +17,7 @@ const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../.
 const { withStateLock } = require('../../workflow/state-lock');
 const { recordFailure, clearFailure, carried } = require('../../workflow/repeated-failure');
 const { liveEngine, describe: describeEngine, ownerFile } = require('../../workflow/engine-owner');
-const { needsYou, needsYouLines, printable } = require('../../workflow/progress');
+const { needsYou, needsYouLines, recoveryCommands, stalledAttention, planDigest, planDigestLines, commandFor, disabledPullRequest, pullRequestSkipNote, printable } = require('../../workflow/progress');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -398,13 +398,17 @@ function refuseLiveRole(id, group, role, status) {
   if (pid) throw new Error(`${group}/${role} is still running in the workflow engine (parallel role runner pid ${pid}); wait for the stage to finish or stop that run first, then retry`);
 }
 
+// A stage that repeats a check (post-fix-build-test) and has no entry on a run
+// verified before it existed: read as skipped, the rule progress.js uses.
+function legacyUnrecorded(state, phase) { return Boolean(STAGE_BY_ID.get(phase)?.repeats) && !state.phases?.[phase] && TERMINAL_OK.has(phaseStatus(state, 'verification')); }
+
 // Why `retry` has nothing to do, and what would move the run instead.
 function nothingToRetry(id, state) {
   const cli = process.env.AI_AGENTIC_CLI === '1';
   if (state.status === 'done') return `nothing to retry — ${id} is closed`;
   const attention = needsYou(id, state, { root: RUNS });
   if (attention?.kind === 'waiting') return `nothing to retry; ${attention.headline.charAt(0).toLowerCase()}${attention.headline.slice(1)} — run: ${attention.command}`;
-  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)))) return `nothing to retry — ${id} is complete`;
+  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)) || legacyUnrecorded(state, phase) || (phase === 'pull-request' && disabledPullRequest(state)))) return `nothing to retry — ${id} is complete`;
   return `nothing to retry; run ${cli ? 'agentic resume' : 'node ai/workflow/engine.js resume'} ${id}`;
 }
 
@@ -416,8 +420,11 @@ function render(id, state) {
   // closed after verification but before 1.9.31 has no pull-request phase, and
   // is finished, not waiting on one.
   const legacyClosed = state.status === 'done' && !state.phases?.['pull-request'] && !state.abandoned && phaseStatus(state, 'verification') === 'pass';
+  // An active, verified run with pull_request disabled: the stage reads as
+  // skipped (with the command that opens one), whether or not it is recorded.
+  const prDisabled = disabledPullRequest(state);
   for (const phase of PHASES) {
-    const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : { status: 'pending' });
+    const entry = phase === 'pull-request' && prDisabled ? { status: 'skipped', note: pullRequestSkipNote(id) } : state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : legacyUnrecorded(state, phase) ? { status: 'skipped', note: 'the run was verified before this stage existed' } : { status: 'pending' });
     // Notes quote agent and tool output: printable text only on the terminal.
     console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${printable(entry.status).padEnd(12)}${entry.note ? ` — ${printable(entry.note)}` : ''}`);
     for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${printable(role).padEnd(18)} ${printable(roleState.status).padEnd(12)}${roleState.executor ? ` · ${printable(roleState.executor)}` : ''}${roleState.note ? ` — ${printable(roleState.note)}` : ''}`);
@@ -425,13 +432,16 @@ function render(id, state) {
   const evidence = mobileEvidenceSummary(id, state);
   console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · execution ${evidence.execution?.status || 'missing'} · attestation ${evidence.attestation ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
   if (state.pullRequest?.url) console.log(`  🔗 pull request         #${state.pullRequest.number ?? '?'} ${state.pullRequest.url} (${state.pullRequest.status || 'open'}, ${state.pullRequest.branch} → ${state.pullRequest.base})`);
-  else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
-  const next = state.status === 'done' ? null : PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
+  else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request')) || prDisabled) console.log(`  🔗 pull request         not opened — run: ${commandFor('pr', id)}${state.status === 'done' ? ' --reopen' : ''}`);
+  const next = state.status === 'done' ? null : PHASES.find(phase => !(phase === 'pull-request' && prDisabled) && ((!state.phases?.[phase] && !legacyUnrecorded(state, phase)) || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases?.[phase]?.status)));
   console.log(`\n→ resume at: ${next || 'done'}`);
-  // The same needs-you line as the progress views and the engine's notification.
+  // The same needs-you block as the progress views and the engine's notification.
   const engine = liveEngine(path.join(RUNS, id));
   if (engine) console.log(`● engine running: ${describeEngine(engine)}`);
-  else for (const line of needsYouLines(needsYou(id, state, { root: RUNS }))) console.log(line);
+  else {
+    const attention = needsYou(id, state, { root: RUNS }) || stalledAttention(id, state, RUNS);
+    for (const line of needsYouLines(attention, recoveryCommands(id, attention, { root: RUNS, state }))) console.log(line);
+  }
 }
 
 function requireAdmin() {
@@ -446,6 +456,9 @@ function selftest() {
   assert.strictEqual(PHASES[PHASES.length - 1], 'pull-request');
   assert.deepStrictEqual(dependencyProblems('pull-request', base), ['verification=pending']);
   assert.deepStrictEqual(structuredArtifactSpecForPhase('pull-request'), { schema: 'pull-request', artifact: '12-pull-request.md' });
+  // Build + Tests again after fixes: qa-execute's schema, its own artifact, before the refactor checks.
+  assert.deepStrictEqual(structuredArtifactSpecForPhase('post-fix-build-test'), { schema: 'build-test', artifact: '10-post-fix-build-test.md' });
+  assert.deepStrictEqual(dependencyProblems('architecture-compliance', base), ['post-fix-build-test=pending']);
   assert.throws(() => transitionPhase('TEST', base, 'implementation', 'begin', 'codex', ''), /dependencies/);
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'begin', 'claude', 'test'), 'in_progress');
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'complete', 'claude', 'done'), 'pass');
@@ -651,6 +664,7 @@ function selftest() {
     const shown = cli(['status', id]);
     assert.match(shown.stdout, /⚠ Needs you: Same failure as last time — this needs a fix outside Final Verification/);
     assert.match(shown.stdout, /→ run: node ai\/tasks\/feature\/runs\.js retry COND-TEST && node ai\/workflow\/engine\.js resume COND-TEST/);
+    assert.match(shown.stdout, /\n {2}Commands:\n {4}retry\s+node .*\n {4}retry mobile-evidence\s+node ai\/tasks\/feature\/runs\.js retry COND-TEST mobile-evidence && node ai\/workflow\/engine\.js resume COND-TEST\n {4}status\s+/, shown.stdout);
     const all = cli(['retry', id]);
     assert.strictEqual(all.status, 0, all.stderr);
     assert.match(all.stdout, /retried verification\/mobile-evidence \(conditional\)/);
@@ -664,6 +678,14 @@ function selftest() {
     assert.strictEqual(named.status, 0, named.stderr);
     assert.match(named.stdout, /verification\/mobile-evidence \(conditional\)/);
     assert.notStrictEqual(cli(['retry', id, 'mobile-evidence']).status, 0, 'nothing left to retry by that name');
+    // The engine marks the conditional in_progress for the device run; killed
+    // there, it is reset like an in_progress stage (a live engine is refused above).
+    assert.strictEqual(cli(['conditional', 'verification', 'mobile-evidence', 'in_progress', 'running on device']).status, 0);
+    const abandoned = cli(['retry', id]);
+    assert.strictEqual(abandoned.status, 0, abandoned.stderr);
+    assert.match(abandoned.stdout, /retried verification\/mobile-evidence \(conditional\)/);
+    assert.strictEqual(stateOf().conditionals.verification['mobile-evidence'].status, 'pending', 'a device run its engine abandoned is reset');
+    assert.ok(stateOf().history.some(h => h.kind === 'conditional-role' && h.action === 'retry' && h.from === 'in_progress'));
     // A phase failing twice for the same reason is recorded on the phase.
     for (const p of ['request', 'requirements']) cli(['skip', p, 'claude', 'test']);
     for (let i = 0; i < 2; i++) {
@@ -687,6 +709,112 @@ function selftest() {
     cli(['begin', 'acceptance-criteria', 'claude']);
     cli(['fail', 'acceptance-criteria', 'claude', 'a different problem: the request is ambiguous']);
     assert.strictEqual(stateOf().phases['acceptance-criteria'].repeatedFailure, undefined, 'a new reason is not a repeat');
+  }
+
+  // A rework of fixes also resets the post-fix re-run that passed (the reworked
+  // code is untested); a plain retry of a failed re-run resets it alone.
+  {
+    const id = 'POSTFIX-TEST';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const seed = (status, attempts) => { const st = JSON.parse(fs.readFileSync(file, 'utf8')); for (const p of PHASES.slice(0, PHASES.indexOf('post-fix-build-test'))) st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' }; st.phases['post-fix-build-test'] = { status }; st.executionAttempts = { fixes: { fixes: [{ attempt: 1, ok: true }] }, 'post-fix-build-test': { 'qa-execute': attempts } }; fs.writeFileSync(file, JSON.stringify(st)); };
+    const stateOf = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+    seed('pass', [{ attempt: 1, ok: true }]);
+    const rework = cli(['retry', id, 'fixes']);
+    assert.strictEqual(rework.status, 0, rework.stderr);
+    assert.deepStrictEqual([stateOf().phases.fixes.status, stateOf().phases['post-fix-build-test'].status], ['pending', 'pending']);
+    assert.ok(stateOf().history.some(h => h.action === 'rework-downstream' && h.phase === 'post-fix-build-test' && h.from === 'pass'));
+    seed('fail', [{ attempt: 1, ok: false, reason: 'flutter test: 1 failing' }]);
+    const plain = cli(['retry', id]);
+    assert.strictEqual(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /post-fix-build-test/);
+    assert.deepStrictEqual([stateOf().phases.fixes.status, stateOf().executionAttempts.fixes], ['pass', { fixes: [{ attempt: 1, ok: true }] }], 'fixes and its attempts are untouched');
+    assert.strictEqual(stateOf().phases['post-fix-build-test'].status, 'pending');
+    assert.strictEqual(stateOf().lastFailures['post-fix-build-test']['qa-execute'].reason, 'flutter test: 1 failing');
+  }
+
+  // A run verified before post-fix-build-test existed: status reads it as
+  // skipped (as progress does), resumes past it, and a finished one is complete.
+  {
+    const id = 'LEG-1';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES) if (p !== 'post-fix-build-test') st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    st.phases['pull-request'] = { status: 'fail', note: 'push rejected' };
+    st.evidence = { mobileScreenshots: { requirement: 'not-required', reason: 'selftest' } };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /~ post-fix-build-test\s+skipped\s+— the run was verified before this stage existed/, shown);
+    assert.match(shown, /→ resume at: pull-request/, shown);
+    st.phases['pull-request'] = { status: 'pass' };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const nothing = cli(['retry', id]);
+    assert.match(nothing.stderr, /nothing to retry — LEG-1 is complete/, nothing.stderr);
+  }
+
+  // A run verified with pull_request disabled and no pull-request phase (an
+  // active run from before 1.9.31): the stage reads as skipped with the
+  // command that opens one, nothing is left to resume or retry, and an
+  // `agentic pr` request puts the stage back to work. The project root is
+  // pinned to an empty directory: the derived skip reads the project's
+  // .agentic/config.yaml, and the ambient one may enable the stage.
+  {
+    const id = 'LEG-2';
+    const file = path.join(retryRoot, id, 'state.json');
+    const project = path.join(retryRoot, 'leg-2-project'), enabling = path.join(retryRoot, 'leg-2-enabled');
+    fs.mkdirSync(path.join(enabling, '.agentic'), { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(enabling, '.agentic', 'config.yaml'), 'pull_request:\n  enabled: true\n');
+    const cli = (argv, root = project) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id, AI_WORKFLOW_PROJECT_ROOT: root }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES) if (p !== 'pull-request') st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    st.evidence = { mobileScreenshots: { requirement: 'not-required', reason: 'selftest' } };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const enabled = cli(['status', id], enabling).stdout;
+    assert.match(enabled, /· pull-request\s+pending/, enabled);
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /~ pull-request\s+skipped\s+— pull_request disabled \(open one with: node ai\/workflow\/engine\.js pr LEG-2\)/, shown);
+    assert.match(shown, /🔗 pull request\s+not opened — run: node ai\/workflow\/engine\.js pr LEG-2\n/, shown);
+    assert.match(shown, /→ resume at: done/, shown);
+    assert.ok(!/stored: pending|Needs you/.test(shown), shown);
+    const nothing = cli(['retry', id]);
+    assert.match(nothing.stderr, /nothing to retry — LEG-2 is complete/, nothing.stderr);
+    assert.strictEqual(cli(['pull-request-options', id]).status, 0);
+    const requested = cli(['status', id]).stdout;
+    assert.match(requested, /· pull-request\s+pending/, requested);
+    assert.match(requested, /→ resume at: pull-request/, requested);
+  }
+
+  // The approval gate: `status` shows the plan digest, `approve` prints it
+  // before it approves and ends with the resume command.
+  {
+    const id = 'GATE-1';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = (argv, extra = {}) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, ...extra, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES.slice(0, PHASES.indexOf('approval'))) st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    fs.writeFileSync(file, JSON.stringify(st));
+    fs.writeFileSync(path.join(retryRoot, id, '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: id, summary: 'Add the toggle.\nThen test it.', steps: [{ id: 'S1', description: 'add' }, { id: 'S2', description: 'test' }], acceptanceCriteria: ['AC-1'], risks: ['none'] }));
+    fs.writeFileSync(path.join(retryRoot, id, '06-plan.md'), `# Implementation plan\n\nAdd the toggle.\nThen test it.\n\n## Steps\n\n1. add\n2. test\n\n## Acceptance criteria\n\n- AC-1\n`);
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /⚠ Needs you: The plan waits for your approval\n.*\n {2}Plan: 2 steps · 1 acceptance criteria · 1 risks\n {4}│ Add the toggle\.\n {4}│ Then test it\.\n {4}Full plan: .*06-plan\.md\n {2}→ run: node ai\/tasks\/feature\/runs\.js approve GATE-1 && node ai\/workflow\/engine\.js resume GATE-1/, shown);
+    const approved = cli(['approve', id], { AI_AGENTIC_CLI: '1' });
+    assert.strictEqual(approved.status, 0, approved.stderr);
+    const out = approved.stdout.trim().split('\n');
+    assert.match(out[0], /^Plan: 2 steps · 1 acceptance criteria · 1 risks$/);
+    assert.ok(out.findIndex(l => l.startsWith('Plan:')) < out.findIndex(l => l.includes('plan approved')), approved.stdout);
+    assert.strictEqual(out.at(-1), '→ next: agentic resume GATE-1');
+    assert.ok(fs.existsSync(path.join(retryRoot, id, 'plan.approved')));
+    // When agentic resumes right after, the next step is not announced.
+    const continued = cli(['approve', id], { AI_AGENTIC_CLI: '1', AI_AGENTIC_APPROVE_CONTINUES: '1' });
+    assert.strictEqual(continued.status, 0, continued.stderr);
+    assert.ok(/plan approved/.test(continued.stdout) && !/→ next/.test(continued.stdout), continued.stdout);
+    assert.ok(!/Needs you/.test(cli(['status', id]).stdout), 'approved: nothing waits');
   }
 
   fs.rmSync(retryRoot, { recursive: true, force: true });
@@ -874,13 +1002,15 @@ try {
             retried.push(`${group}/${role}`);
           }
         }
-        // A conditional role (verification's mobile-evidence) blocks before its
-        // stage begins, so the stage reads pending and the loops above and below
-        // never see it. Reset it with the rest, or by its own name.
+        // A conditional role (verification's mobile-evidence) blocks, or runs,
+        // before its stage begins, so the stage reads pending and the loops
+        // above and below never see it. Reset it with the rest, or by its own
+        // name; in_progress is an engine killed during the device run (a live
+        // engine was refused above).
         for (const [phaseId, group] of Object.entries(state.conditionals || {})) {
           for (const [role, entry] of Object.entries(group || {})) {
             if (roles.length && !roles.includes(role)) continue;
-            if (!['fail', 'blocked'].includes(entry?.status)) continue;
+            if (!RETRYABLE.includes(entry?.status)) continue;
             state.conditionals[phaseId][role] = { ...carried(entry), status: 'pending', updatedAt: now(), ...(entry.reason ? { reason: entry.reason } : {}) };
             clearAttempts(phaseId, role);
             record(state, { kind: 'conditional-role', phase: phaseId, role, action: 'retry', from: entry.status, to: 'pending', reason: 'retry requested' });
@@ -918,7 +1048,12 @@ try {
             for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
               if (gates.has(later)) continue;
               const status = phaseStatus(state, later);
-              if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
+              // A stage that repeats an earlier check (post-fix-build-test) runs again
+              // after any rework before it, even if it passed: the reworked code is untested.
+              // A run verified before that stage existed has no entry for it (read as
+              // skipped); create it, or the engine takes the legacy shortcut again.
+              const recheck = STAGE_BY_ID.get(later)?.repeats && (TERMINAL_OK.has(status) || legacyUnrecorded(state, later));
+              if (!['fail', 'blocked', 'in_progress'].includes(status) && !recheck) continue;
               state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
               clearAttempts(later);
               for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {
@@ -1026,6 +1161,9 @@ try {
       if (!fs.existsSync(plan) || fs.statSync(plan).size < 80) throw new Error(`${relativeStatePath(id, '06-plan.md')} is missing or empty — nothing to approve`);
       const planProblem = phaseArtifactProblem(id, 'plan');
       if (planProblem) throw new Error(`cannot approve plan: ${planProblem}`);
+      // What is being approved, before it is: the same digest the views show.
+      const cli = process.env.AI_AGENTIC_CLI === '1';
+      for (const line of planDigestLines(planDigest(id, RUNS, cli))) console.log(line);
       locked(id, () => {
         const state = ensureShape(load(id), id);
         reconcileState(id, state);
@@ -1038,6 +1176,9 @@ try {
         record(state, { kind: 'phase', phase: 'approval', action: 'approve', from, to: 'pass', executor: 'human', reason: 'human plan approval' });
         atomicSave(id, state);
         console.log(`${id}: plan approved — approval → pass; edits outside ai/runs are allowed`);
+        // `agentic approve` resumes on its own right after this and says so;
+        // the next step is printed only when nothing follows.
+        if (process.env.AI_AGENTIC_APPROVE_CONTINUES !== '1') console.log(`→ next: ${commandFor('resume', id, cli)}`);
       });
       break;
     }

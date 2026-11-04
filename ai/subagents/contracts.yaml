@@ -16,7 +16,7 @@ defaults:
 roles:
   orchestration:
     mode: read_only
-    inputs: [run_artifacts, repository_evidence, analyzer_baseline]
+    inputs: [run_artifacts, repository_evidence, conflict_decisions, analyzer_baseline]
     outputs: [stage_artifact]
     tools: [repository_read]
     mcps_optional: [atlassian, context7, github]
@@ -130,19 +130,19 @@ roles:
 
   implementation:
     mode: workspace_write
-    inputs: [approved_plan, acceptance_criteria, definition_of_done]
+    inputs: [approved_plan, acceptance_criteria, definition_of_done, conflict_decisions]
     outputs: [implementation]
     tools: [repository_read, product_write]
     mcps_optional: [context7]
   qa-execute:
     mode: read_only
-    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix, analyzer_baseline]
+    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix, fixes, analyzer_baseline]
     outputs: [build_test]
     tools: [repository_read, test_execute]
     mcps_optional: [playwright, appium]
   code-review:
     mode: read_only
-    inputs: [acceptance_criteria, approved_plan, changed_files, build_test]
+    inputs: [acceptance_criteria, approved_plan, changed_files, build_test, conflict_decisions]
     outputs: [findings]
     tools: [repository_read]
     mcps_optional: [context7, github]
@@ -159,7 +159,7 @@ roles:
     tools: [repository_read]
   fixes:
     mode: workspace_write
-    inputs: [validated_review_findings, approved_plan, changed_files]
+    inputs: [validated_review_findings, approved_plan, changed_files, conflict_decisions]
     outputs: [fixes]
     tools: [repository_read, product_write]
     mcps_optional: [context7]
@@ -195,7 +195,7 @@ roles:
     mcps_required: [context7]
   react-native-review:
     mode: read_only
-    inputs: [acceptance_criteria, approved_plan, changed_files, build_test]
+    inputs: [acceptance_criteria, approved_plan, changed_files, build_test, conflict_decisions]
     outputs: [findings]
     tools: [repository_read]
   android-review:
@@ -231,7 +231,7 @@ roles:
 
   behavior-regression-review:
     mode: read_only
-    inputs: [behavior_baseline, refactor_invariants, approved_plan, changed_files, build_test, validated_review_findings]
+    inputs: [behavior_baseline, refactor_invariants, approved_plan, changed_files, build_test, validated_review_findings, conflict_decisions]
     outputs: [findings]
     tools: [repository_read]
     mcps_optional: [context7, github]
@@ -251,7 +251,7 @@ roles:
 
   behavior-equivalence:
     mode: read_only
-    inputs: [behavior_baseline, refactor_invariants, approved_plan, build_test, validated_review_findings, fixes, changed_files, refactor_verification_matrix]
+    inputs: [behavior_baseline, refactor_invariants, approved_plan, build_test, validated_review_findings, fixes, changed_files, refactor_verification_matrix, conflict_decisions]
     outputs: [behavior_equivalence]
     tools: [repository_read]
     mcps_optional: [context7, github]

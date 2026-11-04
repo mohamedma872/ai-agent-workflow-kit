@@ -10,6 +10,7 @@ const { appiumLaunchPlan, launcherSpecFor, toolchainEnv } = require('../workflow
 
 const RUNTIME_ROOT = path.resolve(__dirname, '..', '..');
 const ENGINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine.js');
+const ENGINE_LAUNCH = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine-launch.js');
 const RUNS = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const PROGRESS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'progress.js');
@@ -407,7 +408,9 @@ Usage:
   agentic guard check|explain      Validate / list the active guard rules, incl. .agentic/guardrails.yaml
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
-  agentic approve <run-id>
+  agentic approve <run-id> [--no-resume|--wait]
+                                   Show the plan digest, approve the plan and resume the engine in the
+                                   background (--wait: in the foreground; --no-resume: approve only)
   agentic retry <run-id> [role...] Reset failed/blocked role(s), conditional roles such as
                                    mobile-evidence, or the stuck phase to pending, and resume
   agentic pr <run-id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]
@@ -415,7 +418,8 @@ Usage:
                                    (works while pull_request is disabled; --dry-run changes nothing;
                                    a closed run needs --reopen; an unknown option is refused)
   agentic progress [--details]     Terminal dashboard for in-progress features
-                                   (⚠ = needs you, ● = engine running; R resume, T retry;
+                                   (⚠ = needs you, ● = engine running; R resume, T retry,
+                                   P open the plan, A approve it after a confirmation;
                                    d = what each running agent is doing)
   agentic why <run-id>             Why the run stopped: the agent's own report (summary, tests,
                                    failed checks, files its tools changed) and what you can do
@@ -514,6 +518,43 @@ function selftest() {
   assert.strictEqual(gitRoot(aliasProject), canonicalPath(realProject));
   fs.rmSync(symlinkRoot, { recursive: true, force: true });
 
+  // `agentic approve` takes --no-resume or --wait after the id, nothing else,
+  // and refuses before anything runs; help lists both.
+  const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { cwd: temp, encoding: 'utf8' });
+  const bogus = cli(['approve', 'FEAT-1', '--bogus']);
+  assert.notStrictEqual(bogus.status, 0);
+  assert.match(bogus.stderr, /approve: unexpected argument --bogus\. Usage: agentic approve <run-id> \[--no-resume\|--wait\]/);
+  assert.match(cli(['approve']).stderr, /approve requires a run id/);
+  assert.match(cli(['help']).stdout, /agentic approve <run-id> \[--no-resume\|--wait\]/);
+  // End to end on a run at the gate: the default approve records the approval
+  // and hands over to the launcher without announcing `agentic resume` as the
+  // next step (the launcher would refuse it as already running); --no-resume
+  // does announce it. A live engine record keeps a real engine from starting.
+  const states = stateRoot(temp);
+  const gated = id => {
+    const started = spawnSync(process.execPath, [RUNS, 'start', id], { env: { ...process.env, AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PROJECT_ROOT: temp }, encoding: 'utf8' });
+    assert.strictEqual(started.status, 0, started.stderr);
+    const file = path.join(states, id, 'state.json');
+    const state = loadJson(file);
+    const { PHASES } = require('../workflow/progress');
+    for (const p of PHASES.slice(0, PHASES.indexOf('approval'))) state.phases[p] = { status: 'pass' };
+    fs.writeFileSync(file, JSON.stringify(state));
+    fs.writeFileSync(path.join(states, id, '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: id, summary: 'Add the toggle.', steps: [{ id: 'S1', description: 'add' }], acceptanceCriteria: ['AC-1'], risks: ['none'] }));
+    fs.writeFileSync(path.join(states, id, '06-plan.md'), '# Implementation plan\n\nAdd the toggle.\n\n## Steps\n\n1. add\n\n## Acceptance criteria\n\n- AC-1\n');
+    fs.mkdirSync(path.join(states, id, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(states, id, 'engine', 'engine.pid'), require('../workflow/engine-owner').recordFor(process.pid, 'resume'));
+  };
+  gated('GATE-E2E');
+  const approved = cli(['approve', 'GATE-E2E']);
+  assert.strictEqual(approved.status, 1, approved.stdout + approved.stderr);
+  assert.match(approved.stdout, /GATE-E2E: plan approved[\s\S]*already running/, approved.stdout);
+  assert.ok(!/→ next/.test(approved.stdout), approved.stdout);
+  assert.ok(fs.existsSync(path.join(states, 'GATE-E2E', 'plan.approved')));
+  gated('GATE-ONLY');
+  const only = cli(['approve', 'GATE-ONLY', '--no-resume']);
+  assert.strictEqual(only.status, 0, only.stderr);
+  assert.strictEqual(only.stdout.trim().split('\n').at(-1), '→ next: agentic resume GATE-ONLY');
+
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('standalone CLI selftest OK');
 }
@@ -572,10 +613,19 @@ function main() {
     if (!args[1]) throw new Error('resume requires a run id');
     return runNode(ENGINE, ['resume', args[1], ...args.slice(2)], project);
   }
+  // Approve, then resume in the background (the dashboard's A key and R use the
+  // same launcher). --wait keeps the engine in the foreground; --no-resume
+  // records the approval only.
   if (command === 'approve') {
-    if (!args[1]) throw new Error('approve requires a run id');
-    runNode(RUNS, ['approve', args[1]], project);
-    return runNode(ENGINE, ['resume', args[1]], project);
+    if (!args[1] || args[1].startsWith('--')) throw new Error('approve requires a run id (see: agentic runs)');
+    const flags = args.slice(2);
+    const unknown = flags.find(flag => !['--no-resume', '--wait'].includes(flag));
+    if (unknown) throw new Error(`approve: unexpected argument ${unknown}. Usage: agentic approve <run-id> [--no-resume|--wait]`);
+    // runs.js announces the resume as the next step only when none follows here.
+    runNode(RUNS, ['approve', args[1]], project, flags.includes('--no-resume') ? {} : { env: { AI_AGENTIC_APPROVE_CONTINUES: '1' } });
+    if (flags.includes('--no-resume')) return;
+    if (flags.includes('--wait')) return runNode(ENGINE, ['resume', args[1]], project);
+    return runNode(ENGINE_LAUNCH, ['resume', args[1]], project);
   }
   if (command === 'retry') {
     if (!args[1]) throw new Error('retry requires a run id (see: agentic runs)');

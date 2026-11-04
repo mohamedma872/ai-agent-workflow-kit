@@ -70,6 +70,8 @@ function evaluateRun(id, state, options = {}) {
     // Opening the pull request is delivery, not verification: a commit is
     // verified whether or not its PR is open yet.
     if (stage === 'pull-request') continue;
+    // A run verified before the post-fix re-run existed never had it.
+    if (stage === 'post-fix-build-test' && !state?.phases?.[stage] && state?.phases?.verification?.status === 'pass') continue;
     if (!TERMINAL_OK.has(status)) problems.push(`${stage}=${status}`);
   }
   if (phases.verification !== 'pass') problems.push(`final verification must be pass (got ${phases.verification || 'pending'})`);
@@ -219,6 +221,11 @@ function selftest() {
   assert.strictEqual(committed.success, true, committed.problems.join('; '));
   const elsewhere = evaluateRun('TEST', delivered, { workflow: prWf, identity: { sha: 'fff000', productRoot: ROOT }, attestation: att });
   assert.ok(elsewhere.problems.some(p => p.includes('gitSha mismatch')), 'another commit still needs its own evidence');
+  // A run verified before the post-fix re-run existed is still verified; one that has the stage needs it done.
+  const fixWf = { version: 1, stages: [{ id: 'request' }, { id: 'post-fix-build-test' }, { id: 'verification' }] };
+  assert.strictEqual(evaluateRun('TEST', base, { workflow: fixWf, identity: { sha: 'abc123', productRoot: ROOT } }).success, true);
+  const unfinished = JSON.parse(JSON.stringify(base)); unfinished.phases['post-fix-build-test'] = { status: 'fail' };
+  assert.ok(evaluateRun('TEST', unfinished, { workflow: fixWf, identity: { sha: 'abc123', productRoot: ROOT } }).problems.includes('post-fix-build-test=fail'));
   assert.strictEqual(parseRepoSlug('git@github.com:owner/repo.git'), 'owner/repo');
   assert.strictEqual(parseRepoSlug('https://github.com/owner/repo.git'), 'owner/repo');
   console.log('github verification selftest OK');

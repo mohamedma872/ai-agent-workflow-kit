@@ -49,8 +49,12 @@ function evidenceState(state) { state.evidence ||= {}; state.evidence.mobileScre
 function phaseStatus(state, phase) { return state.phases?.[phase]?.status || 'pending'; }
 
 function assertReadyForEvidence(state) {
-  const requirements = [['implementation', new Set(['pass'])], ['build-test', new Set(['pass'])], ['reviews', new Set(['pass', 'skipped'])], ['fixes', new Set(['pass', 'skipped'])]];
-  const problems = requirements.filter(([phase, allowed]) => !allowed.has(phaseStatus(state, phase))).map(([phase]) => `${phase}=${phaseStatus(state, phase)}`);
+  const requirements = [['implementation', new Set(['pass'])], ['build-test', new Set(['pass'])], ['reviews', new Set(['pass', 'skipped'])], ['fixes', new Set(['pass', 'skipped'])], ['post-fix-build-test', new Set(['pass', 'skipped'])]];
+  // Only the engine records the post-fix re-run (it always does, pass or skipped,
+  // before verification). No entry means a /feature skill or manual run, or one
+  // verified before the stage existed: not required.
+  const status = phase => (phase === 'post-fix-build-test' && !state.phases?.[phase] ? 'skipped' : phaseStatus(state, phase));
+  const problems = requirements.filter(([phase, allowed]) => !allowed.has(status(phase))).map(([phase]) => `${phase}=${status(phase)}`);
   if (problems.length) throw new Error(`mobile evidence cannot run before the post-fix build is ready: ${problems.join(', ')}`);
 }
 function normalizePlatforms(value) {
@@ -112,7 +116,7 @@ function buildPrompt(id, platforms, attemptId) {
     `- platform: android or ios\n- the actual Appium sessionId\n- deviceId\n- appId (Android package / iOS bundle id)\n- appVersion\n- buildNumber\n- buildArtifact (existing APK/AAB/IPA/.app path for the exact build tested, resolved from ${PRODUCT_ROOT})\n- sessionStartedAt and sessionEndedAt ISO timestamps\n- flavor, scheme, environment when applicable\n\n` +
     `The runtime, not you, computes git/workspace identity from the product worktree, hashes the exact build artifact, manifest, and screenshots, and generates evidence.json after you return. Missing build/session identity BLOCKS verification.\n\n` +
     `Rules:\n1. Create/select an Appium session for each target platform and record its real session id.\n2. Use the final post-fix build from the product worktree and record the exact artifact path used to install/launch it.\n3. Execute the device-relevant acceptance criteria.\n4. Capture fresh screenshots by running the capture command above once per checkpoint, after driving the app there with Appium. Name them NN-checkpoint, e.g. 01-launch.\n5. Never fabricate a session id, build identity, screenshot, or PASS result.\n6. If Appium, the device, or the build is unavailable, return a report whose Verdict section says BLOCKED and explains why. The runtime records it; do not try to write it yourself.\n7. You may build the app under test (flutter build, gradlew, xcodebuild) because device QC needs an installable artifact. Do not edit product source, commit, push, deploy, or change workflow/guard files.\n8. Close/detach Appium sessions when finished and record the end timestamp.\n\n` +
-    `## Acceptance criteria\n${readIfExists(path.join(dir, '02-acceptance-criteria.md'))}\n\n## Definition of Done\n${readIfExists(path.join(dir, '03-definition-of-done.md'))}\n\n## Build/test evidence\n${readIfExists(path.join(dir, '08-build-test.md'))}\n\n## Final fixes\n${readIfExists(path.join(dir, '10-fixes.md'))}\n`;
+    `## Acceptance criteria\n${readIfExists(path.join(dir, '02-acceptance-criteria.md'))}\n\n## Definition of Done\n${readIfExists(path.join(dir, '03-definition-of-done.md'))}\n\n## Build/test evidence\n${readIfExists(path.join(dir, '08-build-test.md'))}\n\n## Final fixes\n${readIfExists(path.join(dir, '10-fixes.md'))}\n\n## Build/test evidence after fixes\n${readIfExists(path.join(dir, '10-post-fix-build-test.md'))}\n`;
 }
 // The mobile-evidence role is read_only, so it cannot write a single byte of
 // its own evidence: the guard denies Write for any role without product_write,
@@ -312,7 +316,11 @@ function selftest() {
   assert.deepStrictEqual(normalizePlatforms('android,ios'), ['android', 'ios']);
   assert.throws(() => normalizePlatforms('windows'), /unsupported/);
   assert.throws(() => assertReadyForEvidence({ phases: {} }), /implementation=pending/);
-  assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'skipped' } } }));
+  assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'skipped' }, 'post-fix-build-test': { status: 'skipped' } } }));
+  assert.throws(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' }, 'post-fix-build-test': { status: 'pending' } } }), /post-fix-build-test=pending/);
+  // A skill-driven run (fixes pass, no post-fix entry, verification pending) is ready.
+  assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' } } }));
+  assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' }, verification: { status: 'pass' } } }), 'a run verified before the re-run existed');
   const prompt = buildPrompt('TEST', ['android'], 'ATTEMPT');
   assert.match(prompt, /You do NOT write any evidence file yourself/);
   assert.match(prompt, /capture TEST --platform/);

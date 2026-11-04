@@ -1286,13 +1286,23 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   assert.strictEqual(stateOf('E2E-OLD').phases['pull-request'], undefined);
   const next = drive(`(engine, wf) => engine.nextEligibleStage(wf, require(${JSON.stringify(path.join(states, 'E2E-OLD', 'state.json'))})).id`);
   assert.strictEqual(next.result, 'pull-request', 'a run verified before 1.9.31 resumes at the new stage');
+  // Before any engine touches it, the views already read the run as complete
+  // (the stage is disabled, so it is derived as skipped) with the hint. The
+  // views read the project's config through the environment, so the fixture
+  // product (no .agentic) is pinned for this process too, not only `env`.
+  const { buildSummary, renderTerminal } = require('./progress');
+  const previousProject = process.env.AI_WORKFLOW_PROJECT_ROOT;
+  process.env.AI_WORKFLOW_PROJECT_ROOT = fx.product;
+  const derived = renderTerminal(buildSummary('E2E-OLD', stateOf('E2E-OLD'), { root: states }));
+  assert.match(derived, /100%/, derived);
+  assert.match(derived, /Current: Done/, derived);
+  assert.match(derived, /Pull request: not opened — run: node ai\/workflow\/engine\.js pr E2E-OLD/, derived);
   const skipped = drive('(engine, wf, stage) => engine.executeStage("E2E-OLD", wf, stage, {})');
   assert.strictEqual(skipped.result, 'skipped', skipped.stdout + skipped.stderr);
   const old = stateOf('E2E-OLD');
   assert.strictEqual(old.phases['pull-request'].status, 'skipped');
-  assert.match(old.phases['pull-request'].note, /pull_request\.enabled is not true.*engine\.js pr E2E-OLD/);
+  assert.match(old.phases['pull-request'].note, /^pull_request disabled \(open one with: node ai\/workflow\/engine\.js pr E2E-OLD\)/);
   assert.ok(!fs.existsSync(path.join(tmp, 'executor.log')), 'a disabled stage runs no agent');
-  const { buildSummary, renderTerminal } = require('./progress');
   assert.match(renderTerminal(buildSummary('E2E-OLD', old, { root: states })), /Pull request: not opened — run: node ai\/workflow\/engine\.js pr E2E-OLD/);
 
   // Dry run through the engine command: no state change.
@@ -1325,6 +1335,7 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   assert.strictEqual(fs.readFileSync(path.join(tmp, 'executor.log'), 'utf8').trim().split('\n').length, 1, 'the description is written once');
   assert.strictEqual(JSON.parse(fs.readFileSync(db, 'utf8')).prs.length, 1, 'one PR, however often it is asked for');
   assert.strictEqual(stateOf('E2E-OLD').pullRequestOptions.branch, 'feature/child', 'the overrides persist');
+  if (previousProject === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProject;
 
   // Enabled in config: the stage runs on its own after verification.
   fs.mkdirSync(path.join(fx.product, '.agentic'), { recursive: true });
@@ -1399,6 +1410,10 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   assert.strictEqual(stateOf('E2E-FLAGS').pullRequestOptions, undefined, 'no options were stored');
 }
 
+// Exported before the entry point runs: progress.js reads the config through
+// this module, and the selftest below loads progress.js.
+module.exports = { CONFIG_DEFAULTS, Blocked, evalMode, redact, validRef, loadConfig, effectiveOptions, branchFor, parseRemote, leakPolicy, textLeaks, scanDiff, addedLines, conflictMarkers, commitAttributionProblems, publishProblems, fallbackBaseProblem, layer, bitbucketCredentials, authorizationHeader, githubProvider, bitbucketProvider, preflight, plan, deliver };
+
 if (require.main === module) {
   const arg = process.argv[2];
   if (arg === '--http') httpChild();
@@ -1409,5 +1424,3 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-
-module.exports = { CONFIG_DEFAULTS, Blocked, evalMode, redact, validRef, loadConfig, effectiveOptions, branchFor, parseRemote, leakPolicy, textLeaks, scanDiff, addedLines, conflictMarkers, commitAttributionProblems, publishProblems, fallbackBaseProblem, layer, bitbucketCredentials, authorizationHeader, githubProvider, bitbucketProvider, preflight, plan, deliver };

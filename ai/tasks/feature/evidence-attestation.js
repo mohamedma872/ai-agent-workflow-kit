@@ -34,19 +34,21 @@ function hashPath(target) {
   walk(target);
   return hashBytes(parts.join(''));
 }
-function git(command) {
-  const res = spawnSync('git', command, { cwd: PRODUCT_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+// `root` defaults to the product root this process was started for; the
+// engine passes the run's worktree, which it may set after requiring this.
+function git(command, root = PRODUCT_ROOT) {
+  const res = spawnSync('git', command, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (res.status !== 0) throw new Error(`git ${command.join(' ')} failed while building evidence attestation`);
   return String(res.stdout || '');
 }
-function gitSha() { return git(['rev-parse', 'HEAD']).trim(); }
-function workspaceFingerprint() {
-  const status = git(['status', '--porcelain=v1', '-z']);
-  const diff = git(['diff', '--binary', 'HEAD']);
-  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort();
+function gitSha(root = PRODUCT_ROOT) { return git(['rev-parse', 'HEAD'], root).trim(); }
+function workspaceFingerprint(root = PRODUCT_ROOT) {
+  const status = git(['status', '--porcelain=v1', '-z'], root);
+  const diff = git(['diff', '--binary', 'HEAD'], root);
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z'], root).split('\0').filter(Boolean).sort();
   const chunks = [`status\0${status}`, `diff\0${diff}`];
   for (const rel of untracked) {
-    const abs = path.join(PRODUCT_ROOT, rel);
+    const abs = path.join(root, rel);
     try { if (fs.statSync(abs).isFile()) chunks.push(`untracked\0${rel}\0${sha256(abs)}`); } catch { /* disappeared */ }
   }
   return hashBytes(chunks.join('\n'));
