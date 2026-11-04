@@ -11,7 +11,8 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawn, spawnSync } = require('child_process');
-const { PHASES, ICONS, buildSummary, demoState, pullRequestLine, completeKey } = require('./progress');
+const { PHASES, ICONS, buildSummary, demoState, pullRequestLine, completeKey, activityText } = require('./progress');
+const { activityFile, activityFiles, readActivity, describeRole, splitKey, ago: elapsed, formatEntry } = require('./role-activity');
 const { listRuns, focusIndex, setActive, ago, runsRoot } = require('./runs-index');
 const { liveEngine, describe: describeEngine } = require('./engine-owner');
 const { projectRoot } = require('./paths');
@@ -155,10 +156,24 @@ function bannerLines(run, color, size = 60) {
   if (!attention) return [];
   const tone = attention.kind === 'waiting' ? COLORS.yellow : COLORS.red;
   const inner = Math.max(10, size - 2);
+  // When the agent's own report was rejected, it says why better than the
+  // stored note: what it said, the tests, the first failed checks, the report.
+  const details = attention.details;
+  const why = details ? [
+    ...wrap(details.summary || attention.reason, inner, 3).map(line => `  ${line}`),
+    ...(details.tests ? [paint(`  Tests: ${details.tests}`, COLORS.dim, color)] : []),
+    ...[...details.failed, ...details.acceptance].slice(0, 3).map(item => paint(`  ✗ ${truncate(item, inner - 4)}`, COLORS.red, color)),
+    ...details.sideEffects.slice(0, 2).map(entry => paint(`  ! ${truncate(`${entry.file} changed by its tools${details.restored.includes(entry.file) ? ' (restored)' : ''}`, inner - 4)}`, COLORS.yellow, color)),
+  ] : wrap(attention.reason, inner, 2).map(line => `  ${line}`);
+  // The other things the human can do, one line each; the stage's own command
+  // stays last and whole.
+  const others = (attention.options || []).filter(option => option.command !== attention.command)
+    .map(option => paint(`  · ${truncate(`${option.label}: ${option.command}`, inner - 4)}`, COLORS.dim, color));
   // Each part wraps to two lines, so a narrow pane still shows the whole command.
   return [
     ...wrap(`${NEEDS_YOU} NEEDS YOU · ${attention.headline}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, color ? COLORS.bold + tone : '', color)),
-    ...wrap(attention.reason, inner, 2).map(line => `  ${line}`),
+    ...why,
+    ...others,
     ...wrap(`→ ${attention.command}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
     '',
   ];
@@ -185,33 +200,95 @@ function detailLines(run, rows, color, size = 60) {
   ];
 
   const ACTIVE_PHASE = new Set(['in_progress', 'fail', 'blocked']);
-  const build = ({ roles = 'all', onlyTouched = false } = {}) => {
+  // Under a role (or a running single-role stage): what it does, dimmed, and,
+  // while it runs, what it is doing now. `describe` is 'all', 'running' or false.
+  const extra = (item, indent, describe, activity) => {
+    const out = [];
+    const running = item.status === 'in_progress';
+    if (item.description && (describe === 'all' || (describe === 'running' && running))) out.push(paint(`${indent}${truncate(item.description, Math.max(10, size - indent.length))}`, COLORS.dim, color));
+    const doing = activity && running ? activityText(item) : null;
+    if (doing) out.push(paint(`${indent}${truncate(doing, Math.max(10, size - indent.length))}`, COLORS.cyan, color));
+    return out;
+  };
+  const build = ({ roles = 'all', onlyTouched = false, describe = false, activity = true } = {}) => {
     const out = [];
     for (const phase of run.phases) {
       if (onlyTouched && phase.status === 'pending') continue;
       out.push(`${DASH_ICONS[phase.status] || '•'} ${pad(phase.label, 24)} ${paint(phase.status, statusColor(phase.status), color)}`);
+      if (!phase.roles.length && phase.status === 'in_progress') out.push(...extra(phase, '   ', describe && 'running', activity));
       if (roles === 'none' || (roles === 'active' && !ACTIVE_PHASE.has(phase.status))) continue;
       for (const role of phase.roles) {
+        if (roles === 'running' && !ACTIVE_PHASE.has(role.status)) continue;
         out.push(`   ${DASH_ICONS[role.status] || '•'} ${pad(role.role, 20)} ${paint(role.status, statusColor(role.status), color)}${role.executor ? paint(` · ${role.executor}`, COLORS.dim, color) : ''}`);
+        out.push(...extra(role, '      ', describe, activity));
       }
     }
     return out;
   };
 
-  // Tightest fit that still says the most: all roles, then only the roles of the
-  // stages that are running or stuck, then stages alone.
+  // Tightest fit that still says the most: every role with what it does, then
+  // descriptions for the running roles only, then all roles, then only the roles
+  // of the stages that are running or stuck, then only the roles that are, then
+  // stages alone. What a running role is doing now goes last.
   const budget = Math.max(1, rows - head.length - foot.length);
   const variants = [
+    build({ describe: 'all' }),
+    build({ describe: 'running' }),
     build(),
+    build({ roles: 'active', describe: 'running' }),
     build({ roles: 'active' }),
+    build({ roles: 'active', onlyTouched: true, describe: 'running' }),
     build({ roles: 'active', onlyTouched: true }),
+    build({ roles: 'running', onlyTouched: true }),
+    build({ roles: 'none', describe: 'running' }),
     build({ roles: 'none' }),
     build({ roles: 'none', onlyTouched: true }),
+    build({ roles: 'none', onlyTouched: true, activity: false }),
   ];
   for (const body of variants) {
     if (body.length <= budget) return [...head, ...body, ...foot];
   }
   return [...head, ...variants[variants.length - 1].slice(0, budget), ...foot];
+}
+
+// The `d` pane: each running role, what it does, and its last actions, newest
+// last, from <run>/engine/<stage>-<role>.activity.jsonl. With nothing running,
+// the role that acted last.
+function activityLines(run, rows, color, size = 60, readFn = readActivity) {
+  if (!run) return ['No feature selected.'];
+  const head = [
+    paint(run.id, COLORS.bold, color) + paint(' · what each agent is doing', COLORS.dim, color),
+    `${bar(run.percent, 24)} ${String(run.percent).padStart(3)}%`,
+    '',
+  ];
+  const live = [];
+  for (const phase of run.phases) {
+    for (const role of phase.roles) if (role.status === 'in_progress') live.push({ stage: phase.id, ...role });
+    if (!phase.roles.length && phase.status === 'in_progress' && phase.role) live.push({ stage: phase.id, role: phase.role, status: phase.status, description: phase.description, startedAt: phase.startedAt, executor: null });
+  }
+  let note = null;
+  if (!live.length) {
+    const last = run.dir ? activityFiles(run.dir)[0] : null;
+    if (!last) return [...head, paint('No agent is running, and none has recorded activity yet.', COLORS.dim, color)];
+    const { stage, role } = splitKey(last.key);
+    live.push({ stage, role, status: 'idle', description: describeRole(role), file: last.file });
+    note = paint(`Nothing running · last active: ${last.key}`, COLORS.dim, color);
+  }
+  const budget = Math.max(3, rows - head.length - (note ? 2 : 0));
+  const each = Math.max(3, Math.floor(budget / live.length));
+  const out = [...head, ...(note ? [note, ''] : [])];
+  for (const item of live) {
+    const since = item.startedAt ? ` · ${elapsed(item.startedAt)}` : '';
+    out.push(paint(`${item.status === 'in_progress' ? '●' : '○'} ${item.role}${item.executor ? ` · ${item.executor}` : ''}${since}`, color ? COLORS.bold + COLORS.yellow : '', color));
+    if (item.description) out.push(paint(`  ${truncate(item.description, Math.max(10, size - 2))}`, COLORS.dim, color));
+    const room = Math.max(1, each - (item.description ? 3 : 2));
+    const file = item.file || (run.dir ? activityFile(run.dir, item.stage, item.role) : null);
+    const entries = file ? readFn(file, room) : item.activity ? [item.activity] : [];
+    if (!entries.length) out.push(paint('  (no activity recorded yet)', COLORS.dim, color));
+    for (const entry of entries) out.push(`  ${truncate(formatEntry(entry), Math.max(10, size - 2))}`);
+    out.push('');
+  }
+  return out.slice(0, rows);
 }
 
 function renderFrame(view) {
@@ -240,7 +317,7 @@ function renderFrame(view) {
       const text = pad(labelPart, listWidth - width(percentPart) - 1) + percentPart;
       return selected ? paint(pad(text, listWidth), color ? COLORS.bold + COLORS.cyan : '', color) : text;
     });
-    const right = detailLines(run, bodyRows, color, detailWidth);
+    const right = view.details ? activityLines(run, bodyRows, color, detailWidth) : detailLines(run, bodyRows, color, detailWidth);
     for (let i = 0; i < bodyRows; i++) {
       lines.push(`│ ${pad(left[i] || '', listWidth)} │ ${pad(right[i] || '', detailWidth)} │`);
     }
@@ -251,17 +328,20 @@ function renderFrame(view) {
     const left = listLines(runs, index, listRows).map(line => line.replace('|', '  '));
     for (const line of left) lines.push(`│ ${pad(line, inner - 2)} │`);
     lines.push(`│ ${pad('─'.repeat(inner - 2), inner - 2)} │`);
-    for (const line of detailLines(run, bodyRows - listRows - 1, color, inner - 2)) lines.push(`│ ${pad(line, inner - 2)} │`);
+    const pane = view.details ? activityLines(run, bodyRows - listRows - 1, color, inner - 2) : detailLines(run, bodyRows - listRows - 1, color, inner - 2);
+    for (const line of pane) lines.push(`│ ${pad(line, inner - 2)} │`);
     lines.push(`╰${'─'.repeat(inner)}╯`);
   }
 
   // The last lines are cut to the terminal width: a line that wraps makes the
   // frame a row taller than the terminal and scrolls the top border away.
   const fit = text => truncate(safe(text), cols - 1);
+  const details = view.details ? 'd stages' : 'd details';
   const keys = [
-    `↑↓ select · enter set active · R resume · T retry · c close · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`,
-    `↑↓ · ⏎ active · R resume · T retry · c close · a ${view.all ? 'in progress' : 'all'} · r refresh · q quit`,
-  ].find(text => width(text) <= cols - 1) || `R resume · T retry · c close · q quit`;
+    `↑↓ select · enter set active · ${details} · R resume · T retry · c close · a ${view.all ? 'in-progress only' : 'all runs'} · r refresh · q quit`,
+    `↑↓ · ⏎ active · ${details} · R resume · T retry · c close · a ${view.all ? 'in progress' : 'all'} · r refresh · q quit`,
+    `↑↓ · ${details} · R resume · T retry · c close · q quit`,
+  ].find(text => width(text) <= cols - 1) || `${details} · R resume · T retry · q quit`;
   const hint = view.confirm
     ? paint(fit(confirmPrompt(run)), isVerified(run) ? COLORS.yellow : COLORS.red, color)
     : view.notice
@@ -407,6 +487,10 @@ function handleKey(view, key = {}) {
   // Shifted: R resumes, T retries then resumes. Plain r stays refresh.
   if ((name === 'r' && key.shift) || key.sequence === 'R') return count ? { view, action: 'resume' } : { view, action: null };
   if ((name === 't' && key.shift) || key.sequence === 'T') return count ? { view, action: 'retry' } : { view, action: null };
+  // d switches the pane between the stages and what each running agent is
+  // doing; escape leaves the details before it quits.
+  if (name === 'd') return { view: { ...view, details: !view.details }, action: null };
+  if (name === 'escape' && view.details) return { view: { ...view, details: false }, action: null };
   if (name === 'q' || name === 'escape') return { view, action: 'quit' };
   if (name === 'down' || name === 'j' || name === 'tab') return move(1);
   if (name === 'up' || name === 'k') return move(-1);
@@ -421,10 +505,14 @@ function handleKey(view, key = {}) {
 // ---------------------------------------------------------------------------
 // Runtime
 
+function withDemoActivity(summary, doing) {
+  return { ...summary, phases: summary.phases.map(phase => ({ ...phase, roles: phase.roles.map(role => (role.status === 'in_progress' ? { ...role, activity: doing } : role)) })) };
+}
 function demoRuns() {
   const base = demoState();
+  const doing = { t: new Date(Date.now() - 4000).toISOString(), kind: 'tool', text: 'Read lib/auth/session_store.dart' };
   const make = (id, title, overrides) => ({
-    ...buildSummary(id, { ...base, ...overrides }, { demo: true }),
+    ...withDemoActivity(buildSummary(id, { ...base, ...overrides }, { demo: true }), doing),
     title,
     inProgress: true,
     active: id === 'FEAT-002',
@@ -450,7 +538,7 @@ function run(options = {}) {
   const parent = path.dirname(root);
   const label = options.label || (options.demo ? 'demo' : path.basename(path.basename(root) === 'runs' ? path.dirname(parent) : parent));
 
-  let view = { all: !!options.all, index: 0, notice: null, confirm: false };
+  let view = { all: !!options.all, index: 0, notice: null, confirm: false, details: !!options.details };
   let runs = load({ demo: options.demo, all: view.all });
   // The engine sends the desktop notification; this terminal only rings and highlights.
   const settings = notify.loadConfig(projectRoot());
@@ -468,6 +556,7 @@ function run(options = {}) {
     demo: options.demo,
     notice: view.notice,
     confirm: view.confirm,
+    details: view.details,
     label,
     color,
     width: out.columns || 100,
@@ -527,7 +616,7 @@ function run(options = {}) {
 
   process.stdin.on('keypress', (_str, key) => {
     const result = handleKey({ ...view, count: runs.length }, key || {});
-    view = { ...view, index: result.view.index, all: result.view.all, confirm: result.view.confirm };
+    view = { ...view, index: result.view.index, all: result.view.all, confirm: result.view.confirm, details: result.view.details };
     focusedId = runs[view.index]?.id || focusedId;
     if (result.action === 'quit') return quit(0);
     if (result.action === 'reload') return reload();
@@ -591,7 +680,51 @@ function selftest() {
   const lines = frame.split('\n');
   assert(lines.some(l => l.includes('FEAT-002')), 'runs are listed');
   assert(lines.some(l => l.includes('Analysis')), 'the focused run shows stage detail');
-  assert(lines.some(l => l.includes('enter set active')), 'key hints are shown');
+  assert(renderFrame({ runs, index: 0, width: 120, height: 30, color: false }).includes('enter set active'), 'key hints are shown in full when they fit');
+  assert(lines.some(l => l.includes('d details')), 'the details key is advertised');
+
+  // What each role does, and what a running one is doing now.
+  assert(frame.includes('Threat-model auth'), 'a running role says what it does');
+  assert(frame.includes('↳ Read lib/auth/session_store.dart'), 'and what it is doing now');
+  const tall = renderFrame({ runs, index: 0, width: 100, height: 60, color: false });
+  assert(tall.includes('Derive test cases from acceptance criteria'), 'a tall pane describes every role, not only the running one');
+  const short = renderFrame({ runs, index: 0, width: 100, height: 16, color: false });
+  assert(short.split('\n').length <= 16, 'descriptions give way before the frame overflows');
+  const tighter = renderFrame({ runs, index: 0, width: 100, height: 21, color: false });
+  assert(tighter.includes('↳ Read lib/auth/session_store.dart') && !tighter.includes('qa-plan'), 'a short pane keeps the running role and drops the finished ones');
+  const tight = renderFrame({ runs, index: 0, width: 100, height: 25, color: false });
+  assert(tight.includes('↳ Read lib/auth/session_store.dart') && !tight.includes('Threat-model auth'), 'what a running role is doing outlasts its description');
+
+  // A rejected report: the banner shows the agent's own summary, tests, failed
+  // checks and tool side effects, then the other options, then the command.
+  const reported = { ...runs[2], needsYou: { ...runs[2].needsYou, kind: 'fail', headline: 'Build + Tests failed', command: 'agentic retry FEAT-011',
+    details: { summary: 'All 80 tests pass; pub get rewrote pubspec.lock.', tests: '80 passed, 0 failed', failed: ['flutter analyze — fail: 1 new info lint'], acceptance: ['AC-18: fail: analyzer gate'], sideEffects: [{ file: 'pubspec.lock' }], restored: [] },
+    options: [{ label: 'Revert what its tools changed', command: 'git checkout -- pubspec.lock' }, { label: 'Read the full report', command: 'agentic why FEAT-011' }, { label: 'Retry the stage', command: 'agentic retry FEAT-011' }] } };
+  const banner = bannerLines(reported, false, 90);
+  for (const part of ['All 80 tests pass; pub get rewrote pubspec.lock.', 'Tests: 80 passed', '✗ flutter analyze — fail: 1 new info lint', '! pubspec.lock changed by its tools', '· Read the full report: agentic why FEAT-011']) assert(banner.some(l => l.includes(part)), `the banner shows ${part}`);
+  assert.strictEqual(banner.filter(l => l.includes('agentic retry FEAT-011')).length, 1, 'the retry command is shown once, last');
+  assert(banner[banner.length - 2].startsWith('→ agentic retry FEAT-011'));
+
+  // d: the details pane, read from the role activity files.
+  const toggled = handleKey({ index: 0, count: runs.length }, { name: 'd' });
+  assert.strictEqual(toggled.view.details, true);
+  assert.strictEqual(handleKey({ ...toggled.view, count: runs.length }, { name: 'escape' }).action, null, 'escape leaves the details first');
+  assert.strictEqual(handleKey({ ...toggled.view, count: runs.length }, { name: 'escape' }).view.details, false);
+  assert.strictEqual(handleKey({ index: 0, count: 1 }, { name: 'escape' }).action, 'quit', 'escape still quits from the stages');
+  const activityRun = { ...runs[0], dir: '/runs/FEAT-002' };
+  const seenFiles = [];
+  const pane = activityLines(activityRun, 20, false, 70, (file, limit) => { seenFiles.push(file); return [{ t: '2026-11-04T12:00:01.000Z', kind: 'run', text: '$ flutter test test/auth_test.dart' }, { t: '2026-11-04T12:00:05.000Z', kind: 'say', text: 'Session tokens are kept in secure storage.' }].slice(-limit); });
+  assert.deepStrictEqual(seenFiles, [path.join('/runs/FEAT-002', 'engine', 'analysis-security.activity.jsonl')], 'each running role is read from its own file');
+  assert(pane.some(l => l.startsWith('● security · claude')), 'the running role heads its block');
+  assert(pane.some(l => l.includes('Threat-model auth')));
+  assert(pane.some(l => /\d\d:\d\d:\d\d  \$ flutter test test\/auth_test\.dart/.test(l)), 'each action with its time');
+  const detailFrame = renderFrame({ runs: [activityRun], index: 0, width: 100, height: 30, color: false, details: true });
+  assert(detailFrame.includes('what each agent is doing') && detailFrame.includes('d stages'), 'the details pane replaces the stages, and the footer says how back');
+  assert(activityLines({ ...runs[2], dir: '' }, 20, false, 70).some(l => l.includes('No agent is running')), 'a run with nothing running says so');
+  // A running single-role stage is followed too.
+  const stagePane = activityLines({ ...runs[1], dir: '/runs/FEAT-007' }, 20, false, 70, file => { seenFiles.push(file); return []; });
+  assert.strictEqual(seenFiles.pop(), path.join('/runs/FEAT-007', 'engine', 'requirements-orchestration.activity.jsonl'));
+  assert(stagePane.some(l => l.startsWith('● orchestration')) && stagePane.some(l => l.includes('(no activity recorded yet)')));
   const boxed = lines.filter(l => l.startsWith('│'));
   assert(boxed.length > 5);
   for (const line of boxed) assert.strictEqual(width(line), 100, `box line must be exactly the terminal width: ${JSON.stringify(line)}`);
@@ -908,6 +1041,7 @@ function parseArgs(argv) {
     if (arg === '--all') options.all = true;
     else if (arg === '--demo') options.demo = true;
     else if (arg === '--once') options.once = true;
+    else if (arg === '--details') options.details = true;
     else if (arg === '--color') options.color = true;
     else if (arg === '--no-color') options.color = false;
     else if (arg === '--run') options.run = argv[++i];
@@ -922,4 +1056,4 @@ if (require.main === module) {
   else run(parseArgs(process.argv.slice(2)));
 }
 
-module.exports = { width, pad, truncate, safe, bar, listLines, bannerLines, detailLines, renderFrame, handleKey, isVerified, closeCommand, confirmPrompt, closeRun, startEngine, newAttention, demoRuns, run, parseArgs };
+module.exports = { width, pad, truncate, safe, bar, listLines, bannerLines, detailLines, activityLines, renderFrame, handleKey, isVerified, closeCommand, confirmPrompt, closeRun, startEngine, newAttention, demoRuns, run, parseArgs };

@@ -15,6 +15,8 @@ const CHECKS = [
   ['parallel worktree isolation', ['ai/workflow/worktree.js', 'selftest']],
   ['pull request stage: opt-in, idempotent, never forced, no leaked secrets', ['ai/workflow/pull-request.js', '--selftest']],
   ['notifications: once per event, never in eval mode, no shell, no secrets', ['ai/workflow/notify.js', '--selftest']],
+  ['role activity: summarized, redacted, never tool output', ['ai/workflow/role-activity.js', '--selftest']],
+  ['read-only roles leave tracked files as they found them', ['ai/workflow/tracked-files.js', '--selftest']],
   ['repeated-failure detection', ['ai/workflow/repeated-failure.js', '--selftest']],
   ['one live engine per run', ['ai/workflow/engine-owner.js', '--selftest']],
   ['Appium session/build/stale-evidence attestation', ['ai/tasks/feature/evidence-attestation-selftest.js']],

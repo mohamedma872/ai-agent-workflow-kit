@@ -12,6 +12,10 @@
 claude:
   label: Claude Code (claude -p)
   command: [claude, -p, "{prompt}", --output-format, json, --max-budget-usd, "{budget}", --permission-mode, bypassPermissions]
+  # What the engine runs instead, so each action is visible while the role works
+  # (router.js --activity-file → role-activity.js). Same flags; the event stream
+  # ends with the same result envelope, so result/cost/duration read the same.
+  stream_command: [claude, -p, "{prompt}", --output-format, stream-json, --verbose, --max-budget-usd, "{budget}", --permission-mode, bypassPermissions]
   result: { json_field: result }
   cost: { json_field: total_cost_usd }
   duration: { json_field: duration_ms }

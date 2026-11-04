@@ -205,7 +205,8 @@ function staleApprovedState() {
     const summary = buildSummary('FEAT-1', failed, { root });
     assert.deepStrictEqual(summary.needsYou, needsYou('FEAT-1', failed, { root }));
     const terminal = renderTerminal(summary);
-    assert.match(terminal, /⚠ Needs you: Same failure as last time — this needs a fix outside Build \+ Tests\n {3}build-test\/qa-execute: 3 widget tests fail in test\/login_test\.dart\n {3}→ run: /);
+    assert.match(terminal, /⚠ Needs you: Same failure as last time — this needs a fix outside Build \+ Tests\n {3}build-test\/qa-execute: 3 widget tests fail in test\/login_test\.dart\n(?: {3}· .*\n)* {3}→ run: /);
+    assert.match(terminal, / {3}· Leave a note the retry will read \(evidence, a decision\): edit \S*notes\/build-test\.md\n/, 'a stopped stage offers a note for the retry');
     assert.ok(terminal.indexOf('Needs you') < terminal.indexOf('Request '), 'the banner sits above the stage list');
     const markdown = renderMarkdown(summary);
     assert.match(markdown, /> ⚠ \*\*Needs you:\*\* Same failure as last time — this needs a fix outside Build \+ Tests/);
@@ -269,7 +270,14 @@ function staleApprovedState() {
     const evidence = needsYou('FEAT-3', conditional, { root, cli: true });
     assert.deepStrictEqual([evidence.kind, evidence.stage, evidence.role, evidence.headline, evidence.reason, evidence.command], ['blocked', 'verification', 'mobile-evidence', 'Final Verification (mobile-evidence) blocked', 'mobile-evidence: no booted Android emulator', 'agentic retry FEAT-3']);
     conditional.phases.verification = { status: 'pass' };
-    assert.strictEqual(needsYou('FEAT-3', conditional, { root }), null, 'a stage that passed since is not waiting on its old conditional');
+    assert.notStrictEqual(needsYou('FEAT-3', conditional, { root })?.stage, 'verification', 'a stage that passed since is not waiting on its old conditional');
+
+    // Verified with no pull request recorded (a run verified before the stage
+    // existed, or one whose PR was opened by hand): it says how to open or record it.
+    const pending = needsYou('FEAT-3', conditional, { root, cli: true });
+    assert.deepStrictEqual([pending.kind, pending.stage, pending.headline, pending.command], ['waiting', 'pull-request', 'Verified — no pull request recorded yet', 'agentic pr FEAT-3']);
+    assert.strictEqual(needsYou('FEAT-3', { ...conditional, pullRequest: { url: 'https://example.test/pr/1' } }, { root }), null, 'a recorded pull request is not asked for again');
+    assert.strictEqual(needsYou('FEAT-3', { ...conditional, status: 'done' }, { root }), null, 'a closed run asks for nothing');
 
     // A blocked pull request resumes; the furthest stop wins.
     const pr = { status: 'active', roles: {}, phases: { ...passed('pull-request'), 'pull-request': { status: 'blocked', note: 'BITBUCKET_API_TOKEN is not set' }, requirements: { status: 'fail', note: 'stale' } } };
@@ -291,6 +299,73 @@ function staleApprovedState() {
     // An architecture selection gate.
     const arch = { status: 'active', roles: {}, phases: { 'architecture-options': { status: 'pass', updatedAt: 'a1' } } };
     assert.deepStrictEqual([needsYou('FEAT-7', arch, { root, cli: true }).stage, needsYou('FEAT-7', arch, { root, cli: true }).command], ['architecture-selection', 'agentic architecture FEAT-7 <option-id>']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// A stage stopped by a rejected agent report: the report says why, and the
+// options start with what fits it.
+{
+  const { whyLines, needsYouLines } = require('./progress');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-why-'));
+  try {
+    const id = 'WHY-1';
+    fs.mkdirSync(path.join(root, id, 'engine'), { recursive: true });
+    const report = { status: 'fail', summary: 'All tests pass, but pub get rewrote pubspec.lock.', tests: { passed: 80, failed: 0, skipped: 0 },
+      commands: [{ command: 'flutter test', status: 'pass' }, { command: 'git checkout -- pubspec.lock', status: 'blocked', note: 'role may not run mutating shell commands' }, { command: 'flutter analyze', status: 'fail', note: '1 new info lint' }],
+      acceptanceCoverage: { 'AC-1': 'pass', 'AC-18': 'fail: analyzer gate not met' },
+      sideEffects: [{ file: 'pubspec.lock', change: '28-line re-resolve' }, { file: 'analysis_options.yaml', change: '+3 excludes' }], notRun: ['Sonar'] };
+    fs.writeFileSync(path.join(root, id, 'engine', 'build-test-qa-execute.rejected'), JSON.stringify(report));
+    const state = { status: 'active', roles: {}, phases: { ...Object.fromEntries(['request', 'requirements', 'acceptance-criteria', 'definition-of-done', 'inspection', 'analysis', 'plan', 'approval', 'implementation'].map(p => [p, { status: 'pass' }])), 'build-test': { status: 'fail', updatedAt: 't1', note: 'build-test/qa-execute: artifact rejected — ag' } } };
+    const attention = needsYou(id, state, { root, cli: true });
+    assert.strictEqual(attention.details.role, 'qa-execute');
+    assert.strictEqual(attention.details.tests, '80 passed, 0 failed, 0 skipped');
+    assert.deepStrictEqual(attention.details.failed.map(f => f.split(' — ')[0]), ['git checkout -- pubspec.lock', 'flutter analyze']);
+    assert.deepStrictEqual(attention.details.acceptance, ['AC-18: fail: analyzer gate not met']);
+    assert.deepStrictEqual(attention.options.map(o => o.label), ['Revert what its tools changed (if still changed)', 'Read the full report', 'Leave a note the retry will read (evidence, a decision)', 'Retry the stage']);
+    assert.match(attention.options[0].command, /checkout -- pubspec\.lock analysis_options\.yaml$/);
+    assert.strictEqual(attention.options.at(-1).command, 'agentic retry WHY-1', 'retry stays last');
+    const terminal = needsYouLines(attention).join('\n');
+    assert.match(terminal, /All tests pass, but pub get rewrote pubspec\.lock\./, 'the agent\'s own summary replaces the cut-down note');
+    assert.match(terminal, /✗ flutter analyze — fail: 1 new info lint/);
+    const why = whyLines(id, state, { root, cli: true }).join('\n');
+    for (const part of ['What the agent said:', 'Tests: 80 passed', 'Acceptance criteria not met:', '! pubspec.lock — 28-line re-resolve', 'Not run:', 'What you can do:']) assert.ok(why.includes(part), `why shows ${part}`);
+    assert.ok(!/agentic why WHY-1/.test(why), 'why does not offer itself');
+    // Restored by the runtime: no revert to offer.
+    fs.writeFileSync(path.join(root, id, 'engine', 'build-test-qa-execute.restored.json'), JSON.stringify({ restored: [{ path: 'pubspec.lock', from: 'HEAD' }, { path: 'analysis_options.yaml', from: 'HEAD' }] }));
+    const after = needsYou(id, state, { root, cli: true });
+    assert.ok(!after.options.some(o => /Revert/.test(o.label)), 'nothing left to revert');
+    assert.match(needsYouLines(after).join('\n'), /pubspec\.lock \(restored by the runtime\)/);
+    // A failure with no report keeps the old shape.
+    fs.rmSync(path.join(root, id, 'engine'), { recursive: true, force: true });
+    const plain = needsYou(id, state, { root, cli: true });
+    assert.strictEqual(plain.details, null);
+    assert.deepStrictEqual(plain.options.map(o => o.label), ['Leave a note the retry will read (evidence, a decision)', 'Retry the stage']);
+    assert.match(whyLines('NONE', { status: 'done', phases: {} }, { root }).join(''), /nothing is waiting on you\. The run is closed\./);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// Role descriptions and live activity: terminal views only.
+{
+  const { withActivity, renderMarkdown } = require('./progress');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-activity-'));
+  try {
+    const state = { status: 'active', startedAt: new Date().toISOString(), phases: { implementation: { status: 'in_progress', updatedAt: new Date(Date.now() - 90000).toISOString() }, analysis: { status: 'in_progress' } }, selectedRoles: { analysis: ['security', 'docs'] }, roles: { analysis: { security: { status: 'in_progress', executor: 'claude', updatedAt: new Date().toISOString() }, docs: { status: 'pass', executor: 'claude' } } } };
+    const run = path.join(root, 'ACT-1');
+    fs.mkdirSync(path.join(run, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(run, 'engine', 'analysis-security.activity.jsonl'), `${JSON.stringify({ t: new Date().toISOString(), kind: 'tool', text: 'Read lib/auth/session.dart' })}\n`);
+    const summary = withActivity(buildSummary('ACT-1', state, { root }), run);
+    const analysis = summary.phases.find(p => p.id === 'analysis');
+    assert.match(analysis.roles.find(r => r.role === 'security').description, /^Threat-model auth/);
+    assert.strictEqual(analysis.roles.find(r => r.role === 'security').activity.text, 'Read lib/auth/session.dart');
+    assert.strictEqual(analysis.roles.find(r => r.role === 'docs').activity, undefined, 'finished roles carry no activity');
+    const impl = summary.phases.find(p => p.id === 'implementation');
+    assert.strictEqual(impl.role, 'implementation');
+    assert.strictEqual(impl.activity, null, 'a running stage with no file yet has no activity');
+    const text = renderTerminal(summary);
+    assert.match(text, /Threat-model auth/, 'the running role says what it does');
+    assert.match(text, /↳ Read lib\/auth\/session\.dart · \d+s ago/, 'and what it is doing now');
+    assert.match(text, /↳ working · 1m3\ds/, 'a stage with no activity yet shows how long it has run');
+    assert.doesNotMatch(renderMarkdown(buildSummary('ACT-1', state, { root }), { published: true }), /session\.dart/, 'the published view never carries activity');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
