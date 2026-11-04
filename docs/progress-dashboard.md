@@ -36,6 +36,49 @@ When the run's pull request is open (the `pull-request` stage, after final verif
 | `▸` | highlighted (what the right pane shows) |
 | `*` | the active run — `agentic resume`, `approve`, `progress` default to it |
 | `✓` | finished run (only visible with `--all` or `a`) |
+| `⚠` | the run needs you: a stage blocked or failed, or a gate waits (see [Needs you](#needs-you)) |
+| `●` | an engine is driving the run right now |
+
+`⚠` and `●` come before the run id (`▸ ⚠ FEAT-011 *`), so a long id is cut, never the marker.
+
+## Needs you
+
+When the highlighted run waits on a human, a banner sits at the top of its detail pane. It gives the headline, the reason on one or two lines, and the whole command to run next:
+
+```text
+│ ⚠ NEEDS YOU · Final Verification (mobile-evidence) blocked     │
+│   mobile-evidence: mobile evidence is required but no          │
+│   Android/iOS target could be derived; use --platforms …       │
+│ → agentic retry FEAT-011                                       │
+```
+
+| The run | Headline | Command |
+|---|---|---|
+| a stage failed or blocked | `<Stage> failed` / `<Stage> blocked` | `agentic retry <id>` (`agentic resume <id>` for the pull request, whose steps repeat safely) |
+| a stage's conditional role blocked (verification's `mobile-evidence`) | `<Stage> (<role>) blocked` | `agentic retry <id>` |
+| the same failure as last time | `Same failure as last time — this needs a fix outside <Stage>` | the same; retrying is allowed, but the cause is elsewhere |
+| the plan waits for approval | `The plan waits for your approval` | `agentic approve <id>` |
+| architecture selection waits | `Architecture selection waits for you` | `agentic architecture <id> <option-id>` |
+| specialist conflicts hold the plan back | `Specialist conflicts block the plan` | `agentic conflicts <id>` |
+
+The furthest stopped stage wins. The text comes from the run state alone (`needsYou` in `ai/workflow/progress.js`), so the banner, `agentic status <id>`, `runs.js status`, `agentic runs`, the Markdown view and the engine's desktop notification all say the same thing. The GitHub progress comment shows the headline and command, never the reason, as it never publishes run notes.
+
+"Same failure as last time" appears when a stage, role or conditional role fails twice in a row with the same reason, ignoring timestamps, paths, attempt ids, hashes, pids and durations. The entry then has `repeatedFailure: <n>`. Reasons that say nothing about the cause (an agent exiting non-zero, a timeout, an interrupt, a bare exit status or signal) are never counted as repeats.
+
+While the run's engine is running (`●`), the banner gives way to `● engine running · engine pid <pid> (<command>)`: the run is not waiting on you, even while its state still shows the block the engine is about to retry. `agentic status <id>`, `agentic progress <id> --watch` and the Markdown view say `● engine running` the same way.
+
+Notes, role names and the fields of `engine.pid` are shown as printable text only: escape sequences and control characters become spaces, so text from agent or tool output cannot move the cursor, rewrite the command you are told to type, or write the clipboard.
+
+## Notifications
+
+The engine sends a desktop notification when a run needs you, completes, or (through `agentic pr`) opens its pull request. It sends it itself, so it arrives with this window closed. The dashboard does not send one. It rings the terminal bell and flashes `⚠ <id> needs you — …` in the hint line for each new event. When it opens it stays quiet about what was already waiting. Each event is shown once: its key is recorded in `state.notifications.sent`. A run that completes again after rework is a new event (the key carries the completion time). The notification's text is redacted before it is shortened (named token variables, any variable whose name ends in `TOKEN`, `SECRET`, `PASSWORD`, `_KEY` and similar, URL credentials and common token shapes), and the command it ends with is never cut. On macOS the command is also the subtitle.
+
+| `.agentic/config.yaml` | Default | Effect |
+|---|---|---|
+| `notifications.desktop` | `true` | `false` stops the engine's desktop notifications (macOS `osascript`, Linux `notify-send`) |
+| `notifications.bell` | `true` | `false` stops the dashboard's terminal bell |
+
+`off`/`no` and `on`/`yes` work as well as `false`/`true`. Any other value keeps the default; the engine prints the problem once and the dashboard shows it as a notice when it opens. Eval runs (`AI_EVAL=1`) never notify, and nothing is sent over the network.
 
 ## Keys
 
@@ -43,13 +86,23 @@ When the run's pull request is open (the `pull-request` stage, after final verif
 |---|---|
 | `↑` `↓` / `k` `j` / `tab` | move between features (wraps) |
 | `enter` / `space` | make the highlighted feature the active run |
+| `R` | resume the highlighted feature in the background |
+| `T` | retry its failed or blocked stages (and conditional roles), then resume in the background |
 | `c` | close the highlighted feature (asks first) |
 | `a` | toggle finished runs |
 | `r` | refresh now |
 | `home` / `end` | first / last feature |
 | `q` / `esc` / `ctrl-c` | quit |
 
-Two keys write: `enter` updates the `_active` pointer, and `c` closes a run after you confirm. Highlighting alone changes nothing.
+Four keys write. `enter` updates the `_active` pointer, `c` closes a run after you confirm, and `R` and `T` start the engine. Highlighting alone changes nothing. No key approves a plan: approval stays the deliberate `agentic approve <id>` the banner shows.
+
+## Resume and retry from the dashboard
+
+`R` runs `engine.js resume <id>` as a detached background process (no shell). `T` first runs `runs.js retry <id>`, the same reset as `agentic retry <id>`, then starts that resume. The hint line says `resuming…` at once. Then it shows the engine pid and the log, `<run>/engine/background.log`, which collects every background engine's output, each start under a `=== <time> resume started from agentic progress ===` line. The `●` marker appears once the engine has claimed the run.
+
+`R` refuses when the highlighted run's stage failed or blocked (other than the pull request, which a resume continues): `✗ <id>: <Stage> needs a retry first — press T (or run: <command>)`, since the engine leaves a stage whose attempts are spent as it is. On a gate it says `✗ <id> waits for you — run: <command>`. The footer and every notice are cut to the terminal width; below 95 columns the footer is a compact `↑↓ · ⏎ active · R resume · T retry · …`.
+
+Both keys refuse while an engine for that run is alive. That covers one started from another terminal, as a running engine holds `<run>/engine/engine.pid`, and a running parallel-role pool. A record counts only while its pid is a live node process started when the record says; a pid reused by something else, or pid 1, does not hold the run. A closed run is refused too. When `T` finds nothing to retry, the hint line shows retry's own message, for example `nothing to retry; run agentic resume <id>`, and nothing starts.
 
 ## Closing a run
 
@@ -85,7 +138,7 @@ In-progress features sort first, most recently updated first. A run counts as in
 
 ## Detail compaction
 
-The PR line, when there is one, takes one row of the head, so it costs one row of stages. The right pane fits whatever the terminal gives it, dropping the least useful information first: all stages with all roles → roles only for running or stuck stages → those stages alone → stages that have started. A terminal narrower than 78 columns stacks the list above the detail instead of splitting.
+The PR line, when there is one, takes one row of the head, and the needs-you banner takes up to seven, so they cost rows of stages. The right pane fits whatever the terminal gives it, dropping the least useful information first: all stages with all roles → roles only for running or stuck stages → those stages alone → stages that have started. A terminal narrower than 78 columns stacks the list above the detail instead of splitting.
 
 ## Non-interactive use
 
@@ -100,4 +153,4 @@ agentic progress <id> --json  # one run in detail
 
 ## Where state comes from
 
-Runs live in the state root: `.agentic-runs/` in a target project, `ai/runs/` inside the runtime repository. Each run directory holds `state.json` (stages, roles, evidence, and `pullRequest` once the PR is open: only its provider, number, URL, status, branch, base and draft flag are shown), optional `00-request.md` (the title shown next to the id) and `plan.approved` (the plan gate). The dashboard only reads these; the workflow engine owns them.
+Runs live in the state root: `.agentic-runs/` in a target project, `ai/runs/` inside the runtime repository. Each run directory holds `state.json` (stages, roles, evidence, `notifications.sent`, and `pullRequest` once the PR is open: only its provider, number, URL, status, branch, base and draft flag are shown), `engine/engine.pid` while an engine drives it, optional `00-request.md` (the title shown next to the id) and `plan.approved` (the plan gate). The dashboard only reads these, apart from the `_active` pointer, `c`, and the engine `R`/`T` start; the workflow engine owns them.

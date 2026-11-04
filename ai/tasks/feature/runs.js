@@ -15,6 +15,9 @@ const { validateAttestation } = require('./evidence-attestation');
 const { validateArtifactFile, sidecarForMarkdown } = require('../../workflow/artifacts');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../../workflow/paths');
 const { withStateLock } = require('../../workflow/state-lock');
+const { recordFailure, clearFailure, carried } = require('../../workflow/repeated-failure');
+const { liveEngine, describe: describeEngine, ownerFile } = require('../../workflow/engine-owner');
+const { needsYou, needsYouLines, printable } = require('../../workflow/progress');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -338,6 +341,9 @@ function transitionPhase(id, state, phase, action, executor, reason) {
     ...(executor && executor !== '-' ? { executor } : {}),
     ...(reason ? { note: reason } : {}),
   };
+  // Same reason as the stage's previous failure → repeatedFailure (see repeated-failure.js).
+  if (to === 'fail' || to === 'blocked') recordFailure(state.phases[phase], reason);
+  else if (to === 'pass') clearFailure(state.phases[phase]);
   record(state, { kind: 'phase', phase, action, from, to, executor: executor && executor !== '-' ? executor : null, reason: reason || null });
   reconcileState(id, state);
   return to;
@@ -369,6 +375,8 @@ function transitionRole(id, state, group, role, action, executor, reason) {
   const from = state.roles[group][role]?.status || 'pending';
   const to = action === 'begin' ? 'in_progress' : action === 'complete' ? 'pass' : action === 'fail' ? 'fail' : action === 'block' ? 'blocked' : 'skipped';
   state.roles[group][role] = { ...(state.roles[group][role] || {}), status: to, updatedAt: now(), ...(executor && executor !== '-' ? { executor } : {}), ...(reason ? { note: reason } : {}) };
+  if (to === 'fail' || to === 'blocked') recordFailure(state.roles[group][role], reason);
+  else if (to === 'pass') clearFailure(state.roles[group][role]);
   record(state, { kind: 'role', group, role, action, from, to, executor: executor && executor !== '-' ? executor : null, reason: reason || null });
   reconcileState(id, state);
   return to;
@@ -390,6 +398,16 @@ function refuseLiveRole(id, group, role, status) {
   if (pid) throw new Error(`${group}/${role} is still running in the workflow engine (parallel role runner pid ${pid}); wait for the stage to finish or stop that run first, then retry`);
 }
 
+// Why `retry` has nothing to do, and what would move the run instead.
+function nothingToRetry(id, state) {
+  const cli = process.env.AI_AGENTIC_CLI === '1';
+  if (state.status === 'done') return `nothing to retry — ${id} is closed`;
+  const attention = needsYou(id, state, { root: RUNS });
+  if (attention?.kind === 'waiting') return `nothing to retry; ${attention.headline.charAt(0).toLowerCase()}${attention.headline.slice(1)} — run: ${attention.command}`;
+  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)))) return `nothing to retry — ${id} is complete`;
+  return `nothing to retry; run ${cli ? 'agentic resume' : 'node ai/workflow/engine.js resume'} ${id}`;
+}
+
 function render(id, state) {
   reconcileState(id, state);
   console.log(`${id} — /feature run (${state.status})${fs.existsSync(path.join(RUNS, id, 'plan.approved')) ? ' · plan approved' : ' · plan NOT approved (edits outside ai/runs are denied)'}`);
@@ -400,8 +418,9 @@ function render(id, state) {
   const legacyClosed = state.status === 'done' && !state.phases?.['pull-request'] && !state.abandoned && phaseStatus(state, 'verification') === 'pass';
   for (const phase of PHASES) {
     const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : { status: 'pending' });
-    console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${entry.status.padEnd(12)}${entry.note ? ` — ${entry.note}` : ''}`);
-    for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${role.padEnd(18)} ${String(roleState.status).padEnd(12)}${roleState.executor ? ` · ${roleState.executor}` : ''}${roleState.note ? ` — ${roleState.note}` : ''}`);
+    // Notes quote agent and tool output: printable text only on the terminal.
+    console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${printable(entry.status).padEnd(12)}${entry.note ? ` — ${printable(entry.note)}` : ''}`);
+    for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${printable(role).padEnd(18)} ${printable(roleState.status).padEnd(12)}${roleState.executor ? ` · ${printable(roleState.executor)}` : ''}${roleState.note ? ` — ${printable(roleState.note)}` : ''}`);
   }
   const evidence = mobileEvidenceSummary(id, state);
   console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · execution ${evidence.execution?.status || 'missing'} · attestation ${evidence.attestation ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
@@ -409,6 +428,10 @@ function render(id, state) {
   else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
   const next = state.status === 'done' ? null : PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
   console.log(`\n→ resume at: ${next || 'done'}`);
+  // The same needs-you line as the progress views and the engine's notification.
+  const engine = liveEngine(path.join(RUNS, id));
+  if (engine) console.log(`● engine running: ${describeEngine(engine)}`);
+  else for (const line of needsYouLines(needsYou(id, state, { root: RUNS }))) console.log(line);
 }
 
 function requireAdmin() {
@@ -608,6 +631,64 @@ function selftest() {
   assert.strictEqual(afterBurst.history.filter(h => h.kind === 'role' && h.group === 'analysis').length, concurrentRoles.length * 2, 'no history entry was lost');
   assert.ok(!fs.existsSync(path.join(retryRoot, 'CONCURRENT-TEST', 'state.json.lock')), 'state lock released');
 
+  // A blocked conditional role (verification's mobile-evidence) leaves its stage
+  // pending, so retry used to say "nothing to retry". It resets it now, with
+  // the rest or by name, and keeps the failure streak for the next attempt.
+  {
+    const id = 'COND-TEST';
+    const env = { FEATURE_RUN_ID: id };
+    const cli = (argv, extra = {}) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, ...env, ...extra }, encoding: 'utf8' });
+    const stateOf = () => JSON.parse(fs.readFileSync(path.join(retryRoot, id, 'state.json'), 'utf8'));
+    cli(['start', id]);
+    const nothing = cli(['retry', id]);
+    assert.notStrictEqual(nothing.status, 0);
+    assert.match(nothing.stderr, new RegExp(`nothing to retry; run node ai/workflow/engine\\.js resume ${id}`), nothing.stderr);
+    assert.match(cli(['retry', id], { AI_AGENTIC_CLI: '1' }).stderr, new RegExp(`nothing to retry; run agentic resume ${id}`));
+    const block = reason => assert.strictEqual(cli(['conditional', 'verification', 'mobile-evidence', 'blocked', reason]).status, 0);
+    block('mobile-evidence run failed: no booted Android emulator (checked at 2026-11-03T10:00:00Z)');
+    block('mobile-evidence run failed: no booted Android emulator (checked at 2026-11-04T09:30:12Z)');
+    assert.strictEqual(stateOf().conditionals.verification['mobile-evidence'].repeatedFailure, 2, 'the same reason twice is a repeat');
+    const shown = cli(['status', id]);
+    assert.match(shown.stdout, /⚠ Needs you: Same failure as last time — this needs a fix outside Final Verification/);
+    assert.match(shown.stdout, /→ run: node ai\/tasks\/feature\/runs\.js retry COND-TEST && node ai\/workflow\/engine\.js resume COND-TEST/);
+    const all = cli(['retry', id]);
+    assert.strictEqual(all.status, 0, all.stderr);
+    assert.match(all.stdout, /retried verification\/mobile-evidence \(conditional\)/);
+    const reset = stateOf().conditionals.verification['mobile-evidence'];
+    assert.strictEqual(reset.status, 'pending');
+    assert.strictEqual(reset.repeatedFailure, 2, 'a reset keeps the streak');
+    assert.ok(stateOf().history.some(h => h.kind === 'conditional-role' && h.action === 'retry' && h.from === 'blocked'));
+    block('mobile-evidence run failed: no booted Android emulator (checked at 2026-11-05T08:00:00Z)');
+    assert.strictEqual(stateOf().conditionals.verification['mobile-evidence'].repeatedFailure, 3);
+    const named = cli(['retry', id, 'mobile-evidence']);
+    assert.strictEqual(named.status, 0, named.stderr);
+    assert.match(named.stdout, /verification\/mobile-evidence \(conditional\)/);
+    assert.notStrictEqual(cli(['retry', id, 'mobile-evidence']).status, 0, 'nothing left to retry by that name');
+    // A phase failing twice for the same reason is recorded on the phase.
+    for (const p of ['request', 'requirements']) cli(['skip', p, 'claude', 'test']);
+    for (let i = 0; i < 2; i++) {
+      cli(['begin', 'acceptance-criteria', 'claude']);
+      cli(['fail', 'acceptance-criteria', 'claude', `acceptance criteria rejected: schema error at /criteria/0 (attempt ${id}-acceptance-criteria-orchestration-${i + 1}-176216400012${i})`]);
+    }
+    assert.strictEqual(stateOf().phases['acceptance-criteria'].repeatedFailure, 2);
+    // While an engine drives the run, retry refuses to reset anything.
+    const owner = path.join(retryRoot, id, 'engine', 'engine.pid');
+    fs.mkdirSync(path.dirname(owner), { recursive: true });
+    fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, host: os.hostname(), command: 'resume', startedAt: now() }));
+    const busy = cli(['retry', id]);
+    assert.notStrictEqual(busy.status, 0);
+    assert.match(busy.stderr, new RegExp(`${id} is being driven by engine pid ${process.pid} \\(resume\\)`));
+    assert.strictEqual(stateOf().phases['acceptance-criteria'].status, 'fail', 'a refused retry changes nothing');
+    assert.match(cli(['status', id]).stdout, /● engine running: engine pid/);
+    fs.unlinkSync(owner);
+    const fixed = cli(['retry', id]);
+    assert.strictEqual(fixed.status, 0, fixed.stderr);
+    assert.strictEqual(stateOf().phases['acceptance-criteria'].repeatedFailure, 2, 'the phase keeps its streak through retry');
+    cli(['begin', 'acceptance-criteria', 'claude']);
+    cli(['fail', 'acceptance-criteria', 'claude', 'a different problem: the request is ambiguous']);
+    assert.strictEqual(stateOf().phases['acceptance-criteria'].repeatedFailure, undefined, 'a new reason is not a repeat');
+  }
+
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
   console.log('runs.js selftest OK');
@@ -726,7 +807,9 @@ try {
       locked(id, () => {
         const state = ensureShape(load(id), id);
         state.conditionals[phase] ||= {};
-        state.conditionals[phase][role] = { status, updatedAt: now(), ...(reason ? { reason } : {}) };
+        const previous = state.conditionals[phase][role];
+        state.conditionals[phase][role] = { ...(status === 'fail' || status === 'blocked' ? carried(previous) : {}), status, updatedAt: now(), ...(reason ? { reason } : {}) };
+        if (status === 'fail' || status === 'blocked') recordFailure(state.conditionals[phase][role], reason);
         record(state, { kind: 'conditional-role', phase, role, to: status, reason: reason || null });
         atomicSave(id, state);
       });
@@ -750,6 +833,10 @@ try {
       const [id, ...roles] = rest;
       if (!id || !safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('retry requires a valid run id');
       if (roles.some(role => !safeRole(role))) throw new Error('retry requires valid role names');
+      // An engine driving the run would race the reset: it may complete a stage
+      // retry has just put back to pending, or begin one twice.
+      const engine = liveEngine(path.join(RUNS, id));
+      if (engine?.kind === 'engine') throw new Error(`${id} is being driven by ${describeEngine(engine)}; wait for it to stop (agentic progress shows it), then retry. If no engine is running for ${id}, delete ${ownerFile(path.join(RUNS, id))} first`);
       locked(id, () => {
         const state = ensureShape(load(id), id);
         reconcileState(id, state);
@@ -780,10 +867,23 @@ try {
             if (roles.length ? !roles.includes(role) : false) continue;
             if (!RETRYABLE.includes(roleState.status)) continue;
             refuseLiveRole(id, group, role, roleState.status);
-            state.roles[group][role] = { status: 'pending', updatedAt: now() };
+            state.roles[group][role] = { ...carried(roleState), status: 'pending', updatedAt: now() };
             clearAttempts(group, role);
             record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
             retried.push(`${group}/${role}`);
+          }
+        }
+        // A conditional role (verification's mobile-evidence) blocks before its
+        // stage begins, so the stage reads pending and the loops above and below
+        // never see it. Reset it with the rest, or by its own name.
+        for (const [phaseId, group] of Object.entries(state.conditionals || {})) {
+          for (const [role, entry] of Object.entries(group || {})) {
+            if (roles.length && !roles.includes(role)) continue;
+            if (!['fail', 'blocked'].includes(entry?.status)) continue;
+            state.conditionals[phaseId][role] = { ...carried(entry), status: 'pending', updatedAt: now(), ...(entry.reason ? { reason: entry.reason } : {}) };
+            clearAttempts(phaseId, role);
+            record(state, { kind: 'conditional-role', phase: phaseId, role, action: 'retry', from: entry.status, to: 'pending', reason: 'retry requested' });
+            retried.push(`${phaseId}/${role} (conditional)`);
           }
         }
         if (!roles.length) {
@@ -832,7 +932,7 @@ try {
             }
           }
         }
-        if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
+        if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : nothingToRetry(id, state));
         reconcileState(id, state);
         atomicSave(id, state);
         console.log(`${id}: retried ${retried.join(', ')}`);

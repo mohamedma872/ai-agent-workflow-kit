@@ -274,6 +274,17 @@ rag:
 #   base: auto            # auto = the branch the run's worktree was created from
 #   branch: "ai/{id}"     # template for the pushed branch; {id} = run id
 #   draft: false
+
+# Enforced — read by ai/workflow/notify.js and the progress terminal from this
+# file in the main checkout. Both are on by default and local only (no network):
+# the engine shows a desktop notification (macOS osascript, Linux notify-send)
+# when a stage blocks or fails, when the run waits for you (plan approval,
+# architecture selection, specialist conflicts), when it completes and when its
+# pull request opens; agentic progress rings the terminal bell and marks the
+# run. Each event is shown once. Eval runs (AI_EVAL=1) never notify.
+# notifications:
+#   desktop: true         # false = no desktop notifications from the engine
+#   bell: true            # false = agentic progress does not ring the bell
 `);
 
   writeIfMissing(path.join(agentic, 'knowledge.yaml'), `version: 1
@@ -396,12 +407,14 @@ Usage:
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
   agentic approve <run-id>
-  agentic retry <run-id> [role...] Reset failed/blocked role(s) (or the stuck phase) to pending and resume
+  agentic retry <run-id> [role...] Reset failed/blocked role(s), conditional roles such as
+                                   mobile-evidence, or the stuck phase to pending, and resume
   agentic pr <run-id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]
                                    Commit, push and open the run's pull request after verification
                                    (works while pull_request is disabled; --dry-run changes nothing;
                                    a closed run needs --reopen; an unknown option is refused)
   agentic progress                 Terminal dashboard for in-progress features
+                                   (⚠ = needs you, ● = engine running; R resume, T retry)
   agentic progress <run-id> [--watch|--json|--markdown]
   agentic dashboard [--all] [--run <id>]
   agentic runs [--all] [--json]    List features and which one is active
@@ -443,11 +456,23 @@ function selftest() {
   assert.match(configText, /^# pull_request:\n#   enabled: false/m);
   const prConfig = require('../workflow/pull-request').loadConfig(temp);
   assert.deepStrictEqual([prConfig.enabled, prConfig.problems], [false, []], 'the init template leaves the pull request stage off');
-  const at = configText.indexOf('# pull_request:');
-  const uncommented = configText.slice(0, at) + configText.slice(at).replace(/^# /gm, '');
+  // Uncomment one block of the template, up to the blank line that ends it.
+  const uncomment = (text, heading) => {
+    const at = text.indexOf(heading);
+    const end = text.indexOf('\n\n', at) < 0 ? text.length : text.indexOf('\n\n', at);
+    return text.slice(0, at) + text.slice(at, end).replace(/^# /gm, '') + text.slice(end);
+  };
+  const uncommented = uncomment(configText, '# pull_request:');
   fs.writeFileSync(path.join(temp, '.agentic', 'config.yaml'), uncommented);
   const asWritten = require('../workflow/pull-request').loadConfig(temp);
   assert.deepStrictEqual([asWritten.enabled, asWritten.provider, asWritten.remote, asWritten.base, asWritten.branch, asWritten.draft, asWritten.problems], [false, 'auto', 'origin', 'auto', 'ai/{id}', false, []], 'uncommented as shipped, the block is valid and still off');
+  // The notifications block ships commented out and documents the defaults,
+  // which are on; uncommented as shipped it is valid and changes nothing.
+  assert.match(configText, /^# notifications:\n#   desktop: true .*\n#   bell: true /m);
+  const notify = require('../workflow/notify');
+  assert.deepStrictEqual(notify.loadConfig(temp), { desktop: true, bell: true, problems: [] });
+  fs.writeFileSync(path.join(temp, '.agentic', 'config.yaml'), uncomment(configText, '# notifications:'));
+  assert.deepStrictEqual(notify.loadConfig(temp), { desktop: true, bell: true, problems: [] }, 'uncommented as shipped, the block keeps the defaults');
   fs.writeFileSync(path.join(temp, '.agentic', 'config.yaml'), configText);
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.agentic-runs/'));
   assert(fs.readFileSync(path.join(temp, '.gitignore'), 'utf8').includes('.mcp.json'));

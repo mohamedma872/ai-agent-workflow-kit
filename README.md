@@ -260,7 +260,7 @@ agentic feature FEAT-001 \
 agentic progress
 ```
 
-Opens the terminal dashboard on the active feature, with every other in-progress feature listed beside it. See [Progress](#progress).
+Opens the terminal dashboard on the active feature, with every other in-progress feature listed beside it. See [Progress](#progress). You do not have to watch it: the engine sends a desktop notification when the run blocks, fails, waits for your approval or completes.
 
 ### 6. Approve the generated plan
 
@@ -359,10 +359,22 @@ agentic switch FEAT-002       # make a feature the active run
 │                    │    🔄 security             in_progress      │
 │                    │ Current: Specialist Analysis → security     │
 ╰────────────────────┴─────────────────────────────────────────────╯
- ↑↓ select · enter set active · a all runs · r refresh · q quit
+ ↑↓ select · enter set active · R resume · T retry · c close · a all runs · r refresh · q quit
 ```
 
-`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+
+A run that needs you is marked `⚠` in the list, and one whose engine is running `●`. The highlighted run gets a banner with the reason and the exact command:
+
+```text
+│ ⚠ NEEDS YOU · Same failure as last time — this needs a fix outside    │
+│   Final Verification                                                  │
+│   mobile-evidence: mobile evidence is required but no Android/iOS     │
+│   target could be derived; use --platforms android,ios …              │
+│ → agentic retry FEAT-011                                              │
+```
+
+The engine sends the same text as a desktop notification (macOS `osascript`, Linux `notify-send`; local only), once per event, so it reaches you with the dashboard closed; the dashboard rings its bell. `R` and `T` start the engine detached, log to `<run>/engine/background.log`, and refuse while an engine for that run is alive. Plan approval has no key: run the `agentic approve <id>` the banner shows. Turn notifications off with `notifications: { desktop: false, bell: false }` in `.agentic/config.yaml`. "Same failure as last time" means the stage failed twice in a row for the same reason, so retrying it again will not help: the cause is outside that stage.
 
 Closing a feature whose verification has not passed records it as abandoned rather than complete, so an unfinished run never reads as done.
 
@@ -438,7 +450,7 @@ agentic --project ~/projects/payment-backend \
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
 | `agentic approve <id>` | human approval of the implementation plan |
-| `agentic retry <id> [role...]` | reset failed/blocked roles or stages to pending and resume |
+| `agentic retry <id> [role...]` | reset failed/blocked roles, conditional roles (`mobile-evidence`) or stages to pending and resume |
 | `agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]` | commit, push and open the run's pull request after verification (works while `pull_request` is disabled; a closed run needs `--reopen`) |
 | `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
 | `agentic runs [--all] [--json]` | list features and which one is active |
@@ -1605,6 +1617,8 @@ Stages declared `strategy: parallel` (`analysis` and `reviews`) run their select
 A role that reads its siblings' results runs after them, one at a time, once they have all passed. Today that is `behavior-regression-review`, which reads the other reviews (`validated_review_findings` in its contract).
 
 Each role runs in its own process group, so stopping the stage also stops the agent a role started. Ctrl-C, a signal to the runner, or the engine process dying all stop it. A role or agent that ignores the signal is killed after 10 s. If the runner itself is killed outright, each role process notices within a second and stops its group, and the engine stops the groups listed in `engine/<stage>-parallel.pgids`. Stopped roles are marked failed with `interrupted: …`, and `resume` starts them again. While the roles run, `engine/<stage>-parallel.pid` in the run directory holds the runner's pid, and `retry` refuses to reset a running role of that stage.
+
+One engine drives a run at a time. While `start`, `resume`, `run`, `run-next` or `pr` works on a run, `engine/engine.pid` names it. A second engine for the run refuses to start and names the owner, and `retry` refuses until it stops. A role or stage whose retry policy will not re-attempt it (a deterministic failure, attempts used up) is left as it is by `resume`, with its reason; `retry` resets it.
 
 | Setting | Where | Effect |
 |---|---|---|

@@ -3,7 +3,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { stateRoot } = require('./paths');
+const yaml = require('js-yaml');
+const { stateRoot, relativeStatePath } = require('./paths');
+const { unresolvedBlocking } = require('./conflict-tracker');
+const { liveEngine, describe: describeEngine } = require('./engine-owner');
 
 const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
@@ -284,6 +287,131 @@ function pullRequestLine(summary) {
   return null;
 }
 
+// ---------------------------------------------------------------- needs you
+// What the run is waiting on a human for, derived from state alone, so the
+// dashboard, `agentic status`, the Markdown view and the engine's notification
+// say the same thing: a stage (or a stage's conditional role) that failed or
+// blocked, with its reason and the command that continues; the plan approval
+// or architecture selection gate; or unresolved specialist conflicts that hold
+// the plan back. Returns null when nothing waits on a human.
+
+// Stage order from the workflow, so refactor-only stages sort where they run.
+let workflowOrder = null;
+function stageOrder() {
+  if (workflowOrder) return workflowOrder;
+  try { workflowOrder = (yaml.load(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'feature.yaml'), 'utf8')).stages || []).map(stage => stage.id); }
+  catch { workflowOrder = PHASES; }
+  return workflowOrder;
+}
+function labelOf(phase) { return LABELS[phase] || oneLine(String(phase).split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '), 60); }
+// Escape sequences (CSI, OSC such as the OSC 52 clipboard write, any other ESC)
+// and C0/C1 control characters. Notes come from agent and tool output, or are
+// written straight into state.json; on a terminal they could move the cursor
+// and rewrite the command a human is told to type.
+const TERMINAL_UNSAFE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?|[\u0000-\u001f\u007f-\u009f]/g;
+function printable(text) { return String(text == null ? '' : text).replace(TERMINAL_UNSAFE, ' '); }
+// One printable line, at most `max` characters.
+function oneLine(text, max = 220) {
+  const value = printable(text).replace(/\s+/g, ' ').trim();
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+// The command a human types next, as this install spells it.
+function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1') {
+  const engine = `node ai/workflow/engine.js resume ${id}`;
+  switch (action) {
+    case 'retry': return cli ? `agentic retry ${id}` : `node ai/tasks/feature/runs.js retry ${id} && ${engine}`;
+    case 'resume': return cli ? `agentic resume ${id}` : engine;
+    case 'approve': return cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id} && ${engine}`;
+    case 'architecture': return cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
+    case 'conflicts': return cli ? `agentic conflicts ${id}` : `node ai/workflow/conflicts.js list ${id}`;
+    default: throw new Error(`unknown action ${action}`);
+  }
+}
+
+function needsYou(id, state, options = {}) {
+  if (!state || state.status === 'done') return null;
+  const cli = options.cli !== undefined ? options.cli : process.env.AI_AGENTIC_CLI === '1';
+  const root = options.root || RUNS;
+  // The views show 220 characters; the engine's notification asks for all of
+  // it, so notify.js can redact before it shortens.
+  const reasonMax = options.reasonMax || 220;
+  const order = stageOrder();
+  const status = phase => effectiveStatus(state, phase);
+  const artifact = file => (cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`);
+
+  const stuck = [];
+  for (const phase of new Set([...order, ...PHASES, ...Object.keys(state.phases || {})])) {
+    const value = status(phase);
+    if (value !== 'fail' && value !== 'blocked') continue;
+    const entry = state.phases?.[phase] || {};
+    const roles = roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked');
+    stuck.push({
+      phase,
+      status: value,
+      reason: roles.length ? roles.map(([name, role]) => `${name}: ${role.note || role.status}`).join('; ') : entry.note || `${value}, with no reason recorded`,
+      repeated: Math.max(Number(entry.repeatedFailure) || 0, ...roles.map(([, role]) => Number(role.repeatedFailure) || 0)),
+      at: roles.length ? roles.map(([, role]) => role.updatedAt || '').sort().pop() : entry.updatedAt,
+    });
+  }
+  // A conditional role (verification's mobile-evidence) blocks before its
+  // stage begins, so the stage itself still reads pending.
+  for (const [phase, group] of Object.entries(state.conditionals || {})) {
+    if (DONE.has(status(phase))) continue;
+    for (const [role, entry] of Object.entries(group || {})) {
+      if (entry?.status !== 'fail' && entry?.status !== 'blocked') continue;
+      stuck.push({ phase, role, status: entry.status, reason: `${role}: ${entry.reason || entry.status}`, repeated: Number(entry.repeatedFailure) || 0, at: entry.updatedAt });
+    }
+  }
+  if (stuck.length) {
+    // The furthest downstream stop is the actionable one (as in currentWork).
+    const top = stuck.sort((a, b) => order.indexOf(b.phase) - order.indexOf(a.phase))[0];
+    const label = labelOf(top.phase);
+    const repeated = top.repeated >= 2 ? top.repeated : 0;
+    return {
+      kind: top.status,
+      stage: top.phase,
+      role: top.role || null,
+      label,
+      headline: repeated ? `Same failure as last time — this needs a fix outside ${label}` : `${label}${top.role ? ` (${oneLine(top.role, 60)})` : ''} ${top.status === 'fail' ? 'failed' : 'blocked'}`,
+      reason: oneLine(top.reason, reasonMax),
+      // Every pull-request step can be repeated, so a resume continues it; any
+      // other stopped stage needs its spent attempts cleared first.
+      command: commandFor(top.phase === 'pull-request' ? 'resume' : 'retry', id, cli),
+      repeated,
+      key: `${id}|${top.phase}${top.role ? `/${top.role}` : ''}|${top.status}|${top.at || ''}`,
+    };
+  }
+
+  const waiting = (stage, headline, reason, command, at) => ({ kind: 'waiting', stage, role: null, label: labelOf(stage), headline, reason, command, repeated: 0, key: `${id}|${stage}|waiting|${at || ''}` });
+  if (status('architecture-options') === 'pass' && !DONE.has(status('architecture-selection')) && !fs.existsSync(path.join(root, id, 'architecture.selected'))) {
+    return waiting('architecture-selection', 'Architecture selection waits for you', `Review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')}, then choose an option.`, commandFor('architecture', id, cli), state.phases?.['architecture-options']?.updatedAt);
+  }
+  if (status('plan') === 'pass' && rawStatusOf(state, 'approval') !== 'pass' && !planApproved(id, root)) {
+    return waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt);
+  }
+  if (!DONE.has(status('plan')) && DONE.has(status('analysis'))) {
+    let conflicts = [];
+    try { conflicts = unresolvedBlocking(JSON.parse(fs.readFileSync(path.join(root, id, '05-analysis', 'conflicts.json'), 'utf8')).conflicts || []); } catch { conflicts = []; }
+    if (conflicts.length) {
+      const ids = conflicts.map(conflict => conflict.id).sort();
+      return waiting('plan', 'Specialist conflicts block the plan', `${ids.length} unresolved conflict(s): ${ids.join(', ')}. Decide each with ${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} <run-id> <conflict-id> --decision "..." --rationale "...", then resume.`, commandFor('conflicts', id, cli), ids.join(','));
+    }
+  }
+  return null;
+}
+
+// When the run completed, and the key its "complete" event uses. A run that
+// completes again after rework has a new time, so it is told again.
+function completedAt(state) {
+  return state?.phases?.['pull-request']?.updatedAt || state?.phases?.verification?.updatedAt || '';
+}
+function completeKey(id, at) { return `${id}|run|complete${at ? `|${at}` : ''}`; }
+
+function needsYouLines(attention) {
+  if (!attention) return [];
+  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, `  → run: ${attention.command}`];
+}
+
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
   return {
@@ -297,6 +425,11 @@ function buildSummary(id, state, options = {}) {
     warnings: consistencyIssues(state),
     pullRequest: pullRequestSummary(state),
     pullRequestHint: pullRequestHint(id, state),
+    needsYou: needsYou(id, state, { root: options.root || RUNS }),
+    completedAt: completedAt(state),
+    // The engine driving the run right now (engine-owner.js): while it works,
+    // a block in the state is what it is re-running, not something to act on.
+    engine: options.demo ? null : liveEngine(path.join(options.root || RUNS, id)),
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);
@@ -326,6 +459,13 @@ function renderTerminal(summary) {
   lines.push(`   ${progressBar(summary.percent)}  ${summary.percent}%`);
   const prLine = pullRequestLine(summary);
   if (prLine) lines.push(` 🔗 ${prLine}`);
+  if (summary.engine) {
+    lines.push('');
+    lines.push(` ● engine running: ${describeEngine(summary.engine)}`);
+  } else if (summary.needsYou) {
+    lines.push('');
+    for (const line of needsYouLines(summary.needsYou)) lines.push(` ${line}`);
+  }
   lines.push('');
 
   for (const phase of summary.phases) {
@@ -352,7 +492,9 @@ function renderTerminal(summary) {
   return lines.join('\n');
 }
 
-function renderMarkdown(summary) {
+// `published: true` is the GitHub progress comment, which never carries run
+// notes: the needs-you line keeps its headline and command but not the reason.
+function renderMarkdown(summary, options = {}) {
   const rows = summary.phases.map(phase => {
     const icon = ICONS[phase.status] || '•';
     const reconciled = phase.rawStatus ? ` _(stored: ${phase.rawStatus})_` : '';
@@ -367,11 +509,21 @@ function renderMarkdown(summary) {
     })
     .join('\n');
 
+  // A published comment never names the engine's host or command.
+  const attention = summary.engine
+    ? `\n> ● **Engine running**${options.published ? '' : `: ${describeEngine(summary.engine)}`}`
+    : summary.needsYou
+      ? `\n> ⚠ **Needs you:** ${summary.needsYou.headline}  \n${options.published ? '' : `> ${summary.needsYou.reason}  \n`}> Run: \`${summary.needsYou.command}\``
+      : '';
+
   const warnings = summary.warnings.length
-    ? `\n> ⚠ **State reconciliation**\n> ${summary.warnings.join('\n> ')}`
+    ? `\n> ⚠ **State reconciliation**\n> ${summary.warnings.map(warning => oneLine(warning, 400)).join('\n> ')}`
     : '';
 
-  return [
+  // The empty line before the stage table survives the filter: after a block
+  // quote without it, the table is a lazy continuation of the quote and does
+  // not render as a table.
+  const head = [
     '## 🤖 Agentic Workflow Progress',
     '',
     `**Run:** \`${summary.id}\`  `,
@@ -380,15 +532,21 @@ function renderMarkdown(summary) {
     summary.pullRequest ? `**Pull request:** [${summary.pullRequest.number != null ? `#${summary.pullRequest.number}` : 'open'}](${summary.pullRequest.url})${summary.pullRequest.draft ? ' (draft)' : ''}  ` : '',
     !summary.pullRequest && summary.pullRequestHint ? `**Pull request:** not opened — run \`${summary.pullRequestHint}\`  ` : '',
     `**Plan gate:** ${summary.planApproved ? '✅ Approved' : '🔒 Waiting for human approval'}`,
+    attention,
     warnings,
+  ].filter(Boolean);
+  return [
+    ...head,
     '',
-    '| Stage | Status |',
-    '|---|---|',
-    ...rows,
-    detailSections,
-    '',
-    summary.updatedAt ? `_Last update: ${summary.updatedAt}_` : '',
-  ].filter(Boolean).join('\n');
+    ...[
+      '| Stage | Status |',
+      '|---|---|',
+      ...rows,
+      detailSections,
+      '',
+      summary.updatedAt ? `_Last update: ${summary.updatedAt}_` : '',
+    ].filter(Boolean),
+  ].join('\n');
 }
 
 function parseArgs(argv) {
@@ -458,6 +616,14 @@ module.exports = {
   percentComplete,
   currentWork,
   buildSummary,
+  needsYou,
+  needsYouLines,
+  commandFor,
+  completedAt,
+  completeKey,
+  oneLine,
+  printable,
+  labelOf,
   pullRequestLine,
   renderTerminal,
   renderMarkdown,

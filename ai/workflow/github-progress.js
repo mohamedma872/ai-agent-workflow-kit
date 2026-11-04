@@ -48,7 +48,7 @@ function resolvePr(explicit) {
 }
 
 function commentBody(summary) {
-  return `${MARKER}\n${renderMarkdown(summary)}\n\n> Safe status summary only. Local run artifacts, prompts, notes, and secrets are not published.`;
+  return `${MARKER}\n${renderMarkdown(summary, { published: true })}\n\n> Safe status summary only. Local run artifacts, prompts, notes, and secrets are not published.`;
 }
 
 function findExistingComment(repo, pr) {

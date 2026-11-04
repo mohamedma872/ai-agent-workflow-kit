@@ -686,7 +686,9 @@ the orchestrator saves their reports verbatim.
 `09-reviews/<agent>.md`, `10-fixes.md` (each finding valid/rejected + reason),
 `11-verification.md` (every AC and D with evidence), `12-pull-request.md`
 (the pull request title and body, from the engine's `pull-request` stage),
-`state.json` (resume; `pullRequest` holds the opened PR).
+`state.json` (resume; `pullRequest` holds the opened PR, `notifications.sent`
+the events already shown), `engine/engine.pid` (the engine driving the run, while
+it runs) and `engine/background.log` (engines started from `agentic progress`).
 `node ai/tasks/feature/runs.js status` shows where a run is.
 
 **Pull request (engine runs, 1.9.31).** After verification the engine's last
@@ -709,6 +711,26 @@ roles cannot push or open PRs: inside an engine-launched role `git push`,
 `gh pr create`, `agentic pr` and the PR APIs are denied, whatever global options
 precede the subcommand (`ai/guard/subagent-capabilities.js`), and the agent's git
 environment rewrites every push URL to one that cannot be reached.
+
+**When a run needs you (engine runs, 1.9.31).** The engine sends a desktop
+notification on its own transitions (`ai/workflow/notify.js`: macOS `osascript`
+with the text as argv, Linux `notify-send`, never the network). It fires when a
+stage blocks or fails (stage, one-line reason, exact next command), when the plan
+waits for approval, when architecture selection or specialist conflicts wait,
+when the run completes and when `agentic pr` opens a PR. Each event is shown once
+(`state.notifications.sent`); eval mode never notifies; `notifications.desktop` /
+`notifications.bell` in `.agentic/config.yaml` turn the channels off. The text
+comes from `needsYou` in `ai/workflow/progress.js`, which the dashboard banner,
+`runs.js status` and `agentic runs` use too. `agentic progress` marks such runs
+`⚠` (and `●` while an engine runs), rings its bell, and starts a background
+`resume` (`R`) or `retry` + resume (`T`); approval stays a command. A failure
+whose normalised reason matches the previous one sets `repeatedFailure: n`
+(`ai/workflow/repeated-failure.js`) and is reported as "Same failure as last time
+— this needs a fix outside <stage>". `resume` leaves a stage the retry policy
+will not re-attempt as it is, with its reason. `retry` also resets a blocked
+conditional role (`verification/mobile-evidence`), all of them or by name. One
+engine drives a run at a time: `<run>/engine/engine.pid`
+(`ai/workflow/engine-owner.js`), and `retry` refuses while it is held.
 
 **The plan gate is a fence rule, not a request.** `ai/tasks/feature/guard.js`
 denies every Write/Edit/apply_patch outside `ai/runs/` and every `git commit`
@@ -776,6 +798,7 @@ for server and web work.
 | `QC_EVAL` | guard, QC skill, QC rules | same as `AI_EVAL` for the QC task; also flips the skill into eval mode |
 | `AI_SESSION_BUDGET_USD` | guard rule 7 | checkpoint size for session spend, default 50 |
 | `AI_WORKFLOW_MAX_PARALLEL` | workflow engine | most roles of a parallel stage (`analysis`, `reviews`) running at once, default 4; `1` = one at a time; a stage's `max_parallel` overrides it |
+| `AI_WORKFLOW_TEST_NOTIFY_LOG` | notifier, selftests only | with `AI_WORKFLOW_SELFTEST=1`, notifications are appended to this file instead of shown; without it, selftests show none |
 | `AI_WORKFLOW_STATE_LOCK_STALE_MS` / `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` | state writers | when a `state.json.lock` from another host counts as stale (default 60000; a same-host lock is stale only once its pid is dead) / how long a writer waits for it (default 90000) |
 | `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` | pull-request stage | Bitbucket Cloud basic auth for opening the PR (an Atlassian API token with pull request write scope); names only, values never logged or stored |
 | `BITBUCKET_USERNAME` + `BITBUCKET_APP_PASSWORD` | pull-request stage | the older Bitbucket app-password pair, used when the two above are not set |

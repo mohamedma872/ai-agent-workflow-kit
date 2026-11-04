@@ -1253,7 +1253,7 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
     fs.writeFileSync(out, JSON.stringify({ schemaVersion: 1, runId: process.env.FEATURE_RUN_ID, title: ${JSON.stringify(description.title)}, summary: 'Adds a greeting line.', body: ${JSON.stringify(description.body)}, template: null,
       definitionOfDone: [{ item: 'tests pass', status: 'done' }, { item: 'device run', status: 'not-done', reason: 'no device available' }], residualRisks: ['run the app on a device'] }));
   `);
-  const env = { ...process.env, PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PROJECT_ROOT: fx.product, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME, AI_WORKFLOW_SELFTEST: '1', AI_WORKFLOW_TEST_EXECUTOR: stub, AI_WORKFLOW_TEST_PR_LAYER: ghLayer, AI_WORKFLOW_AVAILABLE_MCPS: '' };
+  const env = { ...process.env, PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PROJECT_ROOT: fx.product, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME, AI_WORKFLOW_SELFTEST: '1', AI_WORKFLOW_TEST_EXECUTOR: stub, AI_WORKFLOW_TEST_PR_LAYER: ghLayer, AI_WORKFLOW_AVAILABLE_MCPS: '', AI_WORKFLOW_TEST_NOTIFY_LOG: path.join(tmp, 'notify.log') };
   delete env.AI_WORKFLOW_PRODUCT_ROOT; delete env.AI_AGENTIC_CLI; delete env.AI_EVAL; delete env.QC_EVAL;
   const stateOf = id => JSON.parse(fs.readFileSync(path.join(states, id, 'state.json'), 'utf8'));
   // A run whose every stage before the new one is done, written the way a
@@ -1315,9 +1315,13 @@ function engineSelftest({ tmp, RUNTIME, ENGINE, RUNS_TOOL, fixture, description 
   assert.strictEqual(fx.remoteSha('feature/child'), done.pullRequest.commit);
   assert.ok(fs.existsSync(path.join(states, 'E2E-OLD', '12-pull-request.md')), 'the description artifact is kept');
   assert.match(renderTerminal(buildSummary('E2E-OLD', done, { root: states })), /Pull request: #7762 https:\/\/github\.com\/acme\/app\/pull\/7762/);
+  // The engine says the PR is open (the selftest log stands in for the desktop).
+  const notified = () => fs.readFileSync(path.join(tmp, 'notify.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepStrictEqual(notified().map(e => [e.key, e.kind, e.body]), [['E2E-OLD|pull-request|opened|https://github.com/acme/app/pull/7762', 'pr-opened', '#7762 https://github.com/acme/app/pull/7762']]);
   // Again: the description is not regenerated and the PR is not duplicated.
   const repeat = drive('(engine) => engine.pullRequestCommand("E2E-OLD", {})');
   assert.strictEqual(repeat.result, 'pass', repeat.stdout + repeat.stderr);
+  assert.strictEqual(notified().length, 1, 'the same open PR is announced once');
   assert.strictEqual(fs.readFileSync(path.join(tmp, 'executor.log'), 'utf8').trim().split('\n').length, 1, 'the description is written once');
   assert.strictEqual(JSON.parse(fs.readFileSync(db, 'utf8')).prs.length, 1, 'one PR, however often it is asked for');
   assert.strictEqual(stateOf('E2E-OLD').pullRequestOptions.branch, 'feature/child', 'the overrides persist');
