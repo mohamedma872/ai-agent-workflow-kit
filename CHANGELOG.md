@@ -4,6 +4,11 @@
 
 - No unreleased runtime changes.
 
+## 1.9.35 — 2026-11-04
+
+- **The plan gate follows the agent's own run.** `ai/tasks/feature/guard.js` checked plan approval on the active run (`_active`) for every call. With two runs going at once, `_active` pointed at a run whose plan was not approved, and an approved run's roles were denied every shell command, `flutter --version` included. On a real run, implementation could not do its approved setup (`pub get`, codegen), and Build + Tests could run neither tests nor the analyzer. The guard now gates on the run the engine launched the agent for (`FEATURE_RUN_ID`). Only when that is missing or unknown, as in an interactive session, does it use the active run. A value that is not a plain run id is ignored, and agents cannot change the environment their hooks run in. New `gatedRun()`; `activeRun()` and `gateOpen()` take the runs root, for the selftest.
+- `guard-selftest.js` covers it: an approved own run with another active run, an interactive session, an unapproved own run beside an approved one, an unknown id and a path as id.
+
 ## 1.9.34 — 2026-11-04
 
 - **Clicking a notification brings your terminal forward.** On macOS the engine sent notifications with `osascript`. macOS treats those as Script Editor's, so clicking one opened Script Editor. When `terminal-notifier` is installed (`brew install terminal-notifier`), the engine now uses it with `-activate`, so a click brings forward the app the engine was started from: `__CFBundleIdentifier`, which macOS sets for every process an app launches (Terminal, iTerm, VS Code, Ghostty…). A known `TERM_PROGRAM` is mapped to its app, and `AGENTIC_NOTIFY_ACTIVATE=<bundle id>` overrides both. Only a well-formed bundle id is used. Without `terminal-notifier`, `osascript` stays the fallback, and `agentic doctor` reports `notifications:click` with the install command. Notifications are grouped as `agentic`.

@@ -2,8 +2,9 @@
 /*
  * feature — THE PLAN GATE, enforced by the fence.
  *
- * While a /feature run is active (ai/runs/_active) and ai/runs/<id>/plan.approved
- * does not exist:
+ * While a /feature run is active and ai/runs/<id>/plan.approved does not exist
+ * (the run is the one the engine launched the agent for, FEATURE_RUN_ID, else
+ * the active run in ai/runs/_active):
  *   - structured edits outside ai/runs/ are denied;
  *   - apply_patch is denied;
  *   - shell commands that can mutate files are denied unless they are scoped to
@@ -22,12 +23,22 @@ const RUNS = process.env.AI_WORKFLOW_STATE_ROOT ? path.resolve(process.env.AI_WO
 function cfg() {
   try { return require('js-yaml').load(fs.readFileSync(path.join(__dirname, 'guard.yaml'), 'utf8')) || {}; } catch { return {}; }
 }
-function activeRun() {
-  try { const id = fs.readFileSync(path.join(RUNS, '_active'), 'utf8').trim(); return id && fs.existsSync(path.join(RUNS, id)) ? id : null; } catch { return null; }
+function activeRun(runs = RUNS) {
+  try { const id = fs.readFileSync(path.join(runs, '_active'), 'utf8').trim(); return id && fs.existsSync(path.join(runs, id)) ? id : null; } catch { return null; }
+}
+// The run whose plan gates this call: the one the engine launched the agent
+// for (FEATURE_RUN_ID), else the active run. With several runs going at once,
+// _active can point at another run whose plan is not approved yet, and the
+// approved run's roles were then denied every shell command, `flutter
+// --version` included. Agents cannot change the environment their hooks run in.
+function gatedRun(env = process.env, runs = RUNS) {
+  const own = String(env.FEATURE_RUN_ID || '').trim();
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(own) && fs.existsSync(path.join(runs, own))) return own;
+  return activeRun(runs);
 }
 const evalMode = () => process.env.AI_EVAL === '1';
-function gateOpen(id) {
-  const dir = path.join(RUNS, id);
+function gateOpen(id, runs = RUNS) {
+  const dir = path.join(runs, id);
   if (fs.existsSync(path.join(dir, 'plan.approved'))) return true;
   if (evalMode()) {
     const p = path.join(dir, '06-plan.md');
@@ -70,7 +81,7 @@ function shellMutationProblem(cmd) {
 
 module.exports = {
   rules(payload, ctx, { deny, ask }) {
-    const id = activeRun();
+    const id = gatedRun();
     if (!id) return;
     const tool = payload.tool_name || '';
     const input = payload.tool_input || {};
@@ -120,5 +131,5 @@ module.exports = {
       if (problem) deny(problem);
     }
   },
-  _test: { SHELL_WRITE_RE, isRunScopedWrite, shellMutationProblem },
+  _test: { SHELL_WRITE_RE, isRunScopedWrite, shellMutationProblem, gatedRun, gateOpen },
 };
