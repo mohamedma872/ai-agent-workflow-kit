@@ -135,6 +135,9 @@ function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,
    else if(input==='validated_review_findings'){const t=reviewArtifacts(runDir);if(t)sections.push(t);}
    else if(input==='dependency_versions'){const t=dependencyVersions(productRoot);if(t)sections.push(t);}
    else if(input==='pr_template') sections.push(prTemplateSection(productRoot));
+   // The runtime's analyzer comparison against the run base (analyzer-baseline.js),
+   // for the stages that judge "no new analyzer issues".
+   else if(input==='analyzer_baseline'){if(['build-test','verification'].includes(stageId)){const t=read(path.join(runDir,'engine','analyzer-baseline.md'));if(t)sections.push(t.slice(0,16000));}}
    else if(input==='refactor_verification_matrix'){const t=read(path.join(runDir,'engine','refactor-verification-matrix.json'));if(t)sections.push('## Refactor verification matrix\n'+t);}
    else if(input==='run_artifacts'||input==='repository_evidence'){const t=broadArtifacts(runDir,excludeArtifact);if(t)sections.push(t);}
  }

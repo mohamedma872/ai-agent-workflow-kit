@@ -36,6 +36,8 @@ const RUNS_TOOL = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const ROUTER = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'router.js');
 const { activityFile, createWriter: activityWriter } = require('./role-activity');
 const trackedFiles = require('./tracked-files');
+const { computeBaseline: analyzerBaseline } = require('./analyzer-baseline');
+const { flutterPin, locateFlutter } = require('./toolchain');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const MOBILE_EVIDENCE = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'mobile-evidence.js');
 const PARALLEL_ROLES = path.join(__dirname, 'parallel-roles.js');
@@ -374,6 +376,41 @@ function executorScript(env = process.env) {
 function promptFile(id, stageId, roleName) { const dir = engineDir(id); fs.mkdirSync(dir, { recursive: true }); return path.join(dir, `${stageId}-${roleName}.md`); }
 function structuredSchema(wf, stage, roleName) { return stage.artifact_schema || wf.roles?.[roleName]?.artifact_schema || null; }
 
+// ---------------------------------------------------------------- Flutter
+// The SDK a role runs on: the project's pinned one (.fvmrc) when installed.
+// Without it, each role is told the versions differ (router.js) and the human
+// is told once per engine what to install.
+let pinWarned = false;
+function flutterEnvFor(id, worktree) {
+  let pin = null;
+  try { pin = flutterPin(worktree); } catch { pin = null; }
+  if (!pin) return {};
+  if (!pin.match && !pinWarned) {
+    pinWarned = true;
+    console.warn(`⚠ ${id}: the project pins Flutter ${pin.pinned} (.fvmrc), but this machine runs ${pin.localVersion || 'another version'} and has no ${pin.pinned} SDK. Roles are told to avoid re-resolving packages; to run on the pinned SDK: fvm install ${pin.pinned}`);
+  }
+  return pin.env;
+}
+function dartFor(worktree) {
+  let bin = null;
+  try { bin = flutterPin(worktree)?.sdkBin || locateFlutter()?.binDir || null; } catch { bin = null; }
+  const dart = bin ? path.join(bin, process.platform === 'win32' ? 'dart.bat' : 'dart') : null;
+  return dart && fs.existsSync(dart) ? dart : null;
+}
+// Before the stages that judge "no new analyzer issues", the runtime compares
+// the changed Dart files' issues with the run base (analyzer-baseline.js), so
+// the role does not have to prove what was pre-existing. Flutter/Dart only;
+// never fails the stage.
+const ANALYZER_STAGES = new Set(['build-test', 'verification']);
+function prepareAnalyzerBaseline(id) {
+  const worktree = productRoot(id);
+  if (!fs.existsSync(path.join(worktree, 'pubspec.yaml'))) return null;
+  const result = analyzerBaseline({ productRoot: worktree, baseSha: runBaseSha(id), files: changedFileList(worktree, runBaseSha(id)), dart: dartFor(worktree), outDir: engineDir(id) });
+  if (result.status === 'ok') console.log(`${id}: analyzer vs base: ${result.totals.base} → ${result.totals.run} issues in ${result.files.length} changed file(s), ${result.grew.length ? `${result.grew.length} code(s) grew` : 'nothing new'}`);
+  else console.log(`${id}: analyzer comparison ${result.status}: ${result.reason}`);
+  return result;
+}
+
 function restoreToolChanges(id, stageId, roleName, before) {
   let restored = [];
   try { restored = trackedFiles.restore(before); } catch (error) { console.warn(`${id}: ${stageId}/${roleName}: could not restore tracked files: ${error.message}`); return; }
@@ -413,11 +450,17 @@ function executeRole(id, wf, stage, roleName, output) {
     // tools do not (tracked-files.js): an implicit pub get, an Xcode rewrite.
     const readOnly = !!(wf.roles[roleName] || {}).read_only;
     const before = readOnly ? trackedFiles.snapshot(worktree) : null;
+    const missingBefore = readOnly ? null : trackedFiles.deletedTracked(worktree);
     const child = spawnRaw(process.execPath, args, {
-      env: { FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
+      env: { ...flutterEnvFor(id, worktree), FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
       timeout: timeoutMs + 15000,
     });
     restoreToolChanges(id, stage.id, roleName, before);
+    const massDeletion = trackedFiles.guardDeletions(worktree, missingBefore);
+    if (massDeletion) {
+      const shown = massDeletion.deleted.slice(0, 5).join(', ');
+      return { ok: false, exitType: 'deterministic', attemptId, reason: `the role deleted ${massDeletion.deleted.length} tracked files (${shown}${massDeletion.deleted.length > 5 ? ', …' : ''}), at or over the limit of ${massDeletion.limit}; ${massDeletion.restored ? 'they were restored' : 'restoring them failed — run git checkout -- . in the worktree'}. Usually build_runner with --delete-conflicting-outputs, or a clean, in a fresh worktree. If the deletions were intended, set AI_WORKFLOW_MAX_DELETED_FILES higher and retry.` };
+    }
     if (child.error || child.status !== 0) {
       const exitType = classifyFailure(child);
       if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* no output */ } }
@@ -919,6 +962,7 @@ function executeStage(id, wf, stage, args = {}) {
     fs.writeFileSync(path.join(engineDir(id),'refactor-verification-matrix.json'),JSON.stringify(matrix,null,2)+'\n');
   }
   executeConditional(id, wf, stage);
+  if (ANALYZER_STAGES.has(stage.id)) prepareAnalyzerBaseline(id);
   const roleName = stage.role || (stage.owner === 'orchestrator' ? 'orchestration' : null);
   if (!roleName) throw new Error(`${stage.id}: no executable role`);
   const preferredExecutor = (wf.roles[roleName] || {}).executor || wf.orchestrator?.executor || '-';
