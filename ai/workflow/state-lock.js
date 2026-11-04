@@ -13,9 +13,11 @@
  *
  * The lock is a directory `<state.json>.lock` (mkdir is atomic) holding an
  * owner.json with pid, host, time and a random token. Waiters poll with a short
- * synchronous sleep. A lock is stale when its holder pid is dead on this host,
- * or when it is older than the stale bound (a live holder never needs that
- * long: a state transition takes milliseconds). Breaking a stale lock is itself
+ * synchronous sleep. On this host the holder pid decides: a lock is stale once
+ * that pid is dead, and a live holder is never overtaken, however old its lock
+ * (taking it would let the holder's later rename overwrite the newer state).
+ * The age bound applies only to a lock from another host, whose pid cannot be
+ * checked. Breaking a stale lock is itself
  * serialized by a second `<lock>.break` directory, so two waiters cannot both
  * break it and one of them delete the other's fresh lock.
  *
@@ -62,8 +64,10 @@ function staleReason(lockDir, staleMs) {
   const owner = readOwner(lockDir);
   const age = ageMs(lockDir, owner);
   if (!owner) return age > OWNERLESS_GRACE_MS ? `lock has no owner record and is ${Math.round(age / 1000)}s old` : null;
-  if (owner.host === os.hostname() && !pidAlive(owner.pid)) return `holder pid ${owner.pid} is not running`;
-  if (age > staleMs) return `lock held by pid ${owner.pid} for ${Math.round(age / 1000)}s (stale bound ${Math.round(staleMs / 1000)}s)`;
+  // Same host: the pid is authoritative. A live holder is never overtaken by age,
+  // or its later atomic rename would overwrite the taker's newer state.
+  if (owner.host === os.hostname()) return pidAlive(owner.pid) ? null : `holder pid ${owner.pid} is not running`;
+  if (age > staleMs) return `lock held by pid ${owner.pid} on ${owner.host} for ${Math.round(age / 1000)}s (stale bound ${Math.round(staleMs / 1000)}s)`;
   return null;
 }
 
@@ -112,8 +116,12 @@ function acquire(lockDir, { timeoutMs, staleMs }) {
 
 function release(lockDir, token) {
   const owner = readOwner(lockDir);
-  // Taken over as stale while we held it: the lock is someone else's now.
-  if (owner && owner.token !== token) { process.stderr.write(`state-lock: ${lockDir} was taken over while held by pid ${process.pid}; not removing it\n`); return; }
+  // Broken as stale while we held it and nobody has taken it since: nothing to remove.
+  if (!owner && !fs.existsSync(lockDir)) return;
+  // Taken over while we held it: the lock is someone else's now. No owner record
+  // also means that (the taker has made the directory but not yet written
+  // owner.json); ours always has one, written before acquire() returned.
+  if (!owner || owner.token !== token) { process.stderr.write(`state-lock: ${lockDir} was taken over while held by pid ${process.pid}; not removing it\n`); return; }
   try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
@@ -197,10 +205,24 @@ async function selftest() {
     assert.ok(Date.now() - started < 3000, 'dead-holder lock is broken without waiting for the stale bound');
     assert.ok(!fs.existsSync(lockDir));
 
-    // 3. A lock older than the stale bound is taken over even if its pid looks alive.
+    // 3a. A lock from another host older than the stale bound is taken over.
     fs.mkdirSync(lockDir);
-    fs.writeFileSync(ownerFile(lockDir), JSON.stringify({ pid: process.ppid || 1, host: os.hostname(), acquiredAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), token: 'old' }));
+    fs.writeFileSync(ownerFile(lockDir), JSON.stringify({ pid: process.ppid || 1, host: 'some-other-host', acquiredAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), token: 'old' }));
     assert.strictEqual(withStateLock(file, () => 'ran-old', { timeoutMs: 5000, staleMs: 60 * 1000 }), 'ran-old');
+
+    // 3b. A live holder on this host is never overtaken by age: a paused holder
+    // would later rename its state over the taker's newer one.
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(ownerFile(lockDir), JSON.stringify({ pid: process.ppid, host: os.hostname(), acquiredAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), token: 'old-live' }));
+    assert.throws(() => withStateLock(file, () => 'never', { timeoutMs: 400, staleMs: 60 * 1000 }), /timed out/);
+    assert.ok(fs.existsSync(lockDir), 'an old lock of a live holder on this host is kept');
+    fs.rmSync(lockDir, { recursive: true, force: true });
+
+    // 3c. Taken over while held, the new holder not yet past writing owner.json:
+    // the old holder must not remove the new holder's lock on release.
+    assert.strictEqual(withStateLock(file, () => { fs.rmSync(lockDir, { recursive: true, force: true }); fs.mkdirSync(lockDir); return 'swapped'; }), 'swapped');
+    assert.ok(fs.existsSync(lockDir), 'an ownerless lock that is not ours survives our release');
+    fs.rmSync(lockDir, { recursive: true, force: true });
 
     // 4. A live, fresh holder makes a waiter time out with a clear error.
     fs.mkdirSync(lockDir);

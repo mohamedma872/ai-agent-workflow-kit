@@ -1586,7 +1586,7 @@ Each role runs in its own process group, so stopping the stage also stops the ag
 
 Each extra role at once is one more agent session at the same moment, so a higher cap uses more of your rate limit and machine. It doesn't change total cost.
 
-Run state (`state.json`) is written by several processes. Every write takes a short lock, `state.json.lock`, next to the file. A lock left by a crashed process is taken over when its pid is dead or after 60 s, and a writer gives up with an error naming the holder after 90 s. `AI_WORKFLOW_STATE_LOCK_STALE_MS` and `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` change those bounds.
+Run state (`state.json`) is written by several processes. Every write takes a short lock, `state.json.lock`, next to the file. A lock left by a crashed process is taken over when its pid is dead. A lock whose holder is still running on this machine is never taken over, however old; a lock from another host is taken over after 60 s. A writer gives up with an error naming the holder after 90 s. `AI_WORKFLOW_STATE_LOCK_STALE_MS` and `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` change those bounds.
 
 ### Agent/executor configuration
 

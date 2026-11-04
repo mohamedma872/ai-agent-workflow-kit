@@ -132,6 +132,13 @@ function groupAlive(pgid) {
   try { process.kill(-pgid, 0); return true; }
   catch (e) { return e.code === 'EPERM'; }
 }
+// True unless `pgrep` shows this process is the group's only member. If pgrep
+// cannot answer, assume others remain, so the full grace is kept.
+function groupHasOthers(pgid) {
+  const r = spawnSync('pgrep', ['-g', String(pgid)], { encoding: 'utf8', timeout: 2000 });
+  if (r.error || (r.status !== 0 && r.status !== 1)) return true;
+  return String(r.stdout || '').split(/\s+/).filter(Boolean).some(pid => Number(pid) !== process.pid);
+}
 
 // Waits until every group is gone. A group still alive `graceMs` after `since`
 // gets SIGKILL; one that outlives that by REAP_LIMIT_MS is given up on and
@@ -169,7 +176,8 @@ function stopGroupsSync(pgids, { graceMs = KILL_GRACE_MS, pollMs = GROUP_POLL_MS
 // inside its own process group. The helper watches the engine; this watches the
 // helper. If the helper is killed outright (SIGKILL, OOM) while the engine lives,
 // nothing else would stop the role, so this stops the whole group — run-role,
-// router.js and the agent — and exits non-zero. It exits quietly once run-role
+// router.js and the agent — with SIGTERM, then SIGKILL once the grace is over or
+// it is the group's last member, and exits non-zero. It exits quietly once run-role
 // (its parent) is gone, and leaves with the group when the helper stops it.
 function watchRunner(runnerPid, group, { pollMs = PARENT_POLL_MS, graceMs = KILL_GRACE_MS } = {}) {
   const owner = process.ppid;
@@ -184,10 +192,11 @@ function watchRunner(runnerPid, group, { pollMs = PARENT_POLL_MS, graceMs = KILL
     stopping = true;
     signalGroup(group, 'SIGTERM');
     const until = Date.now() + graceMs;
-    // Once run-role is gone, nothing in the group is doing useful work; SIGKILL
-    // what is left (this watcher included) rather than wait out the grace.
+    // Give every member (run-role, router.js, the agent) the grace to exit on
+    // SIGTERM; leave early only once this watcher is the group's last member.
+    // run-role exiting is not the end: the agent under it may still be cleaning up.
     const finish = setInterval(() => {
-      if (pidAlive(owner) && process.ppid === owner && Date.now() < until) return;
+      if (Date.now() < until && groupHasOthers(group)) return;
       clearInterval(finish);
       signalGroup(group, 'SIGKILL');
       process.exit(1);
@@ -208,9 +217,9 @@ function markInterrupted(id, stage, roles, reason) {
   }
 }
 
-// `roleCommand` and `markFailed` exist only for the selftest; the CLI never
-// passes them, so it can only ever start `engine.js run-role` for a role name.
-async function main(argv, { roleCommand, markFailed = markInterrupted, parentPollMs = PARENT_POLL_MS, killGraceMs = KILL_GRACE_MS } = {}) {
+// `roleArgv` and `markFailed` exist only for the selftest; the CLI never
+// passes them. The executable is always this Node binary, never a parameter.
+async function main(argv, { roleArgv, markFailed = markInterrupted, parentPollMs = PARENT_POLL_MS, killGraceMs = KILL_GRACE_MS } = {}) {
   const opts = parseCli(argv);
   if (opts.cmd === 'watch' && /^\d+$/.test(opts.id || '') && /^\d+$/.test(opts.stage || '') && Number(opts.id) > 1 && Number(opts.stage) > 1 && !opts.roles.length) {
     watchRunner(Number(opts.id), Number(opts.stage));
@@ -219,7 +228,7 @@ async function main(argv, { roleCommand, markFailed = markInterrupted, parentPol
   if (opts.cmd !== 'run' || !SAFE.test(opts.id || '') || !SAFE.test(opts.stage || '') || !opts.summaryFile || !opts.roles.length || opts.roles.some(r => !SAFE.test(r)) || !(opts.cap >= 1)) {
     throw new Error('usage: parallel-roles.js run <id> <stage> --cap N --summary-file FILE [--pid-file FILE] [--pgid-file FILE] <role...>');
   }
-  const command = roleCommand || (role => [process.execPath, [ENGINE, 'run-role', opts.id, opts.stage, role]]);
+  const argvFor = roleArgv || (role => [ENGINE, 'run-role', opts.id, opts.stage, role]);
   // Every group ever started. A role exiting does not remove it: the agent
   // under the role can outlive it, and a stop must still reach that agent.
   const groups = new Set();
@@ -262,8 +271,11 @@ async function main(argv, { roleCommand, markFailed = markInterrupted, parentPol
       cap: opts.cap,
       shouldStop: () => !!interrupted,
       spawnItem: role => {
-        const [bin, args] = command(role);
-        const child = spawn(bin, args, {
+        // Checked again here, at the spawn: only a plain role name is ever passed
+        // on, as one argv entry, with no shell.
+        if (!SAFE.test(role)) throw new Error(`invalid role name: ${JSON.stringify(role)}`);
+        const child = spawn(process.execPath, argvFor(role), {
+          shell: false,
           cwd: process.cwd(),
           env: { ...process.env, FEATURE_RUN_ID: opts.id, [RUNNER_ENV]: String(process.pid) },
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -374,7 +386,7 @@ async function selftest() {
       const { main } = require(${JSON.stringify(__filename)});
       const [dir, tag, longRole, killGraceMs] = process.argv.slice(1);
       main(['run', 'RUN-1', 'analysis', '--cap', '2', '--summary-file', path.join(dir, tag + '.summary.json'), '--pid-file', path.join(dir, tag + '.pid'), '--pgid-file', path.join(dir, tag + '.pgids'), tag + '-a', tag + '-b', tag + '-c'], {
-        roleCommand: role => [process.execPath, ['-e', longRole, dir, role]],
+        roleArgv: role => ['-e', longRole, dir, role],
         markFailed: (id, stage, roles, reason) => fs.writeFileSync(path.join(dir, tag + '.marked.json'), JSON.stringify({ id, stage, roles, reason })),
         parentPollMs: 100,
         killGraceMs: Number(killGraceMs) || undefined,
@@ -471,6 +483,24 @@ async function selftest() {
     assert.ok(watchedPids.every(alive), 'role, agent and watcher run while the helper lives');
     helperStandIn.kill('SIGKILL');
     await waitFor('the watcher to stop the orphaned role group', () => watchedPids.every(pid => !alive(pid)), PARENT_POLL_MS + 3000);
+
+    // Same, but the agent traps SIGTERM and needs about 1 s to clean up. The role
+    // dies on the SIGTERM at once; the watcher must still give the agent its
+    // grace rather than SIGKILL the group as soon as the role is gone.
+    const slowAgent = "const fs = require('fs'); const done = process.argv[1]; process.on('SIGTERM', () => setTimeout(() => { fs.writeFileSync(done, ''); process.exit(0); }, 1000)); setTimeout(() => {}, 60000)";
+    const cleanRole = watchedRole.replace("['-e', 'setTimeout(() => {}, 60000)']", `['-e', ${JSON.stringify(slowAgent)}, path.join(dir, 'clean.done')]`).replace("'watched.pids'", "'clean.pids'");
+    assert.ok(cleanRole.includes('clean.done') && cleanRole.includes('clean.pids'), 'slow-agent role built from the watched role');
+    const cleanStandIn = spawn(process.execPath, ['-e', `
+      const { spawn } = require('child_process');
+      spawn(process.execPath, ['-e', process.argv[1], process.argv[2], process.argv[3]], { stdio: 'ignore', detached: true });
+      setTimeout(() => {}, 60000);
+    `, cleanRole, dir, __filename], { stdio: 'ignore' });
+    await waitFor('the slow-agent role to start', () => fs.existsSync(path.join(dir, 'clean.pids')));
+    const cleanPids = JSON.parse(fs.readFileSync(path.join(dir, 'clean.pids'), 'utf8'));
+    await new Promise(r => setTimeout(r, 300));
+    cleanStandIn.kill('SIGKILL');
+    await waitFor('the watcher to stop the slow-agent role group', () => cleanPids.every(pid => !alive(pid)), PARENT_POLL_MS + 5000);
+    assert.ok(fs.existsSync(path.join(dir, 'clean.done')), 'an agent that traps SIGTERM finishes its cleanup within the grace');
 
     // No roles: resolves at once.
     assert.deepStrictEqual((await runPool({ items: [], cap: 4, spawnItem: spawnFake })).results, []);
