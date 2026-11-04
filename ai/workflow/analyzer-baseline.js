@@ -229,7 +229,7 @@ function selftest() {
     assert.strictEqual(fs.readFileSync(path.join(repo, 'pubspec.yaml'), 'utf8'), 'name: demo\n', 'what the analyzer rewrote in the worktree is put back');
     assert.deepStrictEqual(result.restored, ['pubspec.yaml']);
     // A base that is not an ancestor of HEAD is refused, not compared.
-    const other = run(['commit-tree', '-m', 'elsewhere', `${baseSha}^{tree}`]);
+    const other = run(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit-tree', '-m', 'elsewhere', `${baseSha}^{tree}`]);
     assert.match(computeBaseline({ productRoot: repo, baseSha: other, files: ['lib/a.dart'], dart, outDir: out }).reason, /not in the worktree's history/);
     // Nothing new: the gate is met by the evidence.
     fs.writeFileSync(path.join(repo, 'lib', 'a.dart'), 'void main() {  }\n');
