@@ -53,4 +53,26 @@ assert.match(failureFeedback(run,'implementation','implementation'),/tests hang/
 const reworkContext=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request']},excludeArtifact:null,roleName:'implementation',stageId:'implementation'});
 assert(reworkContext.startsWith('## Previous failures to address'),'failures lead the prompt');
 
+// The human's conflict decisions reach the plan (which must cite each id) and
+// the roles after it, never the specialists; unresolved ones are not listed.
+const {resolvedConflicts,conflictDecisions}=require('./subagent-context');
+fs.mkdirSync(path.join(run,'05-analysis'),{recursive:true});
+fs.writeFileSync(path.join(run,'05-analysis','sec.json'),JSON.stringify({agent:'security-reviewer',findings:[{id:'SEC-1',severity:'high',title:'Use secure storage'},{id:'PERF-1',severity:'medium',title:'Plain prefs are faster'}]}));
+fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:[
+ {id:'CONFLICT-001',topic:'storage',findings:['SEC-1','PERF-1'],status:'resolved',resolution:{decision:'KEEP-SECURE '+'X'.repeat(3000),rationale:'PII requirement',owner:'human',resolvedAt:'2026-11-04T00:00:00Z'}},
+ {id:'CONFLICT-002',topic:'caching',findings:['SEC-1','PERF-1'],status:'unresolved',resolution:null}]}));
+const decisionsFor=(stageId,inputs=['conflict_decisions'])=>buildRoleContext({runDir:run,productRoot:product,contract:{inputs},excludeArtifact:null,roleName:stageId==='plan'?'orchestration':stageId,stageId});
+const planCtx=decisionsFor('plan');
+for(const re of [/## Binding conflict decisions/,/CONFLICT-001/,/SEC-1/,/Use secure storage/,/KEEP-SECURE/,/PII requirement/,/owner: human/,/overrides/,/conflictDecisions/]) assert.match(planCtx,re);
+assert.doesNotMatch(planCtx,/CONFLICT-002/,'unresolved conflicts are not listed');
+assert(!planCtx.includes('X'.repeat(1300)),'a decision is cut at 1200 characters');
+const implCtx=decisionsFor('implementation');
+assert.match(implCtx,/Binding conflict decisions/);assert.doesNotMatch(implCtx,/engine rejects a plan/);
+assert.deepStrictEqual(resolvedConflicts(run).map(c=>c.id),['CONFLICT-001']);
+assert(!decisionsFor('analysis',['request']).includes('Binding conflict decisions'),'specialists never get the decisions');
+fs.unlinkSync(path.join(run,'05-analysis','conflicts.json'));
+assert.strictEqual(conflictDecisions(run,'plan'),'','a run with no conflicts gets no section');
+const {roleContract}=require('./subagent-contracts');
+for(const name of ['orchestration','implementation']) assert(roleContract(name).inputs.includes('conflict_decisions'),name);
+
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');

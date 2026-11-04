@@ -17,7 +17,7 @@ orchestrator:
 roles:
   orchestration:
     executor: claude
-    purpose: Produce exactly one orchestrator-owned workflow stage artifact from prior run artifacts and repository evidence. Do not advance workflow state; the deterministic engine owns transitions.
+    purpose: Produce exactly one orchestrator-owned workflow stage artifact from prior run artifacts and repository evidence, and apply every binding conflict decision. Do not advance workflow state; the deterministic engine owns transitions.
     read_only: true
     optional_mcps: [atlassian, context7, github]
 

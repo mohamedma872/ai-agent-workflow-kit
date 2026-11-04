@@ -1972,6 +1972,7 @@ Undeclared MCPs are not available to a role.
 Parallel findings are synthesized before planning.
 Explicit disagreements become explicit conflicts.
 Unresolved blocking conflicts stop progression.
+Resolved conflict decisions bind the plan, which cites every one.
 Mobile evidence must belong to the exact tested build.
 Final workflow success is bound to the exact commit SHA.
 Human approval remains a real gate.

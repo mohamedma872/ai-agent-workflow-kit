@@ -22,6 +22,7 @@ Key semantic gates are deterministic:
 - review requires `status: pass` and no unresolved `critical`/`high` finding;
 - verification requires `status: pass`, every AC to be `pass` or `not-applicable`, passing ACs to reference evidence, and every DoD item to be `pass` or `not-applicable`;
 - plan approval revalidates `06-plan.json` before creating `plan.approved`;
+- a plan the engine runs after `agentic resolve` must cite every resolved conflict id (`05-analysis/conflicts.json`) in 06-plan.md, normally through the optional `conflictDecisions` list (`{conflictId, applied, steps}`), rendered as "Conflict decisions applied". A plan that leaves one out is rejected inside the attempt, never written, and `agentic retry` passes the missing ids to the next attempt. The decisions themselves reach the plan and every later role that reads it (`conflict_decisions` input) as "Binding conflict decisions". A hand-edited plan is not re-gated;
 - pull request description requires a one-line title of at most 120 characters, a reason for every Definition of Done item that is not `done`, and no attribution to a tool, model or agent (no `Co-Authored-By`, no "Generated with", no robot emoji, no tool names) in the title, summary or body.
 
 Schemas are validated in CI with:

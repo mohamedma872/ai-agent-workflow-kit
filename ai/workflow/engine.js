@@ -9,7 +9,7 @@ const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
 const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
 const { roleContract, assertRequiredMcps } = require('./subagent-contracts');
-const { buildRoleContext, prTemplate, changedFiles } = require('./subagent-context');
+const { buildRoleContext, prTemplate, changedFiles, resolvedConflicts } = require('./subagent-context');
 const { detectRefactorMode } = require('./refactor-mode');
 const { canImplement, loadWaivers } = require('./refactor-coverage');
 const { problems: refactorCheckpointProblems } = require('./refactor-checkpoints');
@@ -413,7 +413,9 @@ function executeRole(id, wf, stage, roleName, output) {
         if (!rawOutput || !fs.existsSync(rawOutput)) throw new Error(`${executor} produced no artifact output`);
         const markdownFile = path.join(runDir(id), output);
         if (schemaName) {
-          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id);
+          // The plan must cite every resolved conflict. Checked inside the attempt, so a
+          // miss is a deterministic attempt failure whose reason `retry` hands back.
+          materialize(schemaName, fs.readFileSync(rawOutput, 'utf8'), sidecarForMarkdown(markdownFile), markdownFile, id, stage.id === 'plan' ? { conflictIds: resolvedConflicts(runDir(id)).map(c => c.id) } : {});
           try { artifactStatus = JSON.parse(fs.readFileSync(sidecarForMarkdown(markdownFile), 'utf8')).status || null; } catch { artifactStatus = null; }
         }
         else { fs.mkdirSync(path.dirname(markdownFile), { recursive: true }); fs.copyFileSync(rawOutput, markdownFile); }
@@ -1444,6 +1446,95 @@ function notificationSelftest() {
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
+// The run-loop harness of notificationSelftest for the selftests below: a temp
+// state root, a product git repo, runs.js prepare/retry and an engine driver.
+function engineHarness(prefix) {
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const states = path.join(tmp, 'runs');
+  const product = path.join(tmp, 'product');
+  const log = path.join(tmp, 'notify.log');
+  spawnSync('git', ['init', '-q', product]);
+  fs.writeFileSync(path.join(product, 'a.txt'), 'one\n');
+  spawnSync('git', ['add', '-A'], { cwd: product });
+  spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: product });
+  const baseSha = String(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: product, encoding: 'utf8' }).stdout).trim();
+  fs.mkdirSync(path.join(tmp, 'home'));
+  const env = { ...process.env, PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: path.join(tmp, 'home'), AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PRODUCT_ROOT: product, AI_WORKFLOW_PROJECT_ROOT: product, AI_WORKFLOW_SELFTEST: '1', AI_WORKFLOW_TEST_NOTIFY_LOG: log, AI_WORKFLOW_AVAILABLE_MCPS: '' };
+  delete env.AI_AGENTIC_CLI; delete env.AI_EVAL; delete env.QC_EVAL;
+  const stateOf = id => JSON.parse(fs.readFileSync(path.join(states, id, 'state.json'), 'utf8'));
+  const writeState = (id, state) => fs.writeFileSync(path.join(states, id, 'state.json'), JSON.stringify(state, null, 2) + '\n');
+  const prepare = (id, donePhases) => {
+    const started = spawnSync(process.execPath, [RUNS_TOOL, 'start', id], { env, encoding: 'utf8' });
+    assert.strictEqual(started.status, 0, started.stderr);
+    const state = stateOf(id);
+    for (const phaseId of donePhases) state.phases[phaseId] = { status: (workflow().stages.find(st => st.id === phaseId) || {}).when ? 'skipped' : 'pass' };
+    state.evidence.mobileScreenshots = { requirement: 'not-required', reason: 'selftest' };
+    writeState(id, state);
+    fs.mkdirSync(path.join(states, id, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(states, id, 'engine', 'worktree.json'), JSON.stringify({ runId: id, path: product, branch: 'test', baseSha, currentSha: baseSha, createdAt: new Date().toISOString(), sourceRoot: product }));
+  };
+  const resume = (id, extraEnv = {}, opts = {}) => {
+    const driver = `const engine = require(${JSON.stringify(__filename)}); try { console.log('RESULT ' + engine.runLoop(${JSON.stringify(id)}, ${JSON.stringify(opts)})); } catch (e) { console.log('RESULT ERROR ' + e.message); }`;
+    const res = spawnSync(process.execPath, ['-e', driver], { env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 60 * 1000 });
+    assert.strictEqual(res.status, 0, res.stderr);
+    return { result: (res.stdout.match(/^RESULT (.*)$/m) || [])[1], stdout: res.stdout, stderr: res.stderr };
+  };
+  const retry = (id, ...names) => { const r = spawnSync(process.execPath, [RUNS_TOOL, 'retry', id, ...names], { env, encoding: 'utf8' }); assert.strictEqual(r.status, 0, r.stderr); return r.stdout; };
+  const events = () => { try { return fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
+  return { tmp, states, product, env, stateOf, writeState, prepare, resume, retry, events, stages: workflow().stages.map(st => st.id), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+}
+
+// Resolved conflict decisions reach the plan prompt, and an engine-run plan
+// that leaves one out is rejected inside the attempt, so `retry` hands the
+// missing ids to the regenerated plan.
+function conflictDecisionSelftest() {
+  const h = engineHarness('engine-conflict-decisions-');
+  try {
+    const stub = path.join(h.tmp, 'plan-executor.js');
+    fs.writeFileSync(stub, `
+      const fs = require('fs');
+      const args = process.argv.slice(2);
+      const cites = (process.env.STUB_PLAN_CITES || '').split(',').filter(Boolean);
+      fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify({ schemaVersion: 1, runId: process.env.FEATURE_RUN_ID, summary: 'stub plan', steps: [{ id: '1', description: 'do it' }], acceptanceCriteria: ['AC-1'], conflictDecisions: cites.map(id => ({ conflictId: id, applied: 'applied in step 1', steps: ['1'] })) }));
+    `);
+    const before = h.stages.slice(0, h.stages.indexOf('plan'));
+    h.prepare('N-CONFLICT', before);
+    const analysis = path.join(h.states, 'N-CONFLICT', '05-analysis');
+    fs.mkdirSync(analysis, { recursive: true });
+    fs.writeFileSync(path.join(analysis, 'security-reviewer.json'), JSON.stringify({ agent: 'security-reviewer', findings: [{ id: 'SEC-1', title: 'Use secure storage', severity: 'high' }] }));
+    fs.writeFileSync(path.join(analysis, 'mobile-architect.json'), JSON.stringify({ agent: 'mobile-architect', findings: [{ id: 'ARCH-2', title: 'Plain prefs', severity: 'medium' }, { id: 'ARCH-3', title: 'No cache', severity: 'low' }] }));
+    fs.writeFileSync(path.join(analysis, 'arbitration.json'), JSON.stringify({ conflicts: [{ findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }, { findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }] }));
+    const resolution = decision => ({ decision, rationale: 'selftest', owner: 'human', resolvedAt: '2026-11-04T00:00:00Z' });
+    fs.writeFileSync(path.join(analysis, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts: [
+      { id: 'CONFLICT-001', topic: 'storage', findings: ['SEC-1', 'ARCH-2'], status: 'resolved', resolution: resolution('KEEP SECURE STORAGE') },
+      { id: 'CONFLICT-002', topic: 'caching', findings: ['SEC-1', 'ARCH-3'], status: 'resolved', resolution: resolution('CACHE FOR ONE HOUR ONLY') },
+    ] }));
+    const stubEnv = cites => ({ AI_WORKFLOW_TEST_EXECUTOR: stub, STUB_PLAN_CITES: cites });
+    const runFile = file => path.join(h.states, 'N-CONFLICT', file);
+    // (a) The plan cites one of two decisions: rejected, never written.
+    const first = h.resume('N-CONFLICT', stubEnv('CONFLICT-001'));
+    assert.match(first.stdout, /^RESULT ERROR plan\/orchestration: artifact\/worktree validation failed: [^]*?missing CONFLICT-002/m, first.stdout);
+    assert.match(h.stateOf('N-CONFLICT').phases.plan.note, /missing CONFLICT-002/, 'the missing id survives the phase note cut');
+    assert.strictEqual(h.stateOf('N-CONFLICT').phases.plan.status, 'fail');
+    assert.ok(!fs.existsSync(runFile('06-plan.md')), 'a plan that drops a decision is not written');
+    assert.ok(fs.existsSync(runFile('engine/plan-orchestration.rejected')), 'the rejected plan is kept');
+    const prompt = fs.readFileSync(runFile('engine/plan-orchestration.md'), 'utf8');
+    assert.ok(prompt.includes('## Binding conflict decisions') && prompt.includes('CACHE FOR ONE HOUR ONLY'), 'the decisions are in the plan prompt');
+    // (b) retry, then a plan that cites both: through to the approval gate.
+    h.retry('N-CONFLICT');
+    const second = h.resume('N-CONFLICT', stubEnv('CONFLICT-001,CONFLICT-002'));
+    assert.strictEqual(second.result, 'waiting', second.stdout);
+    const plan = fs.readFileSync(runFile('06-plan.md'), 'utf8');
+    for (const part of ['Conflict decisions applied', 'CONFLICT-001', 'CONFLICT-002']) assert.ok(plan.includes(part), part);
+    assert.match(fs.readFileSync(runFile('engine/plan-orchestration.md'), 'utf8'), /previous plan\/orchestration failure: [^\n]*\n- \$\.conflictDecisions: missing CONFLICT-002/, 'retry tells the regenerated plan what it missed');
+    // (c) No conflicts: no section, and nothing to cite.
+    h.prepare('N-NOCONFLICT', before);
+    assert.strictEqual(h.resume('N-NOCONFLICT', stubEnv('')).result, 'waiting');
+    assert.ok(!fs.readFileSync(path.join(h.states, 'N-NOCONFLICT', 'engine', 'plan-orchestration.md'), 'utf8').includes('## Binding conflict decisions'), 'no section (the schema description names it, the section is absent)');
+  } finally { h.cleanup(); }
+}
+
 function selftest() {
   {
     const assert = require('assert');
@@ -1524,6 +1615,7 @@ function selftest() {
   }
   parallelStageSelftest();
   notificationSelftest();
+  conflictDecisionSelftest();
   console.log('workflow engine selftest OK');
 }
 
