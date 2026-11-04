@@ -15,6 +15,8 @@ const {
   percentComplete,
   buildSummary,
   commandFor,
+  needsYouLines,
+  planDigestLines,
   renderTerminal,
   renderMarkdown,
 } = require('./progress');
@@ -301,8 +303,44 @@ function staleApprovedState() {
     // Human gates: approval (never a key, always the command) and conflicts.
     const gate = { status: 'active', roles: {}, phases: { ...passed('approval'), plan: { status: 'pass', updatedAt: 'p1' } } };
     fs.mkdirSync(path.join(root, 'FEAT-5'), { recursive: true });
+    // No plan file at all: the three lines of before.
+    assert.strictEqual(needsYou('FEAT-5', gate, { root, cli: true }).plan, null);
+    assert.strictEqual(needsYouLines(needsYou('FEAT-5', gate, { root, cli: true })).length, 3);
+    // The plan digest: counts, the head of the summary (redacted, printable,
+    // bounded), the file; never the steps, criteria or risks themselves.
+    const planJson = path.join(root, 'FEAT-5', '06-plan.json');
+    const summaryText = `ghp_${'A'.repeat(20)} \x1b[2J first line of the summary\n> **REVIEW AMENDMENTS (binding)** apply CONFLICT-001\n\n${Array.from({ length: 8 }, (_, i) => `${'s'.repeat(130)} line ${i + 3} of the plan summary`).join('\n')}`;
+    fs.writeFileSync(planJson, JSON.stringify({ schemaVersion: 1, runId: 'FEAT-5', summary: summaryText, steps: Array.from({ length: 9 }, (_, i) => ({ id: `S${i}`, description: `step ${i} secret-step-text` })), acceptanceCriteria: Array.from({ length: 23 }, (_, i) => `AC-${i}`), risks: Array.from({ length: 11 }, (_, i) => `risk ${i}`) }));
+    fs.writeFileSync(path.join(root, 'FEAT-5', '06-plan.md'), `# Implementation plan\n\n${summaryText}\n\n## Steps\n\n1. a step\n`);
     const approval = needsYou('FEAT-5', gate, { root, cli: true });
     assert.deepStrictEqual([approval.kind, approval.stage, approval.headline, approval.command, approval.key], ['waiting', 'approval', 'The plan waits for your approval', 'agentic approve FEAT-5', 'FEAT-5|approval|waiting|p1']);
+    assert.deepStrictEqual([approval.plan.steps, approval.plan.acceptanceCriteria, approval.plan.risks, approval.plan.amendments], [9, 23, 11, true]);
+    assert.ok(approval.plan.summary.length <= 6 && approval.plan.summary.join('').length <= 600, JSON.stringify(approval.plan.summary));
+    assert.ok(approval.plan.summary.at(-1).endsWith('…'), 'the line that crosses the budget is cut');
+    const digestText = approval.plan.summary.join('\n');
+    assert.ok(digestText.includes('***') && !digestText.includes('ghp_') && !digestText.includes('\x1b'), digestText);
+    assert.ok(!digestText.includes('secret-step-text') && !digestText.includes('AC-0'), 'no step or criterion text');
+    assert.strictEqual(approval.plan.path, require('./paths').relativeStatePath('FEAT-5', '06-plan.md'));
+    assert.strictEqual(needsYou('FEAT-5', gate, { root, cli: false }).plan.path, 'ai/runs/FEAT-5/06-plan.md');
+    assert.ok(path.isAbsolute(approval.plan.file) && approval.plan.file.endsWith('06-plan.md'));
+    const approvalLines = needsYouLines(approval);
+    assert.strictEqual(approvalLines[0], '⚠ Needs you: The plan waits for your approval');
+    assert.strictEqual(approvalLines[1], `  ${approval.reason}`);
+    assert.strictEqual(approvalLines[2], '  Plan: 9 steps · 23 acceptance criteria · 11 risks · REVIEW AMENDMENTS present');
+    assert.ok(approvalLines.slice(3, -2).every(line => line.startsWith('    │ ')), approvalLines);
+    assert.match(approvalLines.at(-2), /^ {4}Full plan: /);
+    assert.strictEqual(approvalLines.at(-1), '  → run: agentic approve FEAT-5');
+    const gateSummary = buildSummary('FEAT-5', gate, { root });
+    assert.match(renderTerminal(gateSummary), /\n {3}Plan: 9 steps · 23 acceptance criteria · 11 risks/);
+    assert.match(renderMarkdown(gateSummary), /> Plan: 9 steps · 23 acceptance criteria · 11 risks · REVIEW AMENDMENTS present {2}\n> Run: /);
+    assert.ok(!renderMarkdown(gateSummary).includes('│'), 'the Markdown view carries the counts line only');
+    assert.ok(!renderMarkdown(gateSummary, { published: true }).includes('Plan:'), 'the published comment never carries the plan');
+    // No JSON: counts unavailable, the summary comes from the Markdown body.
+    fs.unlinkSync(planJson);
+    const fromMd = needsYou('FEAT-5', gate, { root, cli: true }).plan;
+    assert.deepStrictEqual([fromMd.steps, fromMd.acceptanceCriteria, fromMd.risks, fromMd.amendments], [null, null, null, true]);
+    assert.match(planDigestLines(fromMd)[0], /^Plan: counts unavailable/);
+    assert.ok(!fromMd.summary[0].includes('Implementation plan') && fromMd.summary[0].includes('***'), JSON.stringify(fromMd.summary));
     fs.writeFileSync(path.join(root, 'FEAT-5', 'plan.approved'), 'approved\n');
     assert.strictEqual(needsYou('FEAT-5', gate, { root }), null, 'approved: nothing waits');
     // Open specialist conflicts: the count, ids and topics, and the exact

@@ -17,7 +17,7 @@ const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../.
 const { withStateLock } = require('../../workflow/state-lock');
 const { recordFailure, clearFailure, carried } = require('../../workflow/repeated-failure');
 const { liveEngine, describe: describeEngine, ownerFile } = require('../../workflow/engine-owner');
-const { needsYou, needsYouLines, printable } = require('../../workflow/progress');
+const { needsYou, needsYouLines, planDigest, planDigestLines, commandFor, printable } = require('../../workflow/progress');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -740,6 +740,30 @@ function selftest() {
     assert.match(nothing.stderr, /nothing to retry — LEG-1 is complete/, nothing.stderr);
   }
 
+  // The approval gate: `status` shows the plan digest, `approve` prints it
+  // before it approves and ends with the resume command.
+  {
+    const id = 'GATE-1';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = (argv, extra = {}) => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, ...extra, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES.slice(0, PHASES.indexOf('approval'))) st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    fs.writeFileSync(file, JSON.stringify(st));
+    fs.writeFileSync(path.join(retryRoot, id, '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: id, summary: 'Add the toggle.\nThen test it.', steps: [{ id: 'S1', description: 'add' }, { id: 'S2', description: 'test' }], acceptanceCriteria: ['AC-1'], risks: ['none'] }));
+    fs.writeFileSync(path.join(retryRoot, id, '06-plan.md'), `# Implementation plan\n\nAdd the toggle.\nThen test it.\n\n## Steps\n\n1. add\n2. test\n\n## Acceptance criteria\n\n- AC-1\n`);
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /⚠ Needs you: The plan waits for your approval\n.*\n {2}Plan: 2 steps · 1 acceptance criteria · 1 risks\n {4}│ Add the toggle\.\n {4}│ Then test it\.\n {4}Full plan: .*06-plan\.md\n {2}→ run: node ai\/tasks\/feature\/runs\.js approve GATE-1 && node ai\/workflow\/engine\.js resume GATE-1/, shown);
+    const approved = cli(['approve', id], { AI_AGENTIC_CLI: '1' });
+    assert.strictEqual(approved.status, 0, approved.stderr);
+    const out = approved.stdout.trim().split('\n');
+    assert.match(out[0], /^Plan: 2 steps · 1 acceptance criteria · 1 risks$/);
+    assert.ok(out.findIndex(l => l.startsWith('Plan:')) < out.findIndex(l => l.includes('plan approved')), approved.stdout);
+    assert.strictEqual(out.at(-1), '→ next: agentic resume GATE-1');
+    assert.ok(fs.existsSync(path.join(retryRoot, id, 'plan.approved')));
+    assert.ok(!/Needs you/.test(cli(['status', id]).stdout), 'approved: nothing waits');
+  }
+
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
   console.log('runs.js selftest OK');
@@ -1081,6 +1105,9 @@ try {
       if (!fs.existsSync(plan) || fs.statSync(plan).size < 80) throw new Error(`${relativeStatePath(id, '06-plan.md')} is missing or empty — nothing to approve`);
       const planProblem = phaseArtifactProblem(id, 'plan');
       if (planProblem) throw new Error(`cannot approve plan: ${planProblem}`);
+      // What is being approved, before it is: the same digest the views show.
+      const cli = process.env.AI_AGENTIC_CLI === '1';
+      for (const line of planDigestLines(planDigest(id, RUNS, cli))) console.log(line);
       locked(id, () => {
         const state = ensureShape(load(id), id);
         reconcileState(id, state);
@@ -1093,6 +1120,7 @@ try {
         record(state, { kind: 'phase', phase: 'approval', action: 'approve', from, to: 'pass', executor: 'human', reason: 'human plan approval' });
         atomicSave(id, state);
         console.log(`${id}: plan approved — approval → pass; edits outside ai/runs are allowed`);
+        console.log(`→ next: ${commandFor('resume', id, cli)}`);
       });
       break;
     }

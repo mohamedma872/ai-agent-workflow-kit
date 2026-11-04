@@ -10,6 +10,7 @@ const { appiumLaunchPlan, launcherSpecFor, toolchainEnv } = require('../workflow
 
 const RUNTIME_ROOT = path.resolve(__dirname, '..', '..');
 const ENGINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine.js');
+const ENGINE_LAUNCH = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine-launch.js');
 const RUNS = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const PROGRESS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'progress.js');
@@ -406,7 +407,9 @@ Usage:
   agentic guard check|explain      Validate / list the active guard rules, incl. .agentic/guardrails.yaml
   agentic feature <run-id> --request "..."
   agentic resume <run-id>
-  agentic approve <run-id>
+  agentic approve <run-id> [--no-resume|--wait]
+                                   Show the plan digest, approve the plan and resume the engine in the
+                                   background (--wait: in the foreground; --no-resume: approve only)
   agentic retry <run-id> [role...] Reset failed/blocked role(s), conditional roles such as
                                    mobile-evidence, or the stuck phase to pending, and resume
   agentic pr <run-id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]
@@ -414,7 +417,8 @@ Usage:
                                    (works while pull_request is disabled; --dry-run changes nothing;
                                    a closed run needs --reopen; an unknown option is refused)
   agentic progress                 Terminal dashboard for in-progress features
-                                   (⚠ = needs you, ● = engine running; R resume, T retry)
+                                   (⚠ = needs you, ● = engine running; R resume, T retry,
+                                   P open the plan, A approve it after a confirmation)
   agentic progress <run-id> [--watch|--json|--markdown]
   agentic dashboard [--all] [--run <id>]
   agentic runs [--all] [--json]    List features and which one is active
@@ -507,6 +511,15 @@ function selftest() {
   assert.strictEqual(gitRoot(aliasProject), canonicalPath(realProject));
   fs.rmSync(symlinkRoot, { recursive: true, force: true });
 
+  // `agentic approve` takes --no-resume or --wait after the id, nothing else,
+  // and refuses before anything runs; help lists both.
+  const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { cwd: temp, encoding: 'utf8' });
+  const bogus = cli(['approve', 'FEAT-1', '--bogus']);
+  assert.notStrictEqual(bogus.status, 0);
+  assert.match(bogus.stderr, /approve: unexpected argument --bogus\. Usage: agentic approve <run-id> \[--no-resume\|--wait\]/);
+  assert.match(cli(['approve']).stderr, /approve requires a run id/);
+  assert.match(cli(['help']).stdout, /agentic approve <run-id> \[--no-resume\|--wait\]/);
+
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('standalone CLI selftest OK');
 }
@@ -565,10 +578,18 @@ function main() {
     if (!args[1]) throw new Error('resume requires a run id');
     return runNode(ENGINE, ['resume', args[1], ...args.slice(2)], project);
   }
+  // Approve, then resume in the background (the dashboard's A key and R use the
+  // same launcher). --wait keeps the engine in the foreground; --no-resume
+  // records the approval only.
   if (command === 'approve') {
-    if (!args[1]) throw new Error('approve requires a run id');
+    if (!args[1] || args[1].startsWith('--')) throw new Error('approve requires a run id (see: agentic runs)');
+    const flags = args.slice(2);
+    const unknown = flags.find(flag => !['--no-resume', '--wait'].includes(flag));
+    if (unknown) throw new Error(`approve: unexpected argument ${unknown}. Usage: agentic approve <run-id> [--no-resume|--wait]`);
     runNode(RUNS, ['approve', args[1]], project);
-    return runNode(ENGINE, ['resume', args[1]], project);
+    if (flags.includes('--no-resume')) return;
+    if (flags.includes('--wait')) return runNode(ENGINE, ['resume', args[1]], project);
+    return runNode(ENGINE_LAUNCH, ['resume', args[1]], project);
   }
   if (command === 'retry') {
     if (!args[1]) throw new Error('retry requires a run id (see: agentic runs)');

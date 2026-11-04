@@ -393,7 +393,8 @@ function needsYou(id, state, options = {}) {
     return waiting('architecture-selection', 'Architecture selection waits for you', `Review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')}, then choose an option.`, commandFor('architecture', id, cli), state.phases?.['architecture-options']?.updatedAt);
   }
   if (status('plan') === 'pass' && rawStatusOf(state, 'approval') !== 'pass' && !planApproved(id, root)) {
-    return waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt);
+    // The digest rides along; headline, reason, command and key stay as they are.
+    return { ...waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt), plan: planDigest(id, root, cli) };
   }
   // Open conflicts hold the plan back once it could run (feature.yaml: plan
   // needs conflict-arbitration). Before arbitration is done again, the file
@@ -417,6 +418,46 @@ function needsYou(id, state, options = {}) {
   return null;
 }
 
+// ---------------------------------------------------------------- plan digest
+// What the approval gate shows of the plan, so the reviewer sees what waits
+// without opening the file: the counts from 06-plan.json, the head of the
+// summary (secrets redacted, printable text only, at most PLAN_LINES lines and
+// PLAN_CHARS characters), and the file. Step, criterion and risk text is never
+// printed. Null when the run has no plan file at all.
+const PLAN_LINES = 6;
+const PLAN_CHARS = 600;
+function planDigest(id, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1') {
+  const json = path.join(root, id, '06-plan.json'), file = path.join(root, id, '06-plan.md');
+  if (!fs.existsSync(json) && !fs.existsSync(file)) return null;
+  let plan = null;
+  try { plan = JSON.parse(fs.readFileSync(json, 'utf8')); } catch { plan = null; }
+  const count = value => (Array.isArray(value) ? value.length : null);
+  let text = plan && typeof plan.summary === 'string' ? plan.summary : null;
+  // No usable JSON: the Markdown body after its "# Implementation plan" heading.
+  if (text === null) { try { text = fs.readFileSync(file, 'utf8').replace(/^#[^\n]*\n?/, ''); } catch { text = ''; } }
+  // notify.js requires progress.js at load; this call happens at run time, so there is no cycle.
+  const scrub = value => require('./notify').redactSecrets(value);
+  const summary = [];
+  let used = 0;
+  for (const raw of scrub(text).split('\n')) {
+    const line = printable(raw).trim();
+    if (!line) continue;
+    if (summary.length >= PLAN_LINES) break;
+    const room = PLAN_CHARS - used;
+    if (line.length > room) { if (room > 1) summary.push(`${line.slice(0, room - 1)}…`); break; }
+    summary.push(line);
+    used += line.length;
+  }
+  return { path: cli ? relativeStatePath(id, '06-plan.md') : `ai/runs/${id}/06-plan.md`, file, summary, steps: count(plan?.steps), acceptanceCriteria: count(plan?.acceptanceCriteria), risks: count(plan?.risks), amendments: /REVIEW AMENDMENTS/i.test(text) };
+}
+function planDigestLines(plan) {
+  if (!plan) return [];
+  const counts = plan.steps === null && plan.acceptanceCriteria === null && plan.risks === null
+    ? 'counts unavailable (06-plan.json missing or invalid)'
+    : `${plan.steps ?? '?'} steps · ${plan.acceptanceCriteria ?? '?'} acceptance criteria · ${plan.risks ?? '?'} risks`;
+  return [`Plan: ${counts}${plan.amendments ? ' · REVIEW AMENDMENTS present' : ''}`, ...plan.summary.map(line => `  │ ${line}`), `  Full plan: ${plan.path}`];
+}
+
 // When the run completed, and the key its "complete" event uses. A run that
 // completes again after rework has a new time, so it is told again.
 function completedAt(state) {
@@ -424,9 +465,11 @@ function completedAt(state) {
 }
 function completeKey(id, at) { return `${id}|run|complete${at ? `|${at}` : ''}`; }
 
+// The needs-you block: headline, reason, the plan digest at the approval gate,
+// and the command.
 function needsYouLines(attention) {
   if (!attention) return [];
-  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, `  → run: ${attention.command}`];
+  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, ...planDigestLines(attention.plan).map(line => `  ${line}`), `  → run: ${attention.command}`];
 }
 
 function buildSummary(id, state, options = {}) {
@@ -532,7 +575,8 @@ function renderMarkdown(summary, options = {}) {
   const attention = summary.engine
     ? `\n> ● **Engine running**${options.published ? '' : `: ${describeEngine(summary.engine)}`}`
     : summary.needsYou
-      ? `\n> ⚠ **Needs you:** ${summary.needsYou.headline}  \n${options.published ? '' : `> ${summary.needsYou.reason}  \n`}> Run: \`${summary.needsYou.command}\``
+      // The plan digest's counts line, never its text, and never in the published comment.
+      ? `\n> ⚠ **Needs you:** ${summary.needsYou.headline}  \n${options.published ? '' : `> ${summary.needsYou.reason}  \n${summary.needsYou.plan ? `> ${planDigestLines(summary.needsYou.plan)[0]}  \n` : ''}`}> Run: \`${summary.needsYou.command}\``
       : '';
 
   const warnings = summary.warnings.length
@@ -637,6 +681,8 @@ module.exports = {
   buildSummary,
   needsYou,
   needsYouLines,
+  planDigest,
+  planDigestLines,
   commandFor,
   completedAt,
   completeKey,

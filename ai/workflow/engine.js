@@ -901,8 +901,9 @@ function executeStage(id, wf, stage, args = {}) {
         const command = cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
         console.log(`${id}: waiting for architecture selection — review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')} then run: ${command}`);
       } else {
-        const command = cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id}`;
-        console.log(`${id}: waiting for human approval — review ${artifact('06-plan.md')} then run: ${command}`);
+        // The same block the views show: the plan digest and the exact command.
+        const lines = needsYouLines(needsYou(id, loadState(id), { root: RUNS, cli, reasonMax: 2000 }));
+        console.log([`${id}: waiting for human approval`, ...(lines.length ? lines : [`  review ${artifact('06-plan.md')} then run: ${commandFor('approve', id, cli)}`])].join('\n'));
       }
       return 'waiting';
     }
@@ -1351,9 +1352,19 @@ function notificationSelftest() {
     assert.match(second.result || '', new RegExp(`^ERROR run N-FAIL is already being driven by engine pid ${process.pid} \\(resume\\)`), second.stdout);
     fs.unlinkSync(path.join(states, 'N-FAIL', 'engine', 'engine.pid'));
 
-    // 6. The plan gate: two resumes, one "waits for your approval".
+    // 6. The plan gate: two resumes, one "waits for your approval". The terminal
+    // gets the plan digest and the exact command; the notification never
+    // carries the plan.
     prepare('N-GATE', stages.slice(0, stages.indexOf('approval')));
-    for (let i = 0; i < 2; i++) assert.strictEqual(resume('N-GATE').result, 'waiting');
+    fs.writeFileSync(path.join(states, 'N-GATE', '06-plan.json'), JSON.stringify({ schemaVersion: 1, runId: 'N-GATE', summary: 'Add the setting and its tests.', steps: [{ id: 'S1', description: 'x' }], acceptanceCriteria: ['AC-1', 'AC-2'], risks: [] }));
+    fs.writeFileSync(path.join(states, 'N-GATE', '06-plan.md'), '# Implementation plan\n\nAdd the setting and its tests.\n');
+    for (let i = 0; i < 2; i++) {
+      const held = resume('N-GATE');
+      assert.strictEqual(held.result, 'waiting');
+      assert.match(held.stdout, /N-GATE: waiting for human approval\n⚠ Needs you: The plan waits for your approval\n/, held.stdout);
+      assert.match(held.stdout, /\n {2}Plan: 1 steps · 2 acceptance criteria · 0 risks\n {4}│ Add the setting and its tests\.\n/, held.stdout);
+      assert.ok(held.stdout.includes(`→ run: ${commandFor('approve', 'N-GATE', false)}`), held.stdout);
+    }
     const gate = events().filter(e => e.key.startsWith('N-GATE|'));
     assert.strictEqual(gate.length, 1, JSON.stringify(gate));
     assert.strictEqual(gate[0].kind, 'waiting');
