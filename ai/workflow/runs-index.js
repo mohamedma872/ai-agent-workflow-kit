@@ -214,6 +214,15 @@ function selftest() {
   assert.ok(!/⚠ FEAT-STUCK/.test(renderList([runningEntry], {})));
   fs.rmSync(path.join(temp, 'FEAT-STUCK'), { recursive: true });
 
+  // Open specialist conflicts: the plan waits for a decision, and CURRENT says so.
+  write('FEAT-CONF', { id: 'FEAT-CONF', status: 'active', updatedAt: '2026-09-08T10:00:00.000Z', phases: { analysis: { status: 'pass' }, 'conflict-arbitration': { status: 'pass' } } });
+  fs.mkdirSync(path.join(temp, 'FEAT-CONF', '05-analysis'));
+  fs.writeFileSync(path.join(temp, 'FEAT-CONF', '05-analysis', 'conflicts.json'), JSON.stringify({ conflicts: [{ id: 'CONFLICT-001', topic: 'storage', findings: ['A', 'B'], status: 'unresolved' }] }));
+  const disputedTable = renderList([runEntry('FEAT-CONF', temp)], {});
+  assert.match(disputedTable, /needs-you {2}Waiting for conflict decisions {2}/);
+  assert.match(disputedTable, /⚠ FEAT-CONF: 1 conflict needs your decision — run: /);
+  fs.rmSync(path.join(temp, 'FEAT-CONF'), { recursive: true });
+
   assert.match(renderList([], {}), /No features in progress/);
   const table = renderList(listRuns({ root: temp }), {});
   assert.match(table, /FEAT-2/);

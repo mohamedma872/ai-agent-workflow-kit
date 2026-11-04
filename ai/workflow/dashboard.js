@@ -342,7 +342,7 @@ function startEngine(run, mode, deps = {}) {
   // whose attempts are spent as it is) and a gate returns at once: say so here
   // instead of starting an engine that changes nothing.
   const attention = mode === 'retry' ? null : run.needsYou;
-  if (attention?.kind === 'waiting') return { ok: false, message: `✗ ${run.id} waits for you — run: ${attention.command}` };
+  if (attention?.kind === 'waiting') return { ok: false, message: attention.conflicts ? `✗ ${run.id}: ${attention.headline} — run: ${attention.command}` : `✗ ${run.id} waits for you — run: ${attention.command}` };
   if ((attention?.kind === 'fail' || attention?.kind === 'blocked') && attention.stage !== 'pull-request') {
     return { ok: false, message: `✗ ${run.id}: ${attention.label} needs a retry first — press T (or run: ${attention.command})` };
   }
@@ -837,6 +837,14 @@ function selftest() {
   const again = [{ ...finished[0], completedAt: 'c2', pullRequest: null }];
   const rungAgain = newAttention(seenKeys, again);
   assert.deepStrictEqual(rungAgain.map(e => [e.id, e.key]), [['FEAT-007', notify.completeEvent('FEAT-007', { phases: { 'pull-request': { status: 'skipped', updatedAt: 'c2' } } }).key]]);
+  // Open conflicts: the same set rings once however often it refreshes; a
+  // changed set (one decided, or a pair renumbered) rings again.
+  const disputed = (headline, key) => [{ ...runs[1], current: 'Waiting for conflict decisions', engine: null, needsYou: { kind: 'waiting', stage: 'plan', label: 'Implementation Plan', headline, command: 'agentic conflicts FEAT-007', conflicts: ['CONFLICT-001'], key } }];
+  assert.strictEqual(newAttention(seenKeys, disputed('2 conflicts need your decision', 'FEAT-007|plan|waiting|CONFLICT-001=A+B,CONFLICT-002=C+D')).length, 1);
+  assert.deepStrictEqual(newAttention(seenKeys, disputed('2 conflicts need your decision', 'FEAT-007|plan|waiting|CONFLICT-001=A+B,CONFLICT-002=C+D')), [], 'the same conflicts ring once');
+  const fewer = newAttention(seenKeys, disputed('1 conflict needs your decision', 'FEAT-007|plan|waiting|CONFLICT-002=C+D'));
+  assert.strictEqual(fewer.length, 1);
+  assert.ok(fewer[0].message.includes('needs you — 1 conflict needs your decision → agentic conflicts FEAT-007'), fewer[0].message);
 
   // startEngine: refuses while an engine is alive; otherwise starts a detached
   // engine with no shell, its output in the run's engine/background.log.
@@ -857,6 +865,8 @@ function selftest() {
     assert.deepStrictEqual(startEngine(stuck, 'resume', { spawnFn: fakeSpawn, live: () => null, cwd: startRoot }), { ok: false, message: '✗ FEAT-R: Build + Tests needs a retry first — press T (or run: agentic retry FEAT-R)' });
     assert.deepStrictEqual(startEngine({ ...target, needsYou: { ...stuck.needsYou, kind: 'blocked', stage: 'verification', label: 'Final Verification' } }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, '✗ FEAT-R: Final Verification needs a retry first — press T (or run: agentic retry FEAT-R)');
     assert.deepStrictEqual(startEngine({ ...target, needsYou: { kind: 'waiting', stage: 'approval', label: 'Human Approval', command: 'agentic approve FEAT-R' } }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R waits for you — run: agentic approve FEAT-R' });
+    // Open conflicts: R names the decision and the command that lists them.
+    assert.deepStrictEqual(startEngine({ ...target, needsYou: { kind: 'waiting', stage: 'plan', label: 'Implementation Plan', headline: '2 conflicts need your decision', command: 'agentic conflicts FEAT-R', conflicts: ['CONFLICT-001', 'CONFLICT-002'] } }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R: 2 conflicts need your decision — run: agentic conflicts FEAT-R' });
     assert.strictEqual(calls.length, 0, 'nothing started for either');
     // A blocked pull-request stage is continued by a resume; T still retries a failed stage.
     const prResume = startEngine({ ...target, needsYou: { kind: 'blocked', stage: 'pull-request', label: 'Pull Request', command: 'agentic resume FEAT-R' } }, 'resume', { spawnFn: fakeSpawn, live: () => null, cwd: startRoot });

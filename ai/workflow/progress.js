@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const { stateRoot, relativeStatePath } = require('./paths');
-const { unresolvedBlocking } = require('./conflict-tracker');
+const { openConflicts } = require('./conflict-tracker');
 const { liveEngine, describe: describeEngine } = require('./engine-owner');
 
 const RUNS = stateRoot();
@@ -315,8 +315,9 @@ function oneLine(text, max = 220) {
   const value = printable(text).replace(/\s+/g, ' ').trim();
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-// The command a human types next, as this install spells it.
-function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1') {
+// The command a human types next, as this install spells it. `target` is the
+// conflict a resolve names (a placeholder when there are several).
+function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1', target = '<conflict-id>') {
   const engine = `node ai/workflow/engine.js resume ${id}`;
   switch (action) {
     case 'retry': return cli ? `agentic retry ${id}` : `node ai/tasks/feature/runs.js retry ${id} && ${engine}`;
@@ -324,6 +325,7 @@ function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1') {
     case 'approve': return cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id} && ${engine}`;
     case 'architecture': return cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
     case 'conflicts': return cli ? `agentic conflicts ${id}` : `node ai/workflow/conflicts.js list ${id}`;
+    case 'resolve': return `${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} ${id} ${target} --decision "..." --rationale "..."`;
     default: throw new Error(`unknown action ${action}`);
   }
 }
@@ -389,12 +391,21 @@ function needsYou(id, state, options = {}) {
   if (status('plan') === 'pass' && rawStatusOf(state, 'approval') !== 'pass' && !planApproved(id, root)) {
     return waiting('approval', 'The plan waits for your approval', `Review ${artifact('06-plan.md')}; approving lets implementation start.`, commandFor('approve', id, cli), state.phases?.plan?.updatedAt);
   }
-  if (!DONE.has(status('plan')) && DONE.has(status('analysis'))) {
-    let conflicts = [];
-    try { conflicts = unresolvedBlocking(JSON.parse(fs.readFileSync(path.join(root, id, '05-analysis', 'conflicts.json'), 'utf8')).conflicts || []); } catch { conflicts = []; }
-    if (conflicts.length) {
-      const ids = conflicts.map(conflict => conflict.id).sort();
-      return waiting('plan', 'Specialist conflicts block the plan', `${ids.length} unresolved conflict(s): ${ids.join(', ')}. Decide each with ${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} <run-id> <conflict-id> --decision "..." --rationale "...", then resume.`, commandFor('conflicts', id, cli), ids.join(','));
+  // Open conflicts hold the plan back once it could run (feature.yaml: plan
+  // needs conflict-arbitration). Before arbitration is done again, the file
+  // still holds the previous set.
+  if (!DONE.has(status('plan')) && DONE.has(status('analysis')) && (!state.phases?.['conflict-arbitration'] || DONE.has(status('conflict-arbitration')))) {
+    const open = openConflicts(path.join(root, id)).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    if (open.length) {
+      const ids = open.map(c => oneLine(c.id, 40)), n = ids.length;
+      // Topics only (the arbitration tag), never finding titles or recommendations.
+      const named = open.map(c => `${oneLine(c.id, 40)} (${oneLine(c.topic || 'disputed', 40)})`);
+      const tail = `Decide each with: ${commandFor('resolve', id, cli, n === 1 ? ids[0] : '<conflict-id>')}, then: ${commandFor('resume', id, cli)}`;
+      const list = k => `${named.slice(0, k).join(', ')}${k < n ? ` +${n - k} more` : ''}`;
+      let shown = n; while (shown > 1 && `${list(shown)}. ${tail}`.length > reasonMax) shown--;
+      // The key names each conflict's finding pair: ids are renumbered on every synthesis.
+      const key = open.map(c => `${oneLine(c.id, 40)}=${(c.findings || []).map(f => oneLine(f, 40)).sort().join('+')}`).join(',');
+      return { ...waiting('plan', `${n} conflict${n === 1 ? ' needs' : 's need'} your decision`, oneLine(`${list(shown)}. ${tail}`, reasonMax), commandFor('conflicts', id, cli), key), conflicts: ids };
     }
   }
   return null;
@@ -414,18 +425,20 @@ function needsYouLines(attention) {
 
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
+  const attention = needsYou(id, state, { root: options.root || RUNS });
   return {
     id,
     status: state.status || 'active',
     percent,
-    current: currentWork(state),
+    // Open conflicts hold the plan back: say so rather than "Waiting for Implementation Plan".
+    current: attention?.conflicts ? 'Waiting for conflict decisions' : currentWork(state),
     planApproved: options.demo ? false : planApproved(id, options.root || RUNS),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
     warnings: consistencyIssues(state),
     pullRequest: pullRequestSummary(state),
     pullRequestHint: pullRequestHint(id, state),
-    needsYou: needsYou(id, state, { root: options.root || RUNS }),
+    needsYou: attention,
     completedAt: completedAt(state),
     // The engine driving the run right now (engine-owner.js): while it works,
     // a block in the state is what it is re-running, not something to act on.

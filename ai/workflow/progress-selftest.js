@@ -14,6 +14,7 @@ const {
   currentWork,
   percentComplete,
   buildSummary,
+  commandFor,
   renderTerminal,
   renderMarkdown,
 } = require('./progress');
@@ -282,12 +283,68 @@ function staleApprovedState() {
     assert.deepStrictEqual([approval.kind, approval.stage, approval.headline, approval.command, approval.key], ['waiting', 'approval', 'The plan waits for your approval', 'agentic approve FEAT-5', 'FEAT-5|approval|waiting|p1']);
     fs.writeFileSync(path.join(root, 'FEAT-5', 'plan.approved'), 'approved\n');
     assert.strictEqual(needsYou('FEAT-5', gate, { root }), null, 'approved: nothing waits');
+    // Open specialist conflicts: the count, ids and topics, and the exact
+    // resolve and resume commands. The key names each finding pair.
     const conflicts = { status: 'active', roles: {}, phases: passed('plan') };
-    fs.mkdirSync(path.join(root, 'FEAT-6', '05-analysis'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'FEAT-6', '05-analysis', 'conflicts.json'), JSON.stringify({ conflicts: [{ id: 'CONFLICT-002', status: 'unresolved' }, { id: 'CONFLICT-001', status: 'unresolved' }, { id: 'CONFLICT-003', status: 'resolved' }] }));
+    const conflictsFile = path.join(root, 'FEAT-6', '05-analysis', 'conflicts.json');
+    const writeConflicts = list => { fs.mkdirSync(path.dirname(conflictsFile), { recursive: true }); fs.writeFileSync(conflictsFile, JSON.stringify({ conflicts: list })); };
+    const six = [{ id: 'CONFLICT-002', topic: 'payments, retries', findings: ['D', 'C'], status: 'unresolved' }, { id: 'CONFLICT-001', topic: 'storage', findings: ['B', 'A'], status: 'unresolved' }, { id: 'CONFLICT-003', status: 'resolved' }];
+    writeConflicts(six);
     const disputed = needsYou('FEAT-6', conflicts, { root, cli: true });
-    assert.deepStrictEqual([disputed.kind, disputed.stage, disputed.headline, disputed.command, disputed.key], ['waiting', 'plan', 'Specialist conflicts block the plan', 'agentic conflicts FEAT-6', 'FEAT-6|plan|waiting|CONFLICT-001,CONFLICT-002']);
-    assert.match(disputed.reason, /^2 unresolved conflict\(s\): CONFLICT-001, CONFLICT-002\. Decide each with agentic resolve/);
+    assert.deepStrictEqual([disputed.kind, disputed.stage, disputed.headline, disputed.command, disputed.key], ['waiting', 'plan', '2 conflicts need your decision', 'agentic conflicts FEAT-6', 'FEAT-6|plan|waiting|CONFLICT-001=A+B,CONFLICT-002=C+D']);
+    assert.deepStrictEqual(disputed.conflicts, ['CONFLICT-001', 'CONFLICT-002']);
+    assert.strictEqual(disputed.reason, 'CONFLICT-001 (storage), CONFLICT-002 (payments, retries). Decide each with: agentic resolve FEAT-6 <conflict-id> --decision "..." --rationale "...", then: agentic resume FEAT-6');
+    const disputedNode = needsYou('FEAT-6', conflicts, { root, cli: false });
+    assert.strictEqual(disputedNode.command, 'node ai/workflow/conflicts.js list FEAT-6');
+    assert.match(disputedNode.reason, /node ai\/workflow\/conflicts\.js resolve FEAT-6 <conflict-id>/);
+    assert.match(disputedNode.reason, /then: node ai\/workflow\/engine\.js resume FEAT-6$/);
+    assert.strictEqual(needsYou('FEAT-6', conflicts, { root, cli: true }).key, disputed.key, 'a refresh keeps the key: no repeat notification');
+    // CURRENT and the terminal banner say a decision waits, not "Waiting for Implementation Plan".
+    const previousCli = process.env.AI_AGENTIC_CLI;
+    process.env.AI_AGENTIC_CLI = '1';
+    try {
+      const disputedSummary = buildSummary('FEAT-6', conflicts, { root });
+      assert.strictEqual(disputedSummary.current, 'Waiting for conflict decisions');
+      assert.strictEqual('Waiting for conflict decisions'.length, 30, 'fits the CURRENT column of agentic runs');
+      const disputedTerminal = renderTerminal(disputedSummary);
+      assert.ok(disputedTerminal.includes('⚠ Needs you: 2 conflicts need your decision'), disputedTerminal);
+      assert.ok(disputedTerminal.includes('→ run: agentic conflicts FEAT-6'), disputedTerminal);
+    } finally { if (previousCli === undefined) delete process.env.AI_AGENTIC_CLI; else process.env.AI_AGENTIC_CLI = previousCli; }
+    // One decided: the one left is named in the resolve command, and the key changes (a re-notification).
+    writeConflicts([six[0], { ...six[1], status: 'resolved' }, six[2]]);
+    const one = needsYou('FEAT-6', conflicts, { root, cli: true });
+    assert.strictEqual(one.headline, '1 conflict needs your decision');
+    assert.ok(one.reason.includes('agentic resolve FEAT-6 CONFLICT-002 --decision'), one.reason);
+    assert.strictEqual(one.key, 'FEAT-6|plan|waiting|CONFLICT-002=C+D');
+    // Renumbered: the same ids over a different finding pair is a different block.
+    writeConflicts([six[0], { ...six[1], findings: ['X', 'Y'] }, six[2]]);
+    const renumbered = needsYou('FEAT-6', conflicts, { root, cli: true });
+    assert.deepStrictEqual(renumbered.conflicts, disputed.conflicts);
+    assert.notStrictEqual(renumbered.key, disputed.key);
+    // All decided: no banner, and CURRENT is the plan again.
+    writeConflicts(six.map(c => ({ ...c, status: 'resolved' })));
+    assert.strictEqual(needsYou('FEAT-6', conflicts, { root }), null);
+    assert.strictEqual(buildSummary('FEAT-6', conflicts, { root }).current, 'Waiting for Implementation Plan');
+    // While arbitration runs again, the file still holds the previous set: no banner.
+    writeConflicts(six);
+    assert.strictEqual(needsYou('FEAT-6', { ...conflicts, phases: { ...conflicts.phases, 'conflict-arbitration': { status: 'in_progress' } } }, { root }), null);
+    assert.strictEqual(needsYou('FEAT-6', { ...conflicts, phases: { ...conflicts.phases, 'conflict-arbitration': { status: 'pass' } } }, { root, cli: true }).key, disputed.key);
+    // A topic is printable text, at most 40 characters.
+    writeConflicts([{ id: 'CONFLICT-001', topic: '\x1b]52;c;ZXZpbA==\x07' + 'x'.repeat(300), findings: ['A', 'B'], status: 'unresolved' }]);
+    const hostileConflict = needsYou('FEAT-6', conflicts, { root, cli: true });
+    assert.ok(!/[\x1b\x07]/.test(hostileConflict.reason), JSON.stringify(hostileConflict.reason));
+    assert.ok(hostileConflict.reason.match(/^CONFLICT-001 \(([^)]*)\)/)[1].length <= 40, hostileConflict.reason);
+    // Many conflicts: the list shrinks to "+N more" so both commands survive.
+    fs.mkdirSync(path.join(root, 'FEAT-8', '05-analysis'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'FEAT-8', '05-analysis', 'conflicts.json'), JSON.stringify({ conflicts: Array.from({ length: 7 }, (_, i) => ({ id: `CONFLICT-00${i + 1}`, topic: `a long disputed topic number ${i + 1} `.repeat(4), findings: [`A${i}`, `B${i}`], status: 'unresolved' })) }));
+    const many = needsYou('FEAT-8', conflicts, { root, cli: true });
+    assert.ok(many.reason.length <= 220, many.reason.length);
+    assert.ok(many.reason.includes(' more. Decide each with:'), many.reason);
+    assert.ok(many.reason.endsWith('agentic resume FEAT-8'), many.reason);
+    const manyFull = needsYou('FEAT-8', conflicts, { root, cli: true, reasonMax: Infinity });
+    for (let i = 1; i <= 7; i++) assert.ok(manyFull.reason.includes(`CONFLICT-00${i}`), manyFull.reason);
+    assert.strictEqual(commandFor('resolve', 'R1', true, 'CONFLICT-004'), 'agentic resolve R1 CONFLICT-004 --decision "..." --rationale "..."');
+    assert.ok(commandFor('resolve', 'R1', false).startsWith('node ai/workflow/conflicts.js resolve R1 '));
     // An architecture selection gate.
     const arch = { status: 'active', roles: {}, phases: { 'architecture-options': { status: 'pass', updatedAt: 'a1' } } };
     assert.deepStrictEqual([needsYou('FEAT-7', arch, { root, cli: true }).stage, needsYou('FEAT-7', arch, { root, cli: true }).command], ['architecture-selection', 'agentic architecture FEAT-7 <option-id>']);

@@ -27,7 +27,7 @@ const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
 const pullRequest = require('./pull-request');
 const notify = require('./notify');
 const engineOwner = require('./engine-owner');
-const { needsYou, commandFor } = require('./progress');
+const { needsYou, needsYouLines, commandFor } = require('./progress');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -888,9 +888,9 @@ function executeStage(id, wf, stage, args = {}) {
     return 'pass';
   }
   if (stage.id === 'plan') {
-    const synthesis = synthesizeAnalysis(id);
-    const unresolved = unresolvedBlocking(synthesis.conflicts);
-    if (unresolved.length) throw new Error(`plan blocked by unresolved subagent conflict(s): ${unresolved.map(x => x.id).join(', ')}`);
+    const unresolved = unresolvedBlocking(synthesizeAnalysis(id).conflicts);
+    // A human decision, like the gates above: say what waits and how to continue, then wait.
+    if (unresolved.length) { console.log([`${id}: the plan waits on ${unresolved.length} unresolved conflict(s): ${unresolved.map(x => x.id).join(', ')}`, ...needsYouLines(needsYou(id, loadState(id), { root: RUNS, cli: process.env.AI_AGENTIC_CLI === '1', reasonMax: 2000 }))].join('\n')); return 'waiting'; }
   }
   if (stage.strategy === 'parallel') { executeParallel(id, wf, stage); return 'pass'; }
   if (stage.id === 'build-test' && readMode(id)==='behavior_preserving_refactor') {
@@ -1327,6 +1327,37 @@ function notificationSelftest() {
     assert.strictEqual(gate.length, 1, JSON.stringify(gate));
     assert.strictEqual(gate[0].kind, 'waiting');
     assert.match(gate[0].body, /^The plan waits for your approval: Review ai\/runs\/N-GATE\/06-plan\.md.* — run: node ai\/tasks\/feature\/runs\.js approve N-GATE && node ai\/workflow\/engine\.js resume N-GATE$/);
+
+    // 6b. Open specialist conflicts: the plan waits for a human decision like
+    // the gates (never a failure), says how many and what to run, and is told
+    // once across resumes. Once decided, the plan runs (the stub fails it).
+    prepare('N-CONF', stages.slice(0, stages.indexOf('plan')));
+    const analysisDir = path.join(states, 'N-CONF', '05-analysis');
+    fs.mkdirSync(analysisDir, { recursive: true });
+    fs.writeFileSync(path.join(analysisDir, 'security-reviewer.json'), JSON.stringify({ agent: 'security-reviewer', findings: [{ id: 'SEC-1', title: 't', severity: 'high' }] }));
+    fs.writeFileSync(path.join(analysisDir, 'mobile-architect.json'), JSON.stringify({ agent: 'mobile-architect', findings: [{ id: 'ARCH-2', title: 'u', severity: 'medium' }] }));
+    fs.writeFileSync(path.join(analysisDir, 'arbitration.json'), JSON.stringify({ conflicts: [{ findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }] }));
+    for (let i = 0; i < 2; i++) {
+      const held = resume('N-CONF');
+      assert.strictEqual(held.result, 'waiting', held.stdout);
+      assert.match(held.stdout, /⚠ Needs you: 1 conflict needs your decision/);
+      assert.match(held.stdout, /→ run: node ai\/workflow\/conflicts\.js list N-CONF/);
+      assert.strictEqual(stateOf('N-CONF').phases.plan?.status || 'pending', 'pending');
+    }
+    const conf = events().filter(e => e.key.startsWith('N-CONF|'));
+    assert.strictEqual(conf.length, 1, JSON.stringify(conf));
+    assert.ok(conf[0].key.startsWith('N-CONF|plan|waiting|CONFLICT-001=ARCH-2+SEC-1'), conf[0].key);
+    assert.strictEqual(conf[0].kind, 'waiting');
+    assert.match(conf[0].body, /^1 conflict needs your decision: CONFLICT-001 \(storage\)/);
+    const conflictsJson = path.join(analysisDir, 'conflicts.json');
+    const decided = JSON.parse(fs.readFileSync(conflictsJson, 'utf8'));
+    decided.conflicts[0].status = 'resolved';
+    decided.conflicts[0].resolution = { decision: 'secure storage', rationale: 'PII', owner: 'human', resolvedAt: new Date().toISOString() };
+    fs.writeFileSync(conflictsJson, JSON.stringify(decided));
+    const planned = resume('N-CONF');
+    assert.notStrictEqual(planned.result, 'waiting', planned.stdout);
+    assert.ok(!planned.stdout.includes('Needs you: 1 conflict'), planned.stdout);
+    assert.match(planned.result || '', /^ERROR plan\/orchestration: /, 'the plan was attempted');
 
     // 7. A complete run: once, with how to open the pull request it skipped.
     prepare('N-DONE', stages.filter(st => st !== 'pull-request'));

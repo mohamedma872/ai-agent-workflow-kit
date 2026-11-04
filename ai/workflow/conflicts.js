@@ -2,6 +2,7 @@
 'use strict';
 const fs=require('fs'); const path=require('path');
 const {stateRoot}=require('./paths'); const RUNS=stateRoot();
+const {unresolvedBlocking}=require('./conflict-tracker'); const {commandFor}=require('./progress');
 function file(id){return path.join(RUNS,id,'05-analysis','conflicts.json');}
 function load(id){return JSON.parse(fs.readFileSync(file(id),'utf8'));}
 // Conflicts only reference finding ids, which say nothing on their own. The
@@ -23,7 +24,8 @@ function list(id){
  const d=load(id), idx=findingIndex(id);
  return (d.conflicts||[]).map(c=>({...c,positions:(c.findings||[]).map(fid=>({id:fid,...(idx.get(fid)||{})}))}));
 }
-function renderList(items){
+// With the run id the last line names the exact resolve and resume commands.
+function renderList(items,{id,cli}={}){
  if(!items.length) return 'No specialist conflicts recorded for this run.';
  const lines=[];
  for(const c of items){
@@ -32,8 +34,9 @@ function renderList(items){
   if(c.resolution) lines.push(`    decided: ${c.resolution.decision} (${c.resolution.owner}) — ${c.resolution.rationale}`);
   lines.push('');
  }
- const open=items.filter(c=>c.status!=='resolved').length;
- lines.push(open?`${open} unresolved conflict(s) block the plan. Resolve with:\n  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."`:'All conflicts resolved — the plan stage can run.');
+ const pending=unresolvedBlocking(items), open=pending.length;
+ if(id) lines.push(open?`${open} unresolved conflict(s) block the plan. Decide each with:\n  ${commandFor('resolve',id,cli,open===1?pending[0].id:'<conflict-id>')}\nthen: ${commandFor('resume',id,cli)}`:`All conflicts resolved — the plan stage can run: ${commandFor('resume',id,cli)}`);
+ else lines.push(open?`${open} unresolved conflict(s) block the plan. Resolve with:\n  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."`:'All conflicts resolved — the plan stage can run.');
  return lines.join('\n');
 }
 function resolveData(d,conflictId,{decision,rationale,owner}){
@@ -55,6 +58,14 @@ function selftest(){
  const done=renderList([{id:'CONFLICT-001',topic:'storage',status:'resolved',positions:[],resolution:{decision:'plain preferences',rationale:'no PII stored',owner:'human',resolvedAt:'now'}}]);
  assert.match(done,/All conflicts resolved/);assert.match(done,/no PII stored/);
  assert.match(renderList([]),/No specialist conflicts/);
+ // With the run id: the exact resolve and resume commands, as this install spells them.
+ const openItems=[{id:'CONFLICT-001',topic:'storage',status:'unresolved',positions:[]}];
+ const cliList=renderList(openItems,{id:'FEAT-1',cli:true});
+ assert.match(cliList,/agentic resolve FEAT-1 CONFLICT-001 --decision/);assert.match(cliList,/then: agentic resume FEAT-1/);
+ const nodeList=renderList(openItems,{id:'FEAT-1',cli:false});
+ assert.match(nodeList,/node ai\/workflow\/conflicts\.js resolve FEAT-1/);assert.match(nodeList,/node ai\/workflow\/engine\.js resume FEAT-1/);
+ assert.match(renderList([...openItems,{id:'CONFLICT-002',status:'unresolved',positions:[]}],{id:'FEAT-1',cli:true}),/^2 unresolved .*\n  agentic resolve FEAT-1 <conflict-id> --decision/m);
+ assert.match(renderList([{...openItems[0],status:'resolved'}],{id:'FEAT-1',cli:true}),/All conflicts resolved — the plan stage can run: agentic resume FEAT-1/);
  console.log('conflicts resolution selftest OK');
 }
 function args(argv){const o={_:[]};for(let i=0;i<argv.length;i++){const a=argv[i];if(a.startsWith('--')){o[a.slice(2)]=argv[++i];}else o._.push(a);}return o;}
@@ -62,7 +73,7 @@ if(require.main===module){try{
  if(process.argv.includes('--selftest'))selftest();
  else{
   const a=args(process.argv.slice(2));const [cmd,id,cid]=a._;
-  if(cmd==='list'){const items=list(id);console.log(a.json?JSON.stringify(items,null,2):renderList(items));}
+  if(cmd==='list'){const items=list(id);console.log(a.json?JSON.stringify(items,null,2):renderList(items,{id,cli:process.env.AI_AGENTIC_CLI==='1'}));}
   else if(cmd==='resolve')console.log(JSON.stringify(resolve(id,cid,{...a,owner:a.owner||'human'}),null,2));
   else throw new Error('usage: conflicts.js list <run> [--json] | resolve <run> <conflict-id> --decision TEXT --rationale TEXT [--owner NAME]');
  }

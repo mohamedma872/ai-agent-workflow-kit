@@ -59,9 +59,9 @@ When the highlighted run waits on a human, a banner sits at the top of its detai
 | the same failure as last time | `Same failure as last time — this needs a fix outside <Stage>` | the same; retrying is allowed, but the cause is elsewhere |
 | the plan waits for approval | `The plan waits for your approval` | `agentic approve <id>` |
 | architecture selection waits | `Architecture selection waits for you` | `agentic architecture <id> <option-id>` |
-| specialist conflicts hold the plan back | `Specialist conflicts block the plan` | `agentic conflicts <id>` |
+| specialist conflicts hold the plan back | `N conflicts need your decision` (reason: ids + topics, resolve + resume commands) | `agentic conflicts <id>` |
 
-The furthest stopped stage wins. The text comes from the run state alone (`needsYou` in `ai/workflow/progress.js`), so the banner, `agentic status <id>`, `runs.js status`, `agentic runs`, the Markdown view and the engine's desktop notification all say the same thing. The GitHub progress comment shows the headline and command, never the reason, as it never publishes run notes.
+While conflicts hold the plan back, CURRENT reads `Waiting for conflict decisions`; the engine waits there like a gate (exit 0), and `agentic resume <id>` runs the plan once every conflict is resolved. The furthest stopped stage wins. The text comes from the run state alone (`needsYou` in `ai/workflow/progress.js`), so the banner, `agentic status <id>`, `runs.js status`, `agentic runs`, the Markdown view and the engine's desktop notification all say the same thing. The GitHub progress comment shows the headline and command, never the reason, as it never publishes run notes.
 
 "Same failure as last time" appears when a stage, role or conditional role fails twice in a row with the same reason, ignoring timestamps, paths, attempt ids, hashes, pids and durations. The entry then has `repeatedFailure: <n>`. Reasons that say nothing about the cause (an agent exiting non-zero, a timeout, an interrupt, a bare exit status or signal) are never counted as repeats.
 
