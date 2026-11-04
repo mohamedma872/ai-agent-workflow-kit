@@ -294,6 +294,7 @@ function cli(argv) {
     const running = new Set();
     for (const [stage, group] of Object.entries(state.roles || {})) for (const [role, entry] of Object.entries(group || {})) if (entry?.status === 'in_progress') running.add(`${stage}-${role}`);
     for (const [stage, entry] of Object.entries(state.phases || {})) if (entry?.status === 'in_progress' && stageRole(stage)) running.add(`${stage}-${stageRole(stage)}`);
+    for (const [stage, group] of Object.entries(state.conditionals || {})) for (const [role, entry] of Object.entries(group || {})) if (entry?.status === 'in_progress') running.add(`${stage}-${role}`);
     const live = files.filter(entry => running.has(entry.key));
     return live.length ? live : files.slice(0, 1);
   };

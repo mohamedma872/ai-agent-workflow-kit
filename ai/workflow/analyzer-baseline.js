@@ -116,6 +116,9 @@ function computeBaseline({ productRoot, baseSha, files, dart, outDir, now = () =
   let tmp = null;
   try {
     if (!baseSha) throw new Error('the run has no base commit');
+    // A base outside the worktree's history (a run recorded before 1.9.31)
+    // would compare against another branch: thousands of "new" issues.
+    if (git(productRoot, ['merge-base', '--is-ancestor', baseSha, 'HEAD']).status !== 0) throw new Error(`the run's base ${String(baseSha).slice(0, 12)} is not in the worktree's history, so a comparison would include another branch's changes; resume the run (it repairs the base) and retry`);
     if (!dart) throw new Error('no dart executable (Flutter SDK not found)');
     const dartFiles = files.filter(file => /\.dart$/.test(file) && fs.existsSync(path.join(productRoot, file)));
     result.files = dartFiles;
@@ -225,6 +228,9 @@ function selftest() {
     assert.strictEqual(run(['status', '--porcelain', '--', 'lib/a.dart']), 'M lib/a.dart', 'the worktree is untouched');
     assert.strictEqual(fs.readFileSync(path.join(repo, 'pubspec.yaml'), 'utf8'), 'name: demo\n', 'what the analyzer rewrote in the worktree is put back');
     assert.deepStrictEqual(result.restored, ['pubspec.yaml']);
+    // A base that is not an ancestor of HEAD is refused, not compared.
+    const other = run(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit-tree', '-m', 'elsewhere', `${baseSha}^{tree}`]);
+    assert.match(computeBaseline({ productRoot: repo, baseSha: other, files: ['lib/a.dart'], dart, outDir: out }).reason, /not in the worktree's history/);
     // Nothing new: the gate is met by the evidence.
     fs.writeFileSync(path.join(repo, 'lib', 'a.dart'), 'void main() {  }\n');
     const clean = computeBaseline({ productRoot: repo, baseSha, files: ['lib/a.dart'], dart, outDir: out });

@@ -234,6 +234,12 @@ function runChecks(options = {}) {
   else checks.push(result('node', 'runtime', true, true, `Node ${process.versions.node}`));
   const gitOk = commandExists('git');
   checks.push(result('git', 'runtime', true, gitOk, gitOk ? commandOutput('git', ['--version']) || 'git available' : 'git not found', 'Install git'));
+  // A notification sent with osascript belongs to Script Editor: clicking it
+  // opens Script Editor. With terminal-notifier a click brings the terminal back.
+  if (process.platform === 'darwin') {
+    const notifier = commandExists('terminal-notifier');
+    checks.push(result('notifications:click', 'runtime', false, notifier, notifier ? `terminal-notifier: clicking a notification brings ${require('./notify').activateApp()} forward` : 'notifications use osascript; clicking one opens Script Editor, not your terminal', notifier ? null : 'brew install terminal-notifier'));
+  }
 
   const agents = readYaml(path.join(ROOT, 'ai', 'agents.yaml'));
   for (const [name, spec] of Object.entries(agents)) {

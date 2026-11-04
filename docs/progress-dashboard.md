@@ -74,6 +74,8 @@ Notes, role names and the fields of `engine.pid` are shown as printable text onl
 
 The engine sends a desktop notification when a run needs you, completes, or (through `agentic pr`) opens its pull request. It sends it itself, so it arrives with this window closed. The dashboard does not send one. It rings the terminal bell and flashes `⚠ <id> needs you — …` in the hint line for each new event. When it opens it stays quiet about what was already waiting. Each event is shown once: its key is recorded in `state.notifications.sent`. A run that completes again after rework is a new event (the key carries the completion time). The notification's text is redacted before it is shortened (named token variables, any variable whose name ends in `TOKEN`, `SECRET`, `PASSWORD`, `_KEY` and similar, URL credentials and common token shapes), and the command it ends with is never cut. On macOS the command is also the subtitle.
 
+On macOS, install `terminal-notifier` (`brew install terminal-notifier`) so that clicking a notification brings forward the app the engine runs in (Terminal, iTerm, VS Code…; `AGENTIC_NOTIFY_ACTIVATE=<bundle id>` picks another). Without it, notifications go through `osascript`, and clicking one opens Script Editor.
+
 | `.agentic/config.yaml` | Default | Effect |
 |---|---|---|
 | `notifications.desktop` | `true` | `false` stops the engine's desktop notifications (macOS `osascript`, Linux `notify-send`) |

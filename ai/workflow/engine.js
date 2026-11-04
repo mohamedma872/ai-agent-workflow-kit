@@ -726,6 +726,8 @@ function executeConditional(id, wf, stage) {
       if (fresh?.evidence?.mobileScreenshots?.requirement !== 'required') throw new Error('mobile condition is true but evidence is not classified as required');
       if (fresh?.evidence?.mobileScreenshots?.execution?.status !== 'pass') {
         const worktree = productRoot(id);
+        // Shown as a running agent under its stage while the device run lasts.
+        conditionalState(id, stage.id, roleName, 'in_progress', 'running on device');
         const res = spawnRaw(process.execPath, [MOBILE_EVIDENCE, 'run', id], { env: { FEATURE_RUN_ID: id, AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS } });
         if (res.error || res.status !== 0) throw new Error(toolFailure(res, 'mobile-evidence'));
       }
