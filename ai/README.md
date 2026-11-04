@@ -752,6 +752,8 @@ for server and web work.
 | `AI_EVAL` | guard, adapters | `1` = eval mode: no commit/push, no outward writes |
 | `QC_EVAL` | guard, QC skill, QC rules | same as `AI_EVAL` for the QC task; also flips the skill into eval mode |
 | `AI_SESSION_BUDGET_USD` | guard rule 7 | checkpoint size for session spend, default 50 |
+| `AI_WORKFLOW_MAX_PARALLEL` | workflow engine | most roles of a parallel stage (`analysis`, `reviews`) running at once, default 4; `1` = one at a time; a stage's `max_parallel` overrides it |
+| `AI_WORKFLOW_STATE_LOCK_STALE_MS` / `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` | state writers | when a `state.json.lock` from another host counts as stale (default 60000; a same-host lock is stale only once its pid is dead) / how long a writer waits for it (default 90000) |
 | `QC_BUDGET_USD` | QC rules, runner | per-run cap for the QC agent, default 60 |
 | `QC_TICKET` | QC rules, adapter | pins the active ticket for the budget rule |
 | `QC_GUARD_TEST_SECRET` | QC self-test only | injects a fake credential |

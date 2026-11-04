@@ -1571,6 +1571,23 @@ review stages
 verification flow
 ```
 
+### Parallel stages
+
+Stages declared `strategy: parallel` (`analysis` and `reviews`) run their selected roles at the same time. Each role runs as its own `engine.js run-role` process, and its output lines start with `[role]`. A failing role does not stop the others; the stage fails once all have finished and names every failed role. While any role is still running, the stage shows `in_progress`.
+
+A role that reads its siblings' results runs after them, one at a time, once they have all passed. Today that is `behavior-regression-review`, which reads the other reviews (`validated_review_findings` in its contract).
+
+Each role runs in its own process group, so stopping the stage also stops the agent a role started. Ctrl-C, a signal to the runner, or the engine process dying all stop it. A role or agent that ignores the signal is killed after 10 s. If the runner itself is killed outright, each role process notices within a second and stops its group, and the engine stops the groups listed in `engine/<stage>-parallel.pgids`. Stopped roles are marked failed with `interrupted: …`, and `resume` starts them again. While the roles run, `engine/<stage>-parallel.pid` in the run directory holds the runner's pid, and `retry` refuses to reset a running role of that stage.
+
+| Setting | Where | Effect |
+|---|---|---|
+| `AI_WORKFLOW_MAX_PARALLEL` | environment | Most roles of one stage running at once. Default `4`. `1` runs them one at a time and stops at the first failure, as before 1.9.30. A value that is not a whole number of at least 1 also means one at a time, with a warning. |
+| `max_parallel` | a stage in `ai/workflows/feature.yaml` | Same, for that stage only. Overrides the environment variable. Not set by default. |
+
+Each extra role at once is one more agent session at the same moment, so a higher cap uses more of your rate limit and machine. It doesn't change total cost.
+
+Run state (`state.json`) is written by several processes. Every write takes a short lock, `state.json.lock`, next to the file. A lock left by a crashed process is taken over when its pid is dead. A lock whose holder is still running on this machine is never taken over, however old; a lock from another host is taken over after 60 s. A writer gives up with an error naming the holder after 90 s. `AI_WORKFLOW_STATE_LOCK_STALE_MS` and `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` change those bounds.
+
 ### Agent/executor configuration
 
 ```text

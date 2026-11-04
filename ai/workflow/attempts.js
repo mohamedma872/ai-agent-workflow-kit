@@ -5,6 +5,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { withStateLock } = require('./state-lock');
 
 function stateFile(root, runId) {
   const runs = process.env.AI_WORKFLOW_STATE_ROOT ? path.resolve(process.env.AI_WORKFLOW_STATE_ROOT) : path.join(root, 'ai', 'runs');
@@ -29,6 +30,12 @@ function attemptsFor(state, phase, role) {
 function recordAttempt(root, runId, phase, role, entry) {
   const file = stateFile(root, runId);
   if (!fs.existsSync(file)) throw new Error(`state missing for run ${runId}`);
+  // Parallel roles record attempts from separate processes; without the lock
+  // one role's attempt (or a concurrent role transition) is overwritten.
+  return withStateLock(file, () => appendAttempt(root, runId, file, phase, role, entry));
+}
+
+function appendAttempt(root, runId, file, phase, role, entry) {
   const state = loadState(root, runId);
   state.executionAttempts ||= {};
   state.executionAttempts[phase] ||= {};

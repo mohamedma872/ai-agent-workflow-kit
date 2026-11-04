@@ -10,6 +10,8 @@ const CHECKS = [
   ['deterministic engine', ['ai/workflow/engine.js', 'selftest']],
   ['retry/timeout/fallback/resume', ['ai/workflow/execution-policy.js', '--selftest']],
   ['attempt-history persistence', ['ai/workflow/attempts.js', '--selftest']],
+  ['cross-process state lock', ['ai/workflow/state-lock.js', '--selftest']],
+  ['concurrent parallel-stage roles', ['ai/workflow/parallel-roles.js', '--selftest']],
   ['parallel worktree isolation', ['ai/workflow/worktree.js', 'selftest']],
   ['Appium session/build/stale-evidence attestation', ['ai/tasks/feature/evidence-attestation-selftest.js']],
   ['mobile evidence runner contract', ['ai/tasks/feature/mobile-evidence.js', 'selftest']],

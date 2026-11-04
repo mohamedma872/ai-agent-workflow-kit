@@ -10,6 +10,7 @@ const { buildAttestation } = require('./evidence-attestation');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../../workflow/paths');
 const { loadWorkflow } = require('../../workflow/router');
 const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('../../workflow/execution-policy');
+const { withStateLock, writeJsonAtomic } = require('../../workflow/state-lock');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -41,7 +42,6 @@ function sessionsFile(id) { return path.join(deviceDir(id), 'appium-sessions.jso
 function contextFile(id) { return path.join(deviceDir(id), 'mobile-evidence-context.md'); }
 function agentOutputFile(id) { return path.join(deviceDir(id), 'mobile-evidence-agent.md'); }
 function loadState(id) { try { return JSON.parse(fs.readFileSync(stateFile(id), 'utf8')); } catch { return null; } }
-function saveState(id, state) { state.updatedAt = new Date().toISOString(); fs.writeFileSync(stateFile(id), JSON.stringify(state, null, 2) + '\n'); }
 function evidenceState(state) { state.evidence ||= {}; state.evidence.mobileScreenshots ||= { requirement: 'unclassified' }; return state.evidence.mobileScreenshots; }
 function phaseStatus(state, phase) { return state.phases?.[phase]?.status || 'pending'; }
 
@@ -175,7 +175,21 @@ function writeAgentEvidence(id, attemptId, platforms) {
   if (sessions) fs.writeFileSync(sessionsFile(id), JSON.stringify({ attemptId, platforms, ...sessions }, null, 2) + '\n');
   return !!sessions;
 }
-function markExecution(id, state, patch) { const evidence = evidenceState(state); evidence.execution = { ...(evidence.execution || {}), ...patch, updatedAt: new Date().toISOString() }; saveState(id, state); }
+// `state` is the copy loaded when the run started, held across a device run
+// that takes many minutes. Saving it whole would overwrite every transition
+// written meanwhile, so the patch is applied to a fresh copy under the lock.
+function markExecution(id, state, patch) {
+  const evidence = evidenceState(state);
+  evidence.execution = { ...(evidence.execution || {}), ...patch, updatedAt: new Date().toISOString() };
+  withStateLock(stateFile(id), () => {
+    const fresh = loadState(id) || state;
+    const target = evidenceState(fresh);
+    if (evidence.platforms) target.platforms = evidence.platforms;
+    target.execution = evidence.execution;
+    fresh.updatedAt = new Date().toISOString();
+    writeJsonAtomic(stateFile(id), fresh);
+  });
+}
 
 function runEvidence(id, args) {
   const state = loadState(id);

@@ -4,7 +4,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
 const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
@@ -22,6 +22,8 @@ const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('
 const { attemptsFor, recordAttempt } = require('./attempts');
 const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree } = require('./worktree');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('./paths');
+const { withStateLock, writeJsonAtomic } = require('./state-lock');
+const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -30,6 +32,8 @@ const RUNS_TOOL = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const ROUTER = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'router.js');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const MOBILE_EVIDENCE = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'mobile-evidence.js');
+const PARALLEL_ROLES = path.join(__dirname, 'parallel-roles.js');
+const DEFAULT_MAX_PARALLEL = 4;
 const WORKFLOW_FILE = path.join(RUNTIME_ROOT, 'ai', 'workflows', 'feature.yaml');
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
@@ -138,14 +142,14 @@ function saveMode(id, mode) {
   fs.mkdirSync(engineDir(id), { recursive: true });
   const payload = { mode: mode.mode, reason: mode.reason, refactorScope: mode.refactorScope || null, scopeReason: mode.scopeReason || null, detectedAt: new Date().toISOString() };
   fs.writeFileSync(modeFile(id), JSON.stringify(payload, null, 2) + '\n');
-  const state = loadState(id); if (state) {
+  withStateLock(stateFile(id), () => {
+    const state = loadState(id); if (!state) return;
     state.workflowMode = payload;
     state.history ||= [];
     state.history.push({ at: payload.detectedAt, actor: 'workflow-engine', kind: 'workflow-mode', to: payload.mode, reason: payload.reason });
     state.updatedAt = payload.detectedAt;
-    const target=stateFile(id), tmp=target+'.tmp-'+process.pid+'-'+Date.now();
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n'); fs.renameSync(tmp,target);
-  }
+    writeJsonAtomic(stateFile(id), state);
+  });
 }
 function readMode(id) {
   const state = loadState(id); if (state?.workflowMode?.mode) return state.workflowMode.mode;
@@ -348,6 +352,12 @@ function artifactContext(id, stage) {
   }
   return sections.join('\n\n');
 }
+// Selftest hook: with AI_WORKFLOW_SELFTEST=1, AI_WORKFLOW_TEST_EXECUTOR names a
+// script that stands in for router.js (same arguments), so the engine selftest
+// can drive real stages without an agent. Ignored unless both are set.
+function executorScript(env = process.env) {
+  return env.AI_WORKFLOW_SELFTEST === '1' && env.AI_WORKFLOW_TEST_EXECUTOR ? path.resolve(env.AI_WORKFLOW_TEST_EXECUTOR) : ROUTER;
+}
 function promptFile(id, stageId, roleName) { const dir = engineDir(id); fs.mkdirSync(dir, { recursive: true }); return path.join(dir, `${stageId}-${roleName}.md`); }
 function structuredSchema(wf, stage, roleName) { return stage.artifact_schema || wf.roles?.[roleName]?.artifact_schema || null; }
 
@@ -372,7 +382,7 @@ function executeRole(id, wf, stage, roleName, output) {
     const rawOutput = output ? path.join(engineDir(id), `${stage.id}-${roleName}-${attemptNumber}.raw`) : null;
     let artifactStatus = null;
     if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* clean prior temp */ } }
-    const args = [ROUTER, 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
+    const args = [executorScript(), 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
     if (rawOutput) args.push('--output-file', rawOutput);
     const child = spawnRaw(process.execPath, args, {
       env: { FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
@@ -425,33 +435,170 @@ function executeRole(id, wf, stage, roleName, output) {
   return result.value || { executor: result.attempts.at(-1)?.executor || policy.candidates[0] };
 }
 
+// One role of a parallel stage: begin, execute, then complete, block or fail.
+// The sequential loop and each `run-role` child of a concurrent stage both run
+// exactly this, so the two paths cannot drift apart.
+function runRole(id, wf, stage, roleName) {
+  const status = loadState(id)?.roles?.[stage.id]?.[roleName]?.status || 'pending';
+  if (TERMINAL_OK.has(status)) return status;
+  const preferredExecutor = (wf.roles[roleName] || {}).executor || '-';
+  role(id, 'begin', stage.id, roleName, preferredExecutor, 'engine execution');
+  try {
+    const execution = executeRole(id, wf, stage, roleName, (wf.roles[roleName] || {}).artifact);
+    // A specialist that reports blockers has done its job: its artifact is kept
+    // and the role is marked blocked, so the findings survive for the human
+    // instead of being discarded as an invalid artifact.
+    if (execution.artifactStatus === 'blocked') { role(id, 'block', stage.id, roleName, execution.executor || preferredExecutor, 'specialist reported blockers — see its findings'); return 'blocked'; }
+    role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
+    return 'pass';
+  } catch (e) {
+    role(id, 'fail', stage.id, roleName, preferredExecutor, e.message.slice(0, 180));
+    throw e;
+  }
+}
+
+// How many roles of a parallel stage may run at once: the stage's optional
+// `max_parallel`, else AI_WORKFLOW_MAX_PARALLEL, else 4. A value that is not a
+// whole number >= 1 falls back to 1 (the old one-at-a-time behaviour), loudly.
+function parallelCap(stage, env = process.env, warn = message => console.warn(message)) {
+  const fromStage = stage?.max_parallel !== undefined && stage.max_parallel !== null;
+  const raw = fromStage ? stage.max_parallel : env.AI_WORKFLOW_MAX_PARALLEL;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_MAX_PARALLEL;
+  const value = Number(raw);
+  if (Number.isInteger(value) && value >= 1) return value;
+  warn(`⚠ ${fromStage ? `${stage.id}.max_parallel` : 'AI_WORKFLOW_MAX_PARALLEL'}=${JSON.stringify(raw)} is not a whole number >= 1; running ${stage?.id || 'stage'} roles one at a time`);
+  return 1;
+}
+
+// Roles that read what their siblings in the same stage produced cannot run
+// beside them: behavior-regression-review takes validated_review_findings, the
+// other reviews' artifacts. Any role whose contract declares such an input runs
+// after the concurrent batch, one at a time, in selection order.
+const SIBLING_INPUTS = new Set(['validated_review_findings']);
+function readsSiblingOutputs(roleName, contractFor = roleContract) {
+  let contract;
+  try { contract = contractFor(roleName); } catch { return false; }
+  return (contract?.inputs || []).some(input => SIBLING_INPUTS.has(input));
+}
+function splitSequentialTail(roles, contractFor = roleContract) {
+  const tail = roles.filter(roleName => readsSiblingOutputs(roleName, contractFor));
+  return { batch: roles.filter(roleName => !tail.includes(roleName)), tail };
+}
+
+// While the helper runs it holds its pid here; `runs.js retry` reads it and
+// refuses to reset roles of this stage that a live pool is still running.
+function parallelPidFile(id, stageId) { return path.join(engineDir(id), `${stageId}-parallel.pid`); }
+// Beside it, the process group of every role the helper started.
+function parallelPgidFile(id, stageId) { return path.join(engineDir(id), `${stageId}-parallel.pgids`); }
+
+// Runs `pending` roles as concurrent `engine.js run-role` children through the
+// async helper, at most `cap` at once, and returns its per-role summary.
+function runRolesConcurrently(id, wf, stage, pending, cap) {
+  const summaryFile = path.join(engineDir(id), `${stage.id}-parallel-summary.json`);
+  const pidFile = parallelPidFile(id, stage.id);
+  const pgidFile = parallelPgidFile(id, stage.id);
+  fs.mkdirSync(engineDir(id), { recursive: true });
+  for (const file of [summaryFile, pgidFile]) { try { fs.unlinkSync(file); } catch { /* first run */ } }
+  const res = spawnSync(process.execPath, [PARALLEL_ROLES, 'run', id, stage.id, '--cap', String(cap), '--summary-file', summaryFile, '--pid-file', pidFile, '--pgid-file', pgidFile, ...pending], {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env, FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_PRODUCT_ROOT: productRoot(id), AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  const summary = readJson(summaryFile);
+  const complete = summary && Array.isArray(summary.results);
+  // No summary: the helper was killed outright (SIGKILL, OOM) and could not stop
+  // its roles. Their groups — run-role, router.js, the agent — would otherwise
+  // run on unattended, so stop them here before recording the roles as failed.
+  if (!complete) {
+    const left = stopGroupsSync(readJson(pgidFile) || []);
+    if (left.length) console.error(`⚠ ${stage.id}: role process group(s) ${left.join(', ')} did not exit after SIGKILL`);
+  }
+  for (const file of [pidFile, pgidFile]) { try { fs.unlinkSync(file); } catch { /* the helper removed it */ } }
+  const interrupted = res.error ? `could not run roles in parallel: ${res.error.message}`
+    : !complete ? `parallel role runner exited ${res.status ?? res.signal} without a summary`
+    : res.status !== 0 ? `parallel role runner was interrupted (${summary.interrupted || `exit ${res.status}`}); resume the run to continue`
+    : null;
+  if (interrupted) {
+    // A role still in_progress here was stopped mid-run and nothing recorded it
+    // (the helper itself was killed). Fail it, so `resume` can begin it again
+    // and `retry` resets it, instead of the stage looking busy forever.
+    const why = complete && summary.interrupted ? summary.interrupted : res.signal || (res.error ? 'runner error' : `runner exit ${res.status}`);
+    const state = loadState(id);
+    for (const roleName of pending) {
+      if (state?.roles?.[stage.id]?.[roleName]?.status !== 'in_progress') continue;
+      try { role(id, 'fail', stage.id, roleName, (wf.roles[roleName] || {}).executor || '-', `interrupted: ${why}`); } catch { /* keep the original failure */ }
+    }
+    throw new Error(`${stage.id}: ${interrupted}`);
+  }
+  return summary;
+}
+
 function executeParallel(id, wf, stage) {
   let state = loadState(id);
   const scope = readScope(id);
   const roles = stage.id === 'analysis' ? analysisRoles(wf, state, scope, productRoot(id), id) : stage.id === 'reviews' ? reviewRoles(wf, state, productRoot(id), id) : (state?.selectedRoles?.[stage.id] || stage.roles || []);
   if (!roles.length) throw new Error(`${stage.id}: no roles selected`);
   if (!Array.isArray(state?.selectedRoles?.[stage.id]) || !state.selectedRoles[stage.id].length) selectRoles(id, stage.id, roles);
-  for (const roleName of roles) {
+  state = loadState(id);
+  const roleStatus = (s, roleName) => s?.roles?.[stage.id]?.[roleName]?.status || 'pending';
+  const { batch, tail } = splitSequentialTail(roles);
+  const pending = batch.filter(roleName => !TERMINAL_OK.has(roleStatus(state, roleName)));
+  const cap = pending.length > 1 ? parallelCap(stage) : 1;
+  if (cap <= 1 || pending.length <= 1) {
+    for (const roleName of batch) runRole(id, wf, stage, roleName);
+  } else {
+    const summary = runRolesConcurrently(id, wf, stage, pending, cap);
     state = loadState(id);
-    const status = state?.roles?.[stage.id]?.[roleName]?.status || 'pending';
-    if (TERMINAL_OK.has(status)) continue;
-    const preferredExecutor = (wf.roles[roleName] || {}).executor || '-';
-    role(id, 'begin', stage.id, roleName, preferredExecutor, 'engine execution');
-    try {
-      const execution = executeRole(id, wf, stage, roleName, (wf.roles[roleName] || {}).artifact);
-      // A specialist that reports blockers has done its job: its artifact is kept
-      // and the role is marked blocked, so the findings survive for the human
-      // instead of being discarded as an invalid artifact.
-      if (execution.artifactStatus === 'blocked') role(id, 'block', stage.id, roleName, execution.executor || preferredExecutor, 'specialist reported blockers — see its findings');
-      else role(id, 'complete', stage.id, roleName, execution.executor || preferredExecutor, 'engine completed role');
-    } catch (e) {
-      role(id, 'fail', stage.id, roleName, preferredExecutor, e.message.slice(0, 180));
-      throw e;
+    const failed = [];
+    for (const result of summary.results.filter(r => !r.ok)) {
+      const how = result.signal ? `signal ${result.signal}` : result.error ? result.error : `exit ${result.exitCode}`;
+      // A child that died before recording its own failure leaves the role
+      // in_progress; record it, so the run shows why and `retry` resets it.
+      if (roleStatus(state, result.role) === 'in_progress') {
+        try { role(id, 'fail', stage.id, result.role, (wf.roles[result.role] || {}).executor || '-', `run-role ${how}`); } catch { /* keep the original failure */ }
+      }
+      failed.push(`${result.role} (${String(loadState(id)?.roles?.[stage.id]?.[result.role]?.note || how).replace(/\s+/g, ' ').slice(0, 180)})`);
     }
+    if (failed.length) throw new Error(`${stage.id}: ${failed.length} of ${pending.length} role(s) failed: ${failed.join('; ')}`);
+  }
+  // Only once every sibling has passed: these roles read the siblings' artifacts.
+  if (tail.length) {
+    state = loadState(id);
+    const unfinished = batch.filter(roleName => !TERMINAL_OK.has(roleStatus(state, roleName)));
+    if (unfinished.length) throw new Error(`${stage.id}: ${unfinished.map(r => `${r}=${roleStatus(state, r)}`).join(', ')}; ${tail.join(', ')} waits until they pass`);
+    for (const roleName of tail) runRole(id, wf, stage, roleName);
   }
   state = loadState(id);
   if (!TERMINAL_OK.has(phaseStatus(state, stage.id))) throw new Error(`${stage.id}: selected roles did not reach a successful terminal state`);
   if (stage.id === 'analysis') synthesizeAnalysis(id);
+}
+
+// `engine.js run-role <id> <stage> <role>`: one role of a parallel stage, run
+// as its own process by parallel-roles.js. Internal; not a user command.
+function runRoleCommand(id, stageId, roleName) {
+  const wf = workflow();
+  const stage = (wf.stages || []).find(x => x.id === stageId);
+  if (!stage || stage.strategy !== 'parallel') throw new Error(`run-role: ${stageId} is not a parallel stage`);
+  const state = loadState(id);
+  if (!state) throw new Error(`run ${id} does not exist`);
+  if (!(state.selectedRoles?.[stageId] || []).includes(roleName)) throw new Error(`run-role: ${roleName} was not selected for ${stageId}`);
+  const watcher = watchRunner();
+  try {
+    const result = runRole(id, wf, stage, roleName);
+    console.log(`${id} ${stageId}/${roleName} → ${result}`);
+  } finally { try { watcher?.kill('SIGKILL'); } catch { /* already gone */ } }
+}
+// run-role blocks in spawnSync, so it cannot watch its parent itself. When the
+// parallel helper started it (as the leader of its own process group), it starts
+// `parallel-roles.js watch` inside that group: if the helper is killed outright,
+// the watcher stops this role, router.js and the agent instead of leaving them
+// running unattended.
+function watchRunner(env = process.env) {
+  if (env[RUNNER_ENV] !== String(process.ppid)) return null;
+  const watcher = spawn(process.execPath, [PARALLEL_ROLES, 'watch', String(process.ppid), String(process.pid)], { stdio: 'ignore' });
+  watcher.on('error', () => { /* best effort: the engine still stops the group */ });
+  watcher.unref();
+  return watcher;
 }
 
 function executeConditional(id, wf, stage) {
@@ -632,6 +779,176 @@ function runLoop(id, opts = {}) {
   throw new Error('workflow exceeded 50 engine iterations');
 }
 
+// End to end through the concurrent branch: real run state, real `run-role`
+// children, real state transitions and attempt records; only the agent is a
+// stub (AI_WORKFLOW_TEST_EXECUTOR) that sleeps and writes a valid artifact.
+// Forcing the stage back to one role at a time fails this test.
+function parallelStageSelftest() {
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-parallel-'));
+  const states = path.join(tmp, 'runs');
+  const product = path.join(tmp, 'product');
+  const log = path.join(tmp, 'executor.log');
+  try {
+    spawnSync('git', ['init', '-q', product]);
+    fs.writeFileSync(path.join(product, 'a.txt'), 'one\n');
+    spawnSync('git', ['add', '-A'], { cwd: product });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: product });
+    const baseSha = String(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: product, encoding: 'utf8' }).stdout).trim();
+    const stub = path.join(tmp, 'stub-executor.js');
+    fs.writeFileSync(stub, `
+      const fs = require('fs');
+      const args = process.argv.slice(2);
+      const role = args[2], out = args[args.indexOf('--output-file') + 1];
+      const note = (event, extra = {}) => fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ role, event, at: Date.now(), ...extra }) + '\\n');
+      note('start', { pid: process.pid, runRole: process.ppid });
+      // STUB_HANG: start an agent-like grandchild and never finish.
+      if (process.env.STUB_HANG === '1') {
+        const agent = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+        note('agent', { pid: agent.pid });
+        setTimeout(() => {}, 60000);
+        return;
+      }
+      setTimeout(() => {
+        note('end');
+        if (role === process.env.STUB_FAIL_ROLE) { console.error('stub executor: ' + role + ' fails on purpose'); process.exit(1); }
+        const runId = process.env.FEATURE_RUN_ID;
+        const evidence = [{ source: 'a.txt', line: 1, detail: 'stub evidence' }];
+        const blocked = role === process.env.STUB_BLOCK_ROLE;
+        fs.writeFileSync(out, JSON.stringify(role.endsWith('-review')
+          ? { schemaVersion: 1, runId, reviewer: role, status: blocked ? 'blocked' : 'pass', findings: [{ id: 'R-1', severity: blocked ? 'high' : 'info', summary: blocked ? 'stub blocker' : 'stub review', uncertainty: 'confirmed', confidence: 1, evidence, recommendation: blocked ? 'fix it' : 'none needed', resolved: !blocked }] }
+          : { schemaVersion: 1, runId, agent: role, status: 'pass', findings: [{ id: 'F-1', title: 'stub finding', severity: 'info', uncertainty: 'confirmed', confidence: 1, evidence, recommendation: 'none needed' }] }));
+      }, 300);
+    `);
+    // A bare PATH and HOME keep MCP discovery away from the real claude CLI and
+    // the user's config: the roles here need no MCP, and probing costs seconds.
+    fs.mkdirSync(path.join(tmp, 'home'));
+    const env = { ...process.env, PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: path.join(tmp, 'home'), AI_WORKFLOW_STATE_ROOT: states, AI_WORKFLOW_PRODUCT_ROOT: product, AI_WORKFLOW_PROJECT_ROOT: product, AI_WORKFLOW_SELFTEST: '1', AI_WORKFLOW_TEST_EXECUTOR: stub, AI_WORKFLOW_MAX_PARALLEL: '3', STUB_FAIL_ROLE: 'performance' };
+    // A run whose stage `stageId` is next: its one dependency is done and its roles are selected.
+    const prepare = (id, stageId, dependency, roles) => {
+      const started = spawnSync(process.execPath, [RUNS_TOOL, 'start', id], { env, encoding: 'utf8' });
+      assert.strictEqual(started.status, 0, started.stderr);
+      const file = path.join(states, id, 'state.json');
+      const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+      state.phases[dependency] = { status: 'pass' };
+      state.selectedRoles[stageId] = roles;
+      fs.writeFileSync(file, JSON.stringify(state, null, 2) + '\n');
+      fs.mkdirSync(path.join(states, id, 'engine'), { recursive: true });
+      fs.writeFileSync(path.join(states, id, 'engine', 'worktree.json'), JSON.stringify({ runId: id, path: product, branch: 'test', baseSha, currentSha: baseSha, createdAt: new Date().toISOString(), sourceRoot: product }));
+    };
+    const drive = (id, stageId, extraEnv = {}, during = () => null) => {
+      try { fs.unlinkSync(log); } catch { /* first stage */ }
+      const driver = `
+        const engine = require(${JSON.stringify(__filename)});
+        const wf = engine.workflow();
+        try { engine.executeParallel(${JSON.stringify(id)}, wf, wf.stages.find(s => s.id === ${JSON.stringify(stageId)})); console.log('RESULT ok'); }
+        catch (e) { console.log('RESULT ' + e.message); }
+      `;
+      const sidecar = during();
+      let res;
+      try { res = spawnSync(process.execPath, ['-e', driver], { env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 60 * 1000 }); }
+      finally { try { sidecar?.kill('SIGKILL'); } catch { /* done */ } }
+      assert.strictEqual(res.status, 0, res.stderr);
+      const events = fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const at = (role, event) => events.find(e => e.role === role && e.event === event)?.at;
+      return { result: (res.stdout.match(/^RESULT (.*)$/m) || [])[1], state: JSON.parse(fs.readFileSync(path.join(states, id, 'state.json'), 'utf8')), summary: readJson(path.join(states, id, 'engine', `${stageId}-parallel-summary.json`)), at, events, stdout: res.stdout };
+    };
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+    const overlaps = (a, b) => Date.parse(a.startedAt) < Date.parse(b.finishedAt) && Date.parse(b.startedAt) < Date.parse(a.finishedAt);
+
+    // analysis: four roles, at most three at once, one of them fails.
+    const roles = ['security', 'qa-plan', 'performance', 'api-contract'];
+    prepare('E2E-ANALYSIS', 'analysis', 'refactor-coverage', roles);
+    const analysis = drive('E2E-ANALYSIS', 'analysis');
+    assert.ok(analysis.summary, `the concurrent branch ran and left its summary: ${analysis.result}`);
+    assert.strictEqual(analysis.summary.cap, 3);
+    assert.strictEqual(analysis.summary.maxRunning, 3, 'three roles ran at the same time');
+    const results = analysis.summary.results;
+    assert.deepStrictEqual(results.map(r => r.role), roles);
+    assert.ok(results.some((a, i) => results.some((b, j) => i !== j && overlaps(a, b))), 'role time intervals overlap');
+    assert.match(analysis.result || '', /^analysis: 1 of 4 role\(s\) failed: performance \(analysis\/performance: .*exited 1/, analysis.result);
+    for (const r of roles) {
+      const entry = analysis.state.roles.analysis[r];
+      assert.strictEqual(entry.status, r === 'performance' ? 'fail' : 'pass', `${r} ended ${entry.status}`);
+      const attempts = analysis.state.executionAttempts?.analysis?.[r] || [];
+      assert.strictEqual(attempts.length, 1, `${r} recorded its attempt`);
+      assert.strictEqual(attempts[0].status === 'pass' || attempts[0].exitType === 'success', r !== 'performance', `${r} attempt outcome`);
+    }
+    assert.match(analysis.state.roles.analysis.performance.note, /exited 1/, 'the failing role keeps its reason');
+    assert.strictEqual(analysis.state.phases.analysis.status, 'fail', 'stage fails once every role has finished');
+    assert.ok(!fs.existsSync(path.join(states, 'E2E-ANALYSIS', 'state.json.lock')), 'no state lock left behind');
+    assert.ok(!fs.existsSync(parallelPidFile('E2E-ANALYSIS', 'analysis').replace(RUNS, states)), 'no pid file left behind');
+    assert.match(analysis.stdout, /^\[qa-plan\] /m, 'role output carries its prefix');
+
+    // reviews: behavior-regression-review reads the other reviews, so it runs after them.
+    prepare('E2E-REVIEWS', 'reviews', 'build-test', ['code-review', 'behavior-regression-review', 'security-review']);
+    const reviews = drive('E2E-REVIEWS', 'reviews');
+    assert.strictEqual(reviews.result, 'ok');
+    assert.deepStrictEqual(reviews.summary.results.map(r => r.role), ['code-review', 'security-review'], 'only the independent reviews run concurrently');
+    assert.ok(overlaps(...reviews.summary.results), 'independent reviews overlap');
+    assert.ok(reviews.at('behavior-regression-review', 'start') >= Math.max(reviews.at('code-review', 'end'), reviews.at('security-review', 'end')), 'behavior-regression-review starts after its siblings finished');
+    for (const r of ['code-review', 'behavior-regression-review', 'security-review']) assert.strictEqual(reviews.state.roles.reviews[r].status, 'pass', r);
+    assert.strictEqual(reviews.state.phases.reviews.status, 'pass');
+
+    // reviews, one concurrent review returns status "blocked": behavior-regression-review
+    // must not start, and the stage error names the review that holds it back.
+    // The review gate (artifacts.js) keeps a blocked review's findings but fails
+    // the role, so the stage reports it as failed rather than waiting on it.
+    prepare('E2E-REVIEWS-BLOCKED', 'reviews', 'build-test', ['code-review', 'behavior-regression-review', 'security-review']);
+    const blocked = drive('E2E-REVIEWS-BLOCKED', 'reviews', { STUB_BLOCK_ROLE: 'security-review' });
+    assert.ok(blocked.summary, `the concurrent branch ran: ${blocked.result}`);
+    assert.deepStrictEqual(blocked.summary.results.map(r => r.role), ['code-review', 'security-review']);
+    assert.ok(!blocked.at('behavior-regression-review', 'start'), 'behavior-regression-review never started');
+    assert.strictEqual(blocked.state.roles.reviews['behavior-regression-review']?.status || 'pending', 'pending', 'the sequential tail was not begun');
+    assert.strictEqual(blocked.state.roles.reviews['code-review'].status, 'pass');
+    assert.strictEqual(blocked.state.roles.reviews['security-review'].status, 'fail', 'the blocked review fails its role');
+    assert.match(blocked.result || '', /^reviews: 1 of 2 role\(s\) failed: security-review \(.*review reports unresolved findings/, blocked.result);
+    assert.ok(fs.existsSync(path.join(states, 'E2E-REVIEWS-BLOCKED', '09-reviews', 'security-reviewer.md')), 'the blocked review\'s findings are kept');
+    assert.notStrictEqual(blocked.state.phases.reviews.status, 'pass', 'the stage did not pass');
+
+    // The helper killed outright (SIGKILL, as the OOM killer would) while the
+    // engine lives: it writes no summary and stops nothing. The engine must stop
+    // every role group itself — run-role, the router stand-in and the agent under
+    // it — mark the roles failed and remove the pid and pgid files.
+    prepare('E2E-KILLED', 'analysis', 'refactor-coverage', ['security', 'qa-plan']);
+    const engineFiles = path.join(states, 'E2E-KILLED', 'engine');
+    const savedPgids = path.join(tmp, 'killed.pgids');
+    const killed = drive('E2E-KILLED', 'analysis', { STUB_HANG: '1' }, () => spawn(process.execPath, ['-e', `
+      const fs = require('fs');
+      const [log, pidFile, pgidFile, saved] = process.argv.slice(1);
+      const until = Date.now() + 30000;
+      const tick = () => {
+        if (Date.now() > until) process.exit(2);
+        let agents = 0, pid = 0;
+        try { agents = fs.readFileSync(log, 'utf8').split('\\n').filter(line => line.includes('"event":"agent"')).length; } catch { /* not yet */ }
+        try { pid = Number(fs.readFileSync(pidFile, 'utf8')); } catch { /* not yet */ }
+        if (agents < 2 || !pid || !fs.existsSync(pgidFile)) return setTimeout(tick, 50);
+        fs.copyFileSync(pgidFile, saved);
+        process.kill(pid, 'SIGKILL');
+      };
+      tick();
+    `, log, path.join(engineFiles, 'analysis-parallel.pid'), path.join(engineFiles, 'analysis-parallel.pgids'), savedPgids], { stdio: 'ignore' }));
+    const pids = killed.events.filter(e => e.event === 'start' || e.event === 'agent').flatMap(e => [e.pid, e.runRole].filter(Boolean));
+    assert.match(killed.result || '', /^analysis: parallel role runner exited SIGKILL without a summary/, killed.result);
+    assert.deepStrictEqual(readJson(savedPgids).sort(), [...new Set(killed.events.filter(e => e.event === 'start').map(e => e.runRole))].sort(), 'the pgid file named every run-role group');
+    const until = Date.now() + 2000;
+    while (pids.some(alive) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    assert.deepStrictEqual(pids.filter(alive), [], 'no run-role, router stand-in or agent survives the helper');
+    for (const r of ['security', 'qa-plan']) {
+      assert.strictEqual(killed.state.roles.analysis[r].status, 'fail', `${r} marked failed`);
+      assert.match(killed.state.roles.analysis[r].note, /interrupted: SIGKILL/);
+    }
+    assert.ok(!fs.existsSync(path.join(engineFiles, 'analysis-parallel.pid')), 'pid file removed');
+    assert.ok(!fs.existsSync(path.join(engineFiles, 'analysis-parallel.pgids')), 'pgid file removed');
+  } finally {
+    // A failed assertion must not leave the hanging stubs of the last stage behind.
+    let events = [];
+    try { events = fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { /* no log */ }
+    for (const pid of events.flatMap(e => [e.pid, e.runRole]).filter(Boolean)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function selftest() {
   {
     const assert = require('assert');
@@ -669,27 +986,61 @@ function selftest() {
   assert.strictEqual(detectRefactorMode('Refactor this repository without changing behavior').mode, 'behavior_preserving_refactor');
   assert.strictEqual(detectRefactorMode('Refactor the entire application without changing behavior').refactorScope, 'whole_app');
   assert.strictEqual(SUPPORTED_CONDITIONS.has('whole_app_refactor'), true);
+  {
+    // Concurrency cap: stage max_parallel, else the env var, else 4; bad values run one at a time.
+    const warnings = [];
+    const warn = m => warnings.push(m);
+    assert.strictEqual(parallelCap({ id: 'analysis' }, {}, warn), DEFAULT_MAX_PARALLEL);
+    assert.strictEqual(parallelCap({ id: 'analysis' }, { AI_WORKFLOW_MAX_PARALLEL: '' }, warn), DEFAULT_MAX_PARALLEL);
+    assert.strictEqual(parallelCap({ id: 'analysis' }, { AI_WORKFLOW_MAX_PARALLEL: '6' }, warn), 6);
+    assert.strictEqual(parallelCap({ id: 'analysis', max_parallel: 2 }, { AI_WORKFLOW_MAX_PARALLEL: '6' }, warn), 2, 'the stage setting wins');
+    assert.strictEqual(warnings.length, 0);
+    for (const bad of ['0', '-3', '2.5', 'many']) assert.strictEqual(parallelCap({ id: 'reviews' }, { AI_WORKFLOW_MAX_PARALLEL: bad }, warn), 1, bad);
+    assert.strictEqual(parallelCap({ id: 'reviews', max_parallel: 0 }, {}, warn), 1);
+    assert.strictEqual(warnings.length, 5);
+    assert.match(warnings[0], /AI_WORKFLOW_MAX_PARALLEL="0".*one at a time/);
+    assert.match(warnings[4], /reviews\.max_parallel=0/);
+  }
+  {
+    // Roles that read their siblings' outputs leave the concurrent batch and run
+    // after it, in selection order; every other role stays in the batch.
+    const reviews = ['behavior-regression-review', 'code-review', 'security-review', 'flutter-review'];
+    assert.deepStrictEqual(splitSequentialTail(reviews), { batch: ['code-review', 'security-review', 'flutter-review'], tail: ['behavior-regression-review'] });
+    const analysisStage = workflow().stages.find(x => x.id === 'analysis');
+    assert.deepStrictEqual(splitSequentialTail(analysisStage.roles).tail, [], 'analysis specialists are all independent');
+    const fake = name => ({ inputs: name.startsWith('late') ? ['validated_review_findings'] : ['changed_files'] });
+    assert.deepStrictEqual(splitSequentialTail(['late-1', 'a', 'late-2', 'b'], fake), { batch: ['a', 'b'], tail: ['late-1', 'late-2'] });
+    assert.deepStrictEqual(splitSequentialTail(['no-such-role'], () => { throw new Error('unknown'); }), { batch: ['no-such-role'], tail: [] });
+    assert.strictEqual(executorScript({}), ROUTER, 'the stub executor needs the selftest switch');
+    assert.strictEqual(executorScript({ AI_WORKFLOW_TEST_EXECUTOR: '/tmp/x.js' }), ROUTER);
+  }
+  parallelStageSelftest();
   console.log('workflow engine selftest OK');
 }
 
-const args = parseArgs(process.argv.slice(2));
-const [cmd, idArg] = args._;
-try {
-  if (cmd === 'selftest') selftest();
-  else if (cmd === 'start') {
-    let request = args.request || null;
-    if (!request && args['request-file']) request = fs.readFileSync(path.resolve(args['request-file']), 'utf8');
-    start(idArg, request, args.scope, args.mode, args['refactor-scope']);
-    if (!args['no-run']) runLoop(idArg, {});
-  } else if (cmd === 'next') {
-    const state = loadState(idArg);
-    if (!state) throw new Error(`run ${idArg} does not exist`);
-    console.log(nextEligibleStage(workflow(), state)?.id || 'done');
-  } else if (cmd === 'run-next') { preflightExisting(idArg, args.scope); runLoop(idArg, { once: true, 'dry-run': !!args['dry-run'] }); }
-  else if (cmd === 'resume' || cmd === 'run') { preflightExisting(idArg, args.scope); runLoop(idArg, {}); }
-  else if (cmd === 'worktree') { const wt = inspectWorktree(RUNTIME_ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
-  else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(RUNTIME_ROOT, idArg, { force: !!args.force }), null, 2));
-  else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest');
-} catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
+// The selftest loads this file to drive a stage in a child process; only a
+// direct run is the CLI.
+if (require.main === module) {
+  const args = parseArgs(process.argv.slice(2));
+  const [cmd, idArg] = args._;
+  try {
+    if (cmd === 'selftest') selftest();
+    else if (cmd === 'start') {
+      let request = args.request || null;
+      if (!request && args['request-file']) request = fs.readFileSync(path.resolve(args['request-file']), 'utf8');
+      start(idArg, request, args.scope, args.mode, args['refactor-scope']);
+      if (!args['no-run']) runLoop(idArg, {});
+    } else if (cmd === 'next') {
+      const state = loadState(idArg);
+      if (!state) throw new Error(`run ${idArg} does not exist`);
+      console.log(nextEligibleStage(workflow(), state)?.id || 'done');
+    } else if (cmd === 'run-next') { preflightExisting(idArg, args.scope); runLoop(idArg, { once: true, 'dry-run': !!args['dry-run'] }); }
+    else if (cmd === 'resume' || cmd === 'run') { preflightExisting(idArg, args.scope); runLoop(idArg, {}); }
+    else if (cmd === 'worktree') { const wt = inspectWorktree(RUNTIME_ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
+    else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(RUNTIME_ROOT, idArg, { force: !!args.force }), null, 2));
+    else if (cmd === 'run-role') runRoleCommand(idArg, args._[2], args._[3]);
+    else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest (internal: run-role <id> <stage> <role>)');
+  } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
+}
 
-module.exports = { noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { workflow, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

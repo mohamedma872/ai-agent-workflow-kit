@@ -58,6 +58,21 @@ function staleApprovedState() {
   assert.strictEqual(deriveRoleGroupStatus(state, 'analysis'), 'in_progress');
   assert.strictEqual(effectiveStatus(state, 'analysis'), 'in_progress');
   assert.strictEqual(currentWork(state), 'Specialist Analysis');
+  // Parallel roles: every running role is named, not just the first.
+  state.roles.analysis.architect.status = 'in_progress';
+  state.roles.analysis.security.status = 'in_progress';
+  assert.strictEqual(currentWork(state), 'Specialist Analysis → architect, security');
+  // A sibling that already failed does not turn a running stage red: the
+  // stage stays in_progress, and the running role is still named.
+  state.roles.analysis.architect.status = 'fail';
+  assert.strictEqual(deriveRoleGroupStatus(state, 'analysis'), 'in_progress');
+  assert.strictEqual(effectiveStatus(state, 'analysis'), 'in_progress');
+  assert.strictEqual(currentWork(state), 'Specialist Analysis → security');
+  // Once nothing runs any more, the failure shows.
+  state.roles.analysis.security.status = 'pass';
+  assert.strictEqual(effectiveStatus(state, 'analysis'), 'fail');
+  state.roles.analysis.architect.status = 'blocked';
+  assert.strictEqual(effectiveStatus(state, 'analysis'), 'blocked');
 }
 
 {
