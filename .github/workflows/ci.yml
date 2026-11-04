@@ -61,6 +61,7 @@ jobs:
           node --check ai/workflow/notify.js
           node --check ai/workflow/role-activity.js
           node --check ai/workflow/tracked-files.js
+          node --check ai/workflow/analyzer-baseline.js
           node --check ai/workflow/repeated-failure.js
           node --check ai/workflow/engine-owner.js
           node --check ai/workflow/worktree.js
@@ -134,6 +135,7 @@ jobs:
           node ai/workflow/notify.js --selftest
           node ai/workflow/role-activity.js --selftest
           node ai/workflow/tracked-files.js --selftest
+          node ai/workflow/analyzer-baseline.js --selftest
           node ai/workflow/repeated-failure.js --selftest
           node ai/workflow/engine-owner.js --selftest
           node ai/workflow/engine.js selftest

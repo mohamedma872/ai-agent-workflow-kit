@@ -246,6 +246,62 @@ function resolveFlutter(options = {}) {
   return found ? { ...found, version: flutterVersion(found.bin) } : null;
 }
 
+// ----- the Flutter version a project pins (fvm), and an SDK that has it.
+// A run on another SDK re-resolves pubspec.lock on the first implicit
+// `pub get`, migrates analysis_options.yaml and rewrites project.pbxproj, so
+// every role works on the pinned SDK when one is installed.
+
+// "3.44.7" from .fvmrc ({"flutter": "3.44.7"}) or .fvm/fvm_config.json
+// ({"flutterSdkVersion": "3.44.7"}); null when nothing is pinned or the pin is
+// a channel name.
+function pinnedFlutterVersion(root) {
+  const read = file => { try { return fs.readFileSync(path.join(root, file), 'utf8'); } catch { return null; } };
+  const fvmrc = read('.fvmrc');
+  let value = null;
+  if (fvmrc !== null) {
+    try { value = JSON.parse(fvmrc).flutter; } catch { value = fvmrc.trim(); }
+  } else {
+    const legacy = read(path.join('.fvm', 'fvm_config.json'));
+    if (legacy !== null) { try { value = JSON.parse(legacy).flutterSdkVersion; } catch { value = null; } }
+  }
+  const version = String(value || '').trim().replace(/^v/, '');
+  return /^\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?$/.test(version) ? version : null;
+}
+// An SDK's version from its own files (no `flutter --version`, which can take
+// a minute): bin/cache/flutter.version.json, else the legacy `version` file.
+function sdkVersion(binDir) {
+  const sdk = path.dirname(binDir);
+  try { const v = JSON.parse(fs.readFileSync(path.join(sdk, 'bin', 'cache', 'flutter.version.json'), 'utf8')).frameworkVersion; if (v) return String(v); } catch { /* older SDK */ }
+  try { const v = fs.readFileSync(path.join(sdk, 'version'), 'utf8').trim(); if (/^\d+\.\d+\.\d+/.test(v)) return v; } catch { /* not prepared yet */ }
+  return null;
+}
+// Where fvm keeps SDKs: $FVM_CACHE_PATH, ~/fvm, ~/.fvm (versions/<version>).
+function pinnedSdkBin(version, env = process.env, home = os.homedir()) {
+  const roots = [env.FVM_CACHE_PATH, path.join(home, 'fvm'), path.join(home, '.fvm')].filter(Boolean);
+  for (const root of roots) {
+    const bin = path.join(root, 'versions', version, 'bin');
+    if (flutterBin(bin)) return bin;
+  }
+  // Any other SDK the usual locations hold, if it is that version.
+  for (const dir of flutterCandidates(env, home)) if (flutterBin(dir) && sdkVersion(dir) === version) return dir;
+  return null;
+}
+// What a project pins and what this machine can run it with. null when the
+// project pins nothing. `env` holds the PATH a role should get (the pinned SDK
+// first) when the pinned SDK is installed and is not already the one used.
+function flutterPin(root, options = {}) {
+  const env = options.env || process.env;
+  const home = options.home || os.homedir();
+  const pinned = pinnedFlutterVersion(root);
+  if (!pinned) return null;
+  const local = locateFlutter({ env, home });
+  const localVersion = local ? sdkVersion(local.binDir) : null;
+  if (localVersion === pinned) return { pinned, localVersion, sdkBin: local.binDir, match: true, env: {} };
+  const sdkBin = pinnedSdkBin(pinned, env, home);
+  if (sdkBin) return { pinned, localVersion, sdkBin, match: true, env: { PATH: [sdkBin, env.PATH].filter(Boolean).join(path.delimiter), AGENTIC_FLUTTER_PINNED: pinned } };
+  return { pinned, localVersion, sdkBin: null, match: false, env: { AGENTIC_FLUTTER_MISMATCH: `${pinned}/${localVersion || 'unknown'}` } };
+}
+
 // ---------------------------------------------------------------------------
 // Xcode
 
@@ -402,6 +458,37 @@ function selftest() {
     assert.ok(env, 'toolchainEnv tolerates a home without an SDK');
   }
 
+  // The pinned SDK, when installed, leads PATH; without it the mismatch is named.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'toolchain-pin-'));
+    const project = path.join(home, 'project'); fs.mkdirSync(project);
+    const sdk = (dir, version) => {
+      fs.mkdirSync(path.join(dir, 'bin', 'cache'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'bin', IS_WIN ? 'flutter.bat' : 'flutter'), '', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'bin', 'cache', 'flutter.version.json'), JSON.stringify({ frameworkVersion: version }));
+      return path.join(dir, 'bin');
+    };
+    try {
+      const localBin = sdk(path.join(home, 'development', 'flutter'), '3.47.6');
+      const env = { PATH: localBin };
+      assert.strictEqual(flutterPin(project, { env, home }), null, 'nothing pinned, nothing to do');
+      fs.writeFileSync(path.join(project, '.fvmrc'), JSON.stringify({ flutter: '3.44.7' }));
+      assert.strictEqual(pinnedFlutterVersion(project), '3.44.7');
+      const missing = flutterPin(project, { env, home });
+      assert.deepStrictEqual([missing.match, missing.localVersion, missing.env], [false, '3.47.6', { AGENTIC_FLUTTER_MISMATCH: '3.44.7/3.47.6' }], 'a pinned SDK that is not installed is named');
+      const pinnedBin = sdk(path.join(home, 'fvm', 'versions', '3.44.7'), '3.44.7');
+      const found = flutterPin(project, { env, home });
+      assert.deepStrictEqual([found.match, found.sdkBin, found.env.PATH.split(path.delimiter)[0], found.env.AGENTIC_FLUTTER_PINNED], [true, pinnedBin, pinnedBin, '3.44.7'], 'the pinned fvm SDK leads PATH');
+      assert.deepStrictEqual(flutterPin(project, { env: { PATH: pinnedBin }, home }).env, {}, 'already on the pinned SDK: nothing changes');
+      fs.writeFileSync(path.join(project, '.fvmrc'), JSON.stringify({ flutter: 'stable' }));
+      assert.strictEqual(pinnedFlutterVersion(project), null, 'a channel is not a version pin');
+      fs.rmSync(path.join(project, '.fvmrc'));
+      fs.mkdirSync(path.join(project, '.fvm'));
+      fs.writeFileSync(path.join(project, '.fvm', 'fvm_config.json'), JSON.stringify({ flutterSdkVersion: '3.44.7' }));
+      assert.strictEqual(pinnedFlutterVersion(project), '3.44.7', 'the legacy fvm config is read');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+
   const explicitXcode = toolchainEnv({ DEVELOPER_DIR: '/x', PATH: process.env.PATH });
   assert.strictEqual(explicitXcode.DEVELOPER_DIR, undefined, 'explicit DEVELOPER_DIR is never overridden');
   console.log('toolchain selftest OK');
@@ -424,5 +511,8 @@ module.exports = {
   resolveXcode,
   locateFlutter,
   resolveFlutter,
+  pinnedFlutterVersion,
+  sdkVersion,
+  flutterPin,
   toolchainEnv,
 };

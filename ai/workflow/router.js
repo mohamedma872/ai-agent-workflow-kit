@@ -147,6 +147,12 @@ function buildPrompt(workflow, resolved, taskPrompt) {
   ];
   // The engine restores what a read-only role's tools change (tracked-files.js);
   // without saying so, the role fails its stage over a side effect it cannot revert.
+  // Engine-set (toolchain.js flutterPin): the SDK this role runs on.
+  if (process.env.AGENTIC_FLUTTER_PINNED) lines.push(`Flutter: PATH starts with the project's pinned SDK ${process.env.AGENTIC_FLUTTER_PINNED} (.fvmrc). Use plain \`flutter\`/\`dart\` from PATH; do not switch SDKs.`);
+  else if (process.env.AGENTIC_FLUTTER_MISMATCH) {
+    const [pinned, local] = process.env.AGENTIC_FLUTTER_MISMATCH.split('/');
+    lines.push(`Flutter: the project pins ${pinned} (.fvmrc) but only ${local} is installed. Never run \`flutter pub get\`, \`flutter pub upgrade\` or \`dart run build_runner\` without being told to: on this SDK they re-resolve pubspec.lock. Pass \`--no-pub\` to \`flutter test\`, \`flutter analyze\` and \`flutter build\`. Report results as produced on ${local}, not ${pinned}.`);
+  }
   if (resolved.role.read_only) lines.push('Tool side effects: if a tool you run rewrites a tracked file (an implicit `pub get` re-resolving pubspec.lock or migrating analysis_options.yaml, Xcode rewriting project.pbxproj), do not try to revert it and do not fail the stage for that alone. The runtime restores every tracked file a read-only role changed once you finish. List such files as side effects. To avoid them, pass `--no-pub` to `flutter test`, `flutter analyze` and `flutter build` when `.dart_tool/package_config.json` exists.');
   if (resolved.role.artifact) lines.push(`Expected workflow artifact: ${resolved.role.artifact}`);
   for (const standard of loadRoleStandards(resolved.role)) {

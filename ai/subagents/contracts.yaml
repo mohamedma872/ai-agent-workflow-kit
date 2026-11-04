@@ -16,7 +16,7 @@ defaults:
 roles:
   orchestration:
     mode: read_only
-    inputs: [run_artifacts, repository_evidence]
+    inputs: [run_artifacts, repository_evidence, analyzer_baseline]
     outputs: [stage_artifact]
     tools: [repository_read]
     mcps_optional: [atlassian, context7, github]
@@ -136,7 +136,7 @@ roles:
     mcps_optional: [context7]
   qa-execute:
     mode: read_only
-    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix]
+    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix, analyzer_baseline]
     outputs: [build_test]
     tools: [repository_read, test_execute]
     mcps_optional: [playwright, appium]
