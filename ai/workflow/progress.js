@@ -5,9 +5,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
-const { stateRoot, projectRoot, relativeStatePath } = require('./paths');
+const { stateRoot, projectRoot, relativeStatePath, runtimeRoot } = require('./paths');
 const { openConflicts } = require('./conflict-tracker');
 const { liveEngine, readOwner, describe: describeEngine } = require('./engine-owner');
+const { activityFile, latestActivity, describeRole, stageRole, ago: elapsed } = require('./role-activity');
 const pullRequest = require('./pull-request');
 
 const RUNS = stateRoot();
@@ -398,8 +399,69 @@ function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1', target
     case 'status': return cli ? `agentic status ${id}` : `node ai/workflow/progress.js --run ${id}`;
     case 'doctor': return cli ? 'agentic doctor' : 'node ai/workflow/doctor.js';
     case 'pr': return cli ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
+    case 'why': return cli ? `agentic why ${id}` : `node ai/workflow/progress.js --run ${id} --why`;
     default: throw new Error(`unknown action ${action}`);
   }
+}
+
+// ---------------------------------------------------------------- why it stopped
+// When a stage fails because the agent's own structured report was rejected
+// (its status was not pass), the engine keeps that report at
+// engine/<stage>-<role>.rejected. It says why in the agent's words: what
+// passed, what failed, what its tools changed. The note in state is cut to 180
+// characters, so the views read the report itself.
+function readJsonFile(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
+function rejectedReport(root, id, phase, roleNames) {
+  for (const role of roleNames) {
+    const file = path.join(root, id, 'engine', `${phase}-${role}.rejected`);
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    let data = null;
+    try { data = JSON.parse(text); } catch { data = null; }
+    return { role, file, data: data && typeof data === 'object' ? data : null, text };
+  }
+  return null;
+}
+function reportDetails(report, root, id, phase) {
+  const data = report.data || {};
+  const failed = (Array.isArray(data.commands) ? data.commands : [])
+    .filter(entry => entry && ['fail', 'blocked', 'error'].includes(entry.status))
+    .map(entry => `${oneLine(entry.command, 90)} — ${entry.status}${entry.note ? `: ${oneLine(entry.note, 160)}` : ''}`);
+  for (const finding of Array.isArray(data.findings) ? data.findings : []) {
+    if (finding && ['critical', 'high'].includes(finding.severity)) failed.push(`${oneLine(finding.id || 'finding', 20)} [${finding.severity}] ${oneLine(finding.title, 160)}`);
+  }
+  const acceptance = Object.entries(data.acceptanceCoverage && typeof data.acceptanceCoverage === 'object' ? data.acceptanceCoverage : {})
+    .filter(([, value]) => /^fail/i.test(String(value))).map(([ac, value]) => `${oneLine(ac, 20)}: ${oneLine(value, 160)}`);
+  const sideEffects = (Array.isArray(data.sideEffects) ? data.sideEffects : [])
+    .filter(entry => entry && entry.file).map(entry => ({ file: oneLine(entry.file, 120), change: oneLine(entry.change || '', 160) }));
+  const restored = (readJsonFile(path.join(root, id, 'engine', `${phase}-${report.role}.restored.json`))?.restored || []).map(entry => oneLine(entry.path, 120));
+  const tests = data.tests && typeof data.tests === 'object' ? data.tests : null;
+  return {
+    role: report.role,
+    report: process.env.AI_AGENTIC_CLI === '1' ? relativeStatePath(id, 'engine', path.basename(report.file)) : `ai/runs/${id}/engine/${path.basename(report.file)}`,
+    summary: oneLine(data.summary || (report.data ? '' : report.text), 600),
+    tests: tests && ['passed', 'failed'].some(key => typeof tests[key] === 'number') ? `${tests.passed ?? '?'} passed, ${tests.failed ?? '?'} failed${typeof tests.skipped === 'number' ? `, ${tests.skipped} skipped` : ''}` : null,
+    failed,
+    acceptance,
+    sideEffects,
+    restored,
+    notRun: (Array.isArray(data.notRun) ? data.notRun : []).map(item => oneLine(item, 160)),
+  };
+}
+// What the human can do about a stopped stage, most useful first. The plain
+// retry stays last: on its own it repeats the attempt that just failed.
+function stopOptions(id, attention, details, cli) {
+  const options = [];
+  const pending = details ? details.sideEffects.filter(entry => !details.restored.includes(entry.file)) : [];
+  if (pending.length) {
+    const meta = readJsonFile(require('./worktree').metadataFile(runtimeRoot(), id));
+    const files = pending.map(entry => entry.file).join(' ');
+    options.push({ label: 'Revert what its tools changed (if still changed)', command: `git ${meta?.path ? `-C ${JSON.stringify(meta.path)} ` : ''}checkout -- ${files}` });
+  }
+  if (details) options.push({ label: 'Read the full report', command: commandFor('why', id, cli) });
+  options.push({ label: 'Leave a note the retry will read (evidence, a decision)', command: `edit ${cli ? relativeStatePath(id, 'notes', `${attention.stage}.md`) : `ai/runs/${id}/notes/${attention.stage}.md`}` });
+  options.push({ label: 'Retry the stage', command: attention.command });
+  return options;
 }
 
 function needsYou(id, state, options = {}) {
@@ -441,7 +503,10 @@ function needsYou(id, state, options = {}) {
     const top = stuck.sort((a, b) => order.indexOf(b.phase) - order.indexOf(a.phase))[0];
     const label = labelOf(top.phase);
     const repeated = top.repeated >= 2 ? top.repeated : 0;
-    return {
+    const stuckRoles = stoppedEntries(state, top.phase).map(([name]) => name);
+    const report = top.role ? null : rejectedReport(root, id, top.phase, stuckRoles.length ? stuckRoles : [stageRole(top.phase)].filter(Boolean));
+    const details = report ? reportDetails(report, root, id, top.phase) : null;
+    const attention = {
       kind: top.status,
       stage: top.phase,
       role: top.role || null,
@@ -453,10 +518,18 @@ function needsYou(id, state, options = {}) {
       command: commandFor(top.phase === 'pull-request' ? 'resume' : 'retry', id, cli),
       repeated,
       key: `${id}|${top.phase}${top.role ? `/${top.role}` : ''}|${top.status}|${top.at || ''}`,
+      details,
     };
+    attention.options = stopOptions(id, attention, details, cli);
+    return attention;
   }
 
   const waiting = (stage, headline, reason, command, at) => ({ kind: 'waiting', stage, role: null, label: labelOf(stage), headline, reason, command, repeated: 0, key: `${id}|${stage}|waiting|${at || ''}` });
+  // Verified, and no pull request recorded: a run verified before 1.9.31 never
+  // reached the stage, and nothing moves it until someone opens (or records) the PR.
+  if (status('verification') === 'pass' && status('pull-request') === 'pending' && !state.pullRequest?.url) {
+    return waiting('pull-request', 'Verified — no pull request recorded yet', 'Open it, or record the one you opened by hand: an open PR from the run branch is reused, never duplicated. Try --dry-run first; it names the base it would use.', commandFor('pr', id, cli), state.phases?.verification?.updatedAt);
+  }
   if (status('architecture-options') === 'pass' && !DONE.has(status('architecture-selection')) && !fs.existsSync(path.join(root, id, 'architecture.selected'))) {
     return waiting('architecture-selection', 'Architecture selection waits for you', `Review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')}, then choose an option.`, commandFor('architecture', id, cli), state.phases?.['architecture-options']?.updatedAt);
   }
@@ -537,7 +610,23 @@ function completeKey(id, at) { return `${id}|run|complete${at ? `|${at}` : ''}`;
 // the command, and the recovery commands when the caller has them.
 function needsYouLines(attention, recovery = null) {
   if (!attention) return [];
-  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, ...planDigestLines(attention.plan).map(line => `  ${line}`), `  → run: ${attention.command}`, ...(recovery ? recovery.lines.map(line => `  ${line}`) : [])];
+  const lines = [`⚠ Needs you: ${attention.headline}`];
+  const details = attention.details;
+  if (details) {
+    if (details.summary) lines.push(`  ${oneLine(details.summary, 400)}`);
+    if (details.tests) lines.push(`  Tests: ${details.tests}`);
+    for (const item of details.failed.slice(0, 4)) lines.push(`  ✗ ${item}`);
+    for (const item of details.acceptance.slice(0, 3)) lines.push(`  ✗ ${item}`);
+    for (const entry of details.sideEffects) lines.push(`  ! changed by its tools: ${entry.file}${details.restored.includes(entry.file) ? ' (restored by the runtime)' : ''}`);
+    lines.push(`  Report: ${details.report}`);
+  } else lines.push(`  ${attention.reason}`);
+  for (const line of planDigestLines(attention.plan)) lines.push(`  ${line}`);
+  // The other things to do, then the stage's own command, last as before.
+  for (const option of attention.options || []) if (option.command !== attention.command) lines.push(`  · ${option.label}: ${option.command}`);
+  lines.push(`  → run: ${attention.command}`);
+  // Then the Commands: block when the caller has it (recoveryCommands).
+  if (recovery) for (const line of recovery.lines) lines.push(`  ${line}`);
+  return lines;
 }
 
 // ---------------------------------------------------------------- recovery
@@ -560,10 +649,13 @@ function recoveryCommands(id, attention, options = {}) {
       add(pr ? 'resume' : 'retry', commandFor(pr ? 'resume' : 'retry', id, cli));
       for (const role of stoppedRoles(state, attention.stage, attention.role)) add(`retry ${role}`, commandFor('retry-role', id, cli, role));
       if (pr) add('pr', commandFor('pr', id, cli));
+      // The agent's own rejected report explains the stop: `why` prints all of it.
+      if (attention.details) add('why', commandFor('why', id, cli));
       break;
     case 'waiting':
       if (attention.conflicts) { add('conflicts', commandFor('conflicts', id, cli)); add('resolve', commandFor('resolve', id, cli, attention.conflicts.length === 1 ? attention.conflicts[0] : '<conflict-id>')); add('resume', commandFor('resume', id, cli)); }
       else if (attention.stage === 'architecture-selection') add('select', commandFor('architecture', id, cli));
+      else if (attention.stage === 'pull-request') add('pr', commandFor('pr', id, cli));
       else { add('approve', commandFor('approve', id, cli)); add('rework plan', commandFor('retry-role', id, cli, 'plan')); }
       break;
     default: break;
@@ -575,6 +667,9 @@ function recoveryCommands(id, attention, options = {}) {
   // The gates' own files, then what the stopped stage left behind.
   const gateFiles = attention.conflicts ? ['05-analysis/conflicts.json', '05-analysis/arbitration.md'] : attention.stage === 'approval' ? ['06-plan.md'] : attention.stage === 'architecture-selection' ? ['05-architecture-assessment.md', '05-architecture-options.md'] : [];
   for (const rel of [...gateFiles, ...stageFiles(attention.stage, attention.role, state)]) file(rel.endsWith('.rejected') ? 'rejected' : 'artifact', rel);
+  // The human notes the next attempt reads (subagent-context.js humanNotes), when someone wrote them.
+  // Only a stage the workflow knows: a stage id from state.json never becomes a path.
+  if (attention.kind !== 'waiting' && loadWorkflow().stages.has(attention.stage)) file('notes', `notes/${attention.stage}.md`);
   const primary = attention.command;
   const width = Math.max(...items.map(item => item.label.length));
   const lines = ['Commands:', ...items.map(item => `  ${item.label.padEnd(width)}  ${item.text}`)];
@@ -613,6 +708,27 @@ function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_C
   };
 }
 
+// `agentic why <id>`: everything the run knows about why it stopped.
+function whyLines(id, state, options = {}) {
+  const attention = needsYou(id, state, options);
+  if (!attention) return [`${id}: nothing is waiting on you.${state?.status === 'done' ? ' The run is closed.' : ''}`];
+  const lines = [`${id} · ${attention.headline}`, '', `Reason: ${oneLine(state?.phases?.[attention.stage]?.note || attention.reason, 2000)}`];
+  const details = attention.details;
+  if (details) {
+    lines.push(`Report (${details.role}): ${details.report}`, '');
+    if (details.summary) lines.push('What the agent said:', `  ${details.summary}`, '');
+    if (details.tests) lines.push(`Tests: ${details.tests}`, '');
+    if (details.failed.length) lines.push('Failed checks:', ...details.failed.map(item => `  ✗ ${item}`), '');
+    if (details.acceptance.length) lines.push('Acceptance criteria not met:', ...details.acceptance.map(item => `  ✗ ${item}`), '');
+    if (details.sideEffects.length) lines.push('Changed by its tools:', ...details.sideEffects.map(entry => `  ! ${entry.file}${entry.change ? ` — ${entry.change}` : ''}${details.restored.includes(entry.file) ? ' (restored by the runtime)' : ''}`), '');
+    if (details.notRun.length) lines.push('Not run:', ...details.notRun.map(item => `  - ${item}`), '');
+  }
+  lines.push('What you can do:');
+  (attention.options || [{ label: 'Run', command: attention.command }]).filter(option => !/\bwhy\b/.test(option.command)).forEach((option, i) => lines.push(`  ${i + 1}. ${option.label}`, `     ${option.command}`));
+  return lines;
+}
+
+
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
   const root = options.root || RUNS;
@@ -642,21 +758,61 @@ function buildSummary(id, state, options = {}) {
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);
+      const role = stageRole(phase);
       return {
         id: phase,
         label: LABELS[phase],
         status,
         ...(status !== rawStatus && !(phase === 'pull-request' && (legacyPullRequest(state) || disabledPullRequest(state))) && !(phase === 'post-fix-build-test' && !state?.phases?.[phase]) ? { rawStatus } : {}),
         note: state?.phases?.[phase]?.note || (phase === 'pull-request' && disabledPullRequest(state) ? pullRequestSkipNote(id) : null),
-        roles: roleEntries(state, phase).map(([role, entry]) => ({
-          role,
-          status: entry.status || 'pending',
-          executor: entry.executor || null,
-          note: entry.note || null,
-        })),
+        // The role a single-role stage runs, and what it does, in one line.
+        role,
+        description: role ? describeRole(role) : null,
+        startedAt: status === 'in_progress' ? state?.phases?.[phase]?.updatedAt || null : null,
+        roles: [
+          ...roleEntries(state, phase).map(([role, entry]) => ({
+            role,
+            status: entry.status || 'pending',
+            executor: entry.executor || null,
+            note: entry.note || null,
+            description: describeRole(role),
+            startedAt: entry.status === 'in_progress' ? entry.updatedAt || null : null,
+          })),
+          // A conditional role (verification's mobile-evidence) runs before its
+          // stage begins; shown under the stage while it runs or once it ran.
+          ...Object.entries(state?.conditionals?.[phase] || {}).filter(([, entry]) => entry && entry.status && entry.status !== 'pending').map(([role, entry]) => ({
+            role,
+            status: entry.status,
+            executor: entry.executor || null,
+            note: entry.reason || null,
+            description: describeRole(role),
+            startedAt: entry.status === 'in_progress' ? entry.updatedAt || entry.startedAt || null : null,
+            conditional: true,
+          })),
+        ],
       };
     }),
   };
+}
+
+// The latest action of every running role (and running single-role stage),
+// from its activity file. For local views only: a published summary (the
+// GitHub progress comment) never carries it.
+function withActivity(summary, runDir) {
+  if (!summary || !runDir) return summary;
+  return {
+    ...summary,
+    phases: summary.phases.map(phase => ({
+      ...phase,
+      ...(phase.status === 'in_progress' && phase.role && !phase.roles.length ? { activity: latestActivity(activityFile(runDir, phase.id, phase.role)) } : {}),
+      roles: phase.roles.map(role => (role.status === 'in_progress' ? { ...role, activity: latestActivity(activityFile(runDir, phase.id, role.role)) } : role)),
+    })),
+  };
+}
+// "↳ Read lib/a.dart · 4s ago", or how long the role has run when it has said nothing yet.
+function activityText(item) {
+  if (item.activity) return `↳ ${oneLine(item.activity.text, 200)} · ${elapsed(item.activity.t)} ago`;
+  return item.startedAt ? `↳ working · ${elapsed(item.startedAt)}` : null;
 }
 
 function renderTerminal(summary) {
@@ -681,10 +837,19 @@ function renderTerminal(summary) {
     const icon = ICONS[phase.status] || '•';
     const reconciled = phase.rawStatus ? ` (stored: ${phase.rawStatus})` : '';
     lines.push(` ${icon} ${phase.label.padEnd(24)} ${phase.status}${reconciled}`);
+    if (phase.status === 'in_progress' && !phase.roles.length) {
+      if (phase.description) lines.push(`      ${oneLine(phase.description, 100)}`);
+      const doing = activityText(phase);
+      if (doing) lines.push(`      ${doing}`);
+    }
     for (const role of phase.roles) {
       const roleIcon = ICONS[role.status] || '•';
       const executor = role.executor ? ` · ${role.executor}` : '';
       lines.push(`      ${roleIcon} ${role.role.padEnd(20)} ${role.status}${executor}`);
+      if (role.status !== 'in_progress') continue;
+      if (role.description) lines.push(`         ${oneLine(role.description, 100)}`);
+      const doing = activityText(role);
+      if (doing) lines.push(`         ${doing}`);
     }
   }
 
@@ -763,13 +928,14 @@ function renderMarkdown(summary, options = {}) {
 }
 
 function parseArgs(argv) {
-  const args = { watch: false, json: false, markdown: false, demo: false, interval: 1000, run: null };
+  const args = { watch: false, json: false, markdown: false, demo: false, why: false, interval: 1000, run: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--watch') args.watch = true;
     else if (arg === '--json') args.json = true;
     else if (arg === '--markdown') args.markdown = true;
     else if (arg === '--demo') args.demo = true;
+    else if (arg === '--why') args.why = true;
     else if (arg === '--run') args.run = argv[++i];
     else if (arg === '--interval') args.interval = Math.max(250, Number(argv[++i]) || 1000);
   }
@@ -792,7 +958,10 @@ function output(args) {
     process.exitCode = 1;
     return;
   }
-  const summary = buildSummary(resolved.id, resolved.state, { demo: resolved.demo });
+  if (args.why) { console.log(whyLines(resolved.id, resolved.state).join('\n')); return; }
+  const built = buildSummary(resolved.id, resolved.state, { demo: resolved.demo });
+  // Markdown is what gets published; only the local views show live activity.
+  const summary = args.markdown || resolved.demo ? built : withActivity(built, path.join(RUNS, resolved.id));
   if (args.json) console.log(JSON.stringify(summary, null, 2));
   else if (args.markdown) console.log(renderMarkdown(summary));
   else console.log(renderTerminal(summary));
@@ -829,12 +998,15 @@ module.exports = {
   percentComplete,
   currentWork,
   buildSummary,
+  withActivity,
+  activityText,
   needsYou,
   needsYouLines,
   recoveryCommands,
   stalledAttention,
   planDigest,
   planDigestLines,
+  whyLines,
   commandFor,
   completedAt,
   completeKey,

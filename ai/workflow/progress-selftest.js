@@ -308,7 +308,8 @@ function staleApprovedState() {
     const summary = buildSummary('FEAT-1', failed, { root });
     assert.deepStrictEqual(summary.needsYou, needsYou('FEAT-1', failed, { root }));
     const terminal = renderTerminal(summary);
-    assert.match(terminal, /⚠ Needs you: Same failure as last time — this needs a fix outside Build \+ Tests\n {3}build-test\/qa-execute: 3 widget tests fail in test\/login_test\.dart\n {3}→ run: /);
+    assert.match(terminal, /⚠ Needs you: Same failure as last time — this needs a fix outside Build \+ Tests\n {3}build-test\/qa-execute: 3 widget tests fail in test\/login_test\.dart\n(?: {3}· .*\n)* {3}→ run: /);
+    assert.match(terminal, / {3}· Leave a note the retry will read \(evidence, a decision\): edit \S*notes\/build-test\.md\n/, 'a stopped stage offers a note for the retry');
     assert.ok(terminal.indexOf('Needs you') < terminal.indexOf('Request '), 'the banner sits above the stage list');
     const markdown = renderMarkdown(summary);
     assert.match(markdown, /> ⚠ \*\*Needs you:\*\* Same failure as last time — this needs a fix outside Build \+ Tests/);
@@ -372,7 +373,29 @@ function staleApprovedState() {
     const evidence = needsYou('FEAT-3', conditional, { root, cli: true });
     assert.deepStrictEqual([evidence.kind, evidence.stage, evidence.role, evidence.headline, evidence.reason, evidence.command], ['blocked', 'verification', 'mobile-evidence', 'Final Verification (mobile-evidence) blocked', 'mobile-evidence: no booted Android emulator', 'agentic retry FEAT-3']);
     conditional.phases.verification = { status: 'pass' };
-    assert.strictEqual(needsYou('FEAT-3', conditional, { root }), null, 'a stage that passed since is not waiting on its old conditional');
+    assert.notStrictEqual(needsYou('FEAT-3', conditional, { root })?.stage, 'verification', 'a stage that passed since is not waiting on its old conditional');
+
+    // Verified with no pull request recorded (a run verified before the stage
+    // existed, or one whose PR was opened by hand) while pull_request is enabled:
+    // it says how to open or record it. With the block disabled (the default)
+    // the stage reads as skipped and the run as complete, so nothing waits.
+    const prProject = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-pr-project-'));
+    const previousProjectRoot = process.env.AI_WORKFLOW_PROJECT_ROOT;
+    process.env.AI_WORKFLOW_PROJECT_ROOT = prProject;
+    fs.mkdirSync(path.join(prProject, '.agentic'), { recursive: true });
+    fs.writeFileSync(path.join(prProject, '.agentic', 'config.yaml'), 'pull_request:\n  enabled: true\n');
+    try {
+      const pending = needsYou('FEAT-3', conditional, { root, cli: true });
+      assert.deepStrictEqual([pending.kind, pending.stage, pending.headline, pending.command], ['waiting', 'pull-request', 'Verified — no pull request recorded yet', 'agentic pr FEAT-3']);
+      assert.deepStrictEqual(recoveryCommands('FEAT-3', pending, { root, state: conditional, cli: true }).items.map(item => item.label), ['pr', 'status', 'doctor'], 'the block names the pull request command');
+      assert.strictEqual(needsYou('FEAT-3', { ...conditional, pullRequest: { url: 'https://example.test/pr/1' } }, { root }), null, 'a recorded pull request is not asked for again');
+      assert.strictEqual(needsYou('FEAT-3', { ...conditional, status: 'done' }, { root }), null, 'a closed run asks for nothing');
+    } finally {
+      if (previousProjectRoot === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProjectRoot;
+      fs.rmSync(prProject, { recursive: true, force: true });
+    }
+    assert.strictEqual(needsYou('FEAT-3', conditional, { root, cli: true }), null, 'with pull_request disabled the verified run is complete, not waiting');
+    assert.strictEqual(effectiveStatus(conditional, 'pull-request'), 'skipped');
 
     // A blocked pull request resumes; the furthest stop wins.
     const pr = { status: 'active', roles: {}, phases: { ...passed('pull-request'), 'pull-request': { status: 'blocked', note: 'BITBUCKET_API_TOKEN is not set' }, requirements: { status: 'fail', note: 'stale' } } };
@@ -522,18 +545,18 @@ function staleApprovedState() {
     const withFiles = recoveryCommands('FEAT-1', failedAttention, { root, cli: true, state: failed });
     assert.deepStrictEqual(pairs(withFiles).slice(3), [['log', relativeStatePath('FEAT-1', 'engine/background.log')], ['artifact', relativeStatePath('FEAT-1', '08-build-test.md')], ['rejected', relativeStatePath('FEAT-1', 'engine/build-test-qa-execute.rejected')]]);
     const nodeForm = recoveryCommands('FEAT-1', needsYou('FEAT-1', failed, { root, cli: false }), { root, cli: false, state: failed });
-    assert.deepStrictEqual(pairs(nodeForm), [['retry', 'node ai/tasks/feature/runs.js retry FEAT-1 && node ai/workflow/engine.js resume FEAT-1'], ['status', 'node ai/workflow/progress.js --run FEAT-1'], ['doctor', 'node ai/workflow/doctor.js'], ['log', 'ai/runs/FEAT-1/engine/background.log'], ['artifact', 'ai/runs/FEAT-1/08-build-test.md'], ['rejected', 'ai/runs/FEAT-1/engine/build-test-qa-execute.rejected']]);
+    assert.deepStrictEqual(pairs(nodeForm), [['retry', 'node ai/tasks/feature/runs.js retry FEAT-1 && node ai/workflow/engine.js resume FEAT-1'], ['why', 'node ai/workflow/progress.js --run FEAT-1 --why'], ['status', 'node ai/workflow/progress.js --run FEAT-1'], ['doctor', 'node ai/workflow/doctor.js'], ['log', 'ai/runs/FEAT-1/engine/background.log'], ['artifact', 'ai/runs/FEAT-1/08-build-test.md'], ['rejected', 'ai/runs/FEAT-1/engine/build-test-qa-execute.rejected']]);
     assert.ok(nodeForm.items.every(i => !i.text.includes('…')), 'every item is whole');
     assert.strictEqual(nodeForm.lines[1], '  retry     node ai/tasks/feature/runs.js retry FEAT-1 && node ai/workflow/engine.js resume FEAT-1', 'labels are padded to the widest');
     const withBlock = needsYouLines(failedAttention, withFiles);
-    assert.deepStrictEqual(withBlock.slice(3), withFiles.lines.map(l => `  ${l}`), 'the block ends the needs-you lines');
-    assert.strictEqual(withBlock[3], '  Commands:');
+    assert.deepStrictEqual(withBlock.slice(-withFiles.lines.length), withFiles.lines.map(l => `  ${l}`), 'the block ends the needs-you lines');
+    assert.strictEqual(withBlock.indexOf('  Commands:'), withBlock.length - withFiles.lines.length);
     // The same failure again gives the same block; the headline already says the fix is elsewhere.
     assert.deepStrictEqual(pairs(recoveryCommands('FEAT-1', { ...failedAttention, repeated: 3 }, { root, cli: true, state: failed })), pairs(withFiles));
     const fileSummary = buildSummary('FEAT-1', failed, { root });
-    assert.deepStrictEqual(fileSummary.recovery.items.map(i => i.label), ['retry', 'status', 'doctor', 'log', 'artifact', 'rejected']);
+    assert.deepStrictEqual(fileSummary.recovery.items.map(i => i.label), ['retry', 'why', 'status', 'doctor', 'log', 'artifact', 'rejected']);
     assert.match(renderTerminal(fileSummary), /\n {3}→ run: .*\n {3}Commands:\n {5}retry\s+/);
-    assert.match(renderMarkdown(fileSummary), /> Run: `.*`  \n> Commands:  \n> retry: `.*`  \n> status: `/);
+    assert.match(renderMarkdown(fileSummary), /> Run: `.*`  \n> Commands:  \n> retry: `.*`  \n> why: `.*`  \n> status: `/);
     assert.ok(!renderMarkdown(fileSummary, { published: true }).includes('Commands'), 'the published comment carries no block');
     for (const [text, what] of [[renderMarkdown(fileSummary), 'markdown with block']]) {
       const lines = text.split('\n');
@@ -550,7 +573,7 @@ function staleApprovedState() {
     assert.deepStrictEqual(pairs(recoveryCommands('FEAT-3', needsYou('FEAT-3', cond, { root, cli: true }), { root, cli: true, state: cond })), [['retry', 'agentic retry FEAT-3'], ['retry mobile-evidence', 'agentic retry FEAT-3 mobile-evidence'], ['status', 'agentic status FEAT-3'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-3', 'device/mobile-device-qc.md')]]);
     // A blocked pull request: resume, pr, the artifact and the rejected description.
     for (const rel of ['12-pull-request.md', 'engine/pull-request-pr-description.rejected']) touch('FEAT-4', rel);
-    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-4', needsYou('FEAT-4', pr, { root, cli: true }), { root, cli: true, state: pr })), [['resume', 'agentic resume FEAT-4'], ['pr', 'agentic pr FEAT-4'], ['status', 'agentic status FEAT-4'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-4', '12-pull-request.md')], ['rejected', relativeStatePath('FEAT-4', 'engine/pull-request-pr-description.rejected')]]);
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-4', needsYou('FEAT-4', pr, { root, cli: true }), { root, cli: true, state: pr })), [['resume', 'agentic resume FEAT-4'], ['pr', 'agentic pr FEAT-4'], ['why', 'agentic why FEAT-4'], ['status', 'agentic status FEAT-4'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-4', '12-pull-request.md')], ['rejected', relativeStatePath('FEAT-4', 'engine/pull-request-pr-description.rejected')]]);
     // The approval gate: approve, rework the plan, the plan file.
     fs.unlinkSync(path.join(root, 'FEAT-5', 'plan.approved'));
     assert.deepStrictEqual(pairs(recoveryCommands('FEAT-5', needsYou('FEAT-5', gate, { root, cli: true }), { root, cli: true, state: gate })), [['approve', 'agentic approve FEAT-5'], ['rework plan', 'agentic retry FEAT-5 plan'], ['status', 'agentic status FEAT-5'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-5', '06-plan.md')]]);
@@ -638,6 +661,73 @@ function staleApprovedState() {
     assert.strictEqual(stalledAttention('FEAT-10', half, root, true, { engine: { pid: 1, kind: 'engine' } }), null, 'a liveness result handed in is trusted');
     fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), recordFor(999999, 'resume'));
     assert.strictEqual(stalledAttention('FEAT-10', half, root, true, { engine: null }).kind, 'stalled');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// A stage stopped by a rejected agent report: the report says why, and the
+// options start with what fits it.
+{
+  const { whyLines, needsYouLines } = require('./progress');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-why-'));
+  try {
+    const id = 'WHY-1';
+    fs.mkdirSync(path.join(root, id, 'engine'), { recursive: true });
+    const report = { status: 'fail', summary: 'All tests pass, but pub get rewrote pubspec.lock.', tests: { passed: 80, failed: 0, skipped: 0 },
+      commands: [{ command: 'flutter test', status: 'pass' }, { command: 'git checkout -- pubspec.lock', status: 'blocked', note: 'role may not run mutating shell commands' }, { command: 'flutter analyze', status: 'fail', note: '1 new info lint' }],
+      acceptanceCoverage: { 'AC-1': 'pass', 'AC-18': 'fail: analyzer gate not met' },
+      sideEffects: [{ file: 'pubspec.lock', change: '28-line re-resolve' }, { file: 'analysis_options.yaml', change: '+3 excludes' }], notRun: ['Sonar'] };
+    fs.writeFileSync(path.join(root, id, 'engine', 'build-test-qa-execute.rejected'), JSON.stringify(report));
+    const state = { status: 'active', roles: {}, phases: { ...Object.fromEntries(['request', 'requirements', 'acceptance-criteria', 'definition-of-done', 'inspection', 'analysis', 'plan', 'approval', 'implementation'].map(p => [p, { status: 'pass' }])), 'build-test': { status: 'fail', updatedAt: 't1', note: 'build-test/qa-execute: artifact rejected — ag' } } };
+    const attention = needsYou(id, state, { root, cli: true });
+    assert.strictEqual(attention.details.role, 'qa-execute');
+    assert.strictEqual(attention.details.tests, '80 passed, 0 failed, 0 skipped');
+    assert.deepStrictEqual(attention.details.failed.map(f => f.split(' — ')[0]), ['git checkout -- pubspec.lock', 'flutter analyze']);
+    assert.deepStrictEqual(attention.details.acceptance, ['AC-18: fail: analyzer gate not met']);
+    assert.deepStrictEqual(attention.options.map(o => o.label), ['Revert what its tools changed (if still changed)', 'Read the full report', 'Leave a note the retry will read (evidence, a decision)', 'Retry the stage']);
+    assert.match(attention.options[0].command, /checkout -- pubspec\.lock analysis_options\.yaml$/);
+    assert.strictEqual(attention.options.at(-1).command, 'agentic retry WHY-1', 'retry stays last');
+    const terminal = needsYouLines(attention).join('\n');
+    assert.match(terminal, /All tests pass, but pub get rewrote pubspec\.lock\./, 'the agent\'s own summary replaces the cut-down note');
+    assert.match(terminal, /✗ flutter analyze — fail: 1 new info lint/);
+    const why = whyLines(id, state, { root, cli: true }).join('\n');
+    for (const part of ['What the agent said:', 'Tests: 80 passed', 'Acceptance criteria not met:', '! pubspec.lock — 28-line re-resolve', 'Not run:', 'What you can do:']) assert.ok(why.includes(part), `why shows ${part}`);
+    assert.ok(!/agentic why WHY-1/.test(why), 'why does not offer itself');
+    // Restored by the runtime: no revert to offer.
+    fs.writeFileSync(path.join(root, id, 'engine', 'build-test-qa-execute.restored.json'), JSON.stringify({ restored: [{ path: 'pubspec.lock', from: 'HEAD' }, { path: 'analysis_options.yaml', from: 'HEAD' }] }));
+    const after = needsYou(id, state, { root, cli: true });
+    assert.ok(!after.options.some(o => /Revert/.test(o.label)), 'nothing left to revert');
+    assert.match(needsYouLines(after).join('\n'), /pubspec\.lock \(restored by the runtime\)/);
+    // A failure with no report keeps the old shape.
+    fs.rmSync(path.join(root, id, 'engine'), { recursive: true, force: true });
+    const plain = needsYou(id, state, { root, cli: true });
+    assert.strictEqual(plain.details, null);
+    assert.deepStrictEqual(plain.options.map(o => o.label), ['Leave a note the retry will read (evidence, a decision)', 'Retry the stage']);
+    assert.match(whyLines('NONE', { status: 'done', phases: {} }, { root }).join(''), /nothing is waiting on you\. The run is closed\./);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// Role descriptions and live activity: terminal views only.
+{
+  const { withActivity, renderMarkdown } = require('./progress');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-activity-'));
+  try {
+    const state = { status: 'active', startedAt: new Date().toISOString(), phases: { implementation: { status: 'in_progress', updatedAt: new Date(Date.now() - 90000).toISOString() }, analysis: { status: 'in_progress' } }, selectedRoles: { analysis: ['security', 'docs'] }, roles: { analysis: { security: { status: 'in_progress', executor: 'claude', updatedAt: new Date().toISOString() }, docs: { status: 'pass', executor: 'claude' } } } };
+    const run = path.join(root, 'ACT-1');
+    fs.mkdirSync(path.join(run, 'engine'), { recursive: true });
+    fs.writeFileSync(path.join(run, 'engine', 'analysis-security.activity.jsonl'), `${JSON.stringify({ t: new Date().toISOString(), kind: 'tool', text: 'Read lib/auth/session.dart' })}\n`);
+    const summary = withActivity(buildSummary('ACT-1', state, { root }), run);
+    const analysis = summary.phases.find(p => p.id === 'analysis');
+    assert.match(analysis.roles.find(r => r.role === 'security').description, /^Threat-model auth/);
+    assert.strictEqual(analysis.roles.find(r => r.role === 'security').activity.text, 'Read lib/auth/session.dart');
+    assert.strictEqual(analysis.roles.find(r => r.role === 'docs').activity, undefined, 'finished roles carry no activity');
+    const impl = summary.phases.find(p => p.id === 'implementation');
+    assert.strictEqual(impl.role, 'implementation');
+    assert.strictEqual(impl.activity, null, 'a running stage with no file yet has no activity');
+    const text = renderTerminal(summary);
+    assert.match(text, /Threat-model auth/, 'the running role says what it does');
+    assert.match(text, /↳ Read lib\/auth\/session\.dart · \d+s ago/, 'and what it is doing now');
+    assert.match(text, /↳ working · 1m3\ds/, 'a stage with no activity yet shows how long it has run');
+    assert.doesNotMatch(renderMarkdown(buildSummary('ACT-1', state, { root }), { published: true }), /session\.dart/, 'the published view never carries activity');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

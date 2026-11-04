@@ -18,6 +18,9 @@ const PRODUCT_ROOT = process.env.AI_WORKFLOW_PRODUCT_ROOT ? path.resolve(process
 const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
 const ROUTER = path.join(ROOT, 'ai', 'workflow', 'router.js');
+const { activityFile, createWriter: activityWriter } = require('../../workflow/role-activity');
+const trackedFiles = require('../../workflow/tracked-files');
+const { flutterPin } = require('../../workflow/toolchain');
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 function fail(message, code = 1) { console.error(`✗ ${message}`); process.exit(code); }
@@ -242,11 +245,25 @@ function runEvidence(id, args) {
       fs.writeFileSync(contextFile(id), buildPrompt(id, platforms, attemptId));
     }
     const minutes = overrideMin || Math.max(1, Math.ceil(timeoutMs / 60000));
-    const child = spawnSync(process.execPath, [ROUTER, 'exec', 'feature', 'mobile-evidence', '--agent', executor, '--prompt-file', contextFile(id), '--output-file', agentOutputFile(id), '--cwd', PRODUCT_ROOT, '--timeout-min', String(minutes)], {
+    // As for every engine role: the actions it takes go to its activity file,
+    // it runs on the pinned Flutter when installed, and tracked files its tools
+    // rewrite (flutter build ios: project.pbxproj, Runner.xcscheme) are put
+    // back before the evidence is attested.
+    const activity = activityFile(runDir(id), 'verification', 'mobile-evidence');
+    let pinEnv = {};
+    try { pinEnv = flutterPin(PRODUCT_ROOT)?.env || {}; } catch { pinEnv = {}; }
+    const before = trackedFiles.snapshot(PRODUCT_ROOT);
+    const child = spawnSync(process.execPath, [ROUTER, 'exec', 'feature', 'mobile-evidence', '--agent', executor, '--prompt-file', contextFile(id), '--output-file', agentOutputFile(id), '--cwd', PRODUCT_ROOT, '--timeout-min', String(minutes), '--activity-file', activity], {
       cwd: ROOT,
-      env: { ...process.env, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
+      env: { ...process.env, ...pinEnv, AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: 'feature', AI_WORKFLOW_ROLE: 'mobile-evidence', FEATURE_RUN_ID: id, FEATURE_EVIDENCE_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: PRODUCT_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS, AI_WORKFLOW_RUNTIME_ROOT: ROOT },
       encoding: 'utf8', maxBuffer: 512 * 1024 * 1024,
     });
+    const restored = trackedFiles.restore(before).map(entry => entry.path);
+    if (restored.length) {
+      console.log(`${id}: mobile-evidence is read-only; restored ${restored.length} tracked file(s) its tools changed: ${restored.join(', ')}`);
+      try { activityWriter(activity).note('restore', `runtime restored ${restored.join(', ')} (changed by the role's tools)`); } catch { /* display only */ }
+      try { fs.writeFileSync(path.join(runDir(id), 'engine', 'verification-mobile-evidence.restored.json'), `${JSON.stringify({ at: new Date().toISOString(), restored: restored.map(p => ({ path: p })) }, null, 2)}\n`); } catch { /* display only */ }
+    }
     if (child.stdout) process.stdout.write(child.stdout);
     if (child.stderr) process.stderr.write(child.stderr);
     if (child.error || child.status !== 0) {

@@ -923,12 +923,13 @@ try {
       const reason = rest.slice(3).join(' ');
       const id = resolveId();
       if (!id) throw new Error('no run id');
-      if (!safeRole(role) || !['pass', 'fail', 'blocked', 'skipped'].includes(status)) throw new Error('conditional requires <phase> <role> <pass|fail|blocked|skipped>');
+      if (!safeRole(role) || !['in_progress', 'pass', 'fail', 'blocked', 'skipped'].includes(status)) throw new Error('conditional requires <phase> <role> <in_progress|pass|fail|blocked|skipped>');
       locked(id, () => {
         const state = ensureShape(load(id), id);
         state.conditionals[phase] ||= {};
         const previous = state.conditionals[phase][role];
-        state.conditionals[phase][role] = { ...(status === 'fail' || status === 'blocked' ? carried(previous) : {}), status, updatedAt: now(), ...(reason ? { reason } : {}) };
+        // A run in progress keeps the failure streak; only a pass clears it.
+        state.conditionals[phase][role] = { ...(['fail', 'blocked', 'in_progress'].includes(status) ? carried(previous) : {}), status, updatedAt: now(), ...(reason ? { reason } : {}) };
         if (status === 'fail' || status === 'blocked') recordFailure(state.conditionals[phase][role], reason);
         record(state, { kind: 'conditional-role', phase, role, to: status, reason: reason || null });
         atomicSave(id, state);

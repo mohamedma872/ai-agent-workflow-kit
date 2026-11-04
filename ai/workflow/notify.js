@@ -153,8 +153,24 @@ function which(bin, env = process.env) {
 
 // The desktop command for this platform, as argv (spawned without a shell), or null.
 const APPLESCRIPT = ['on run argv', 'display notification (item 2 of argv) with title (item 1 of argv) subtitle (item 3 of argv)', 'end run'];
-function desktopCommand(title, body, { platform = process.platform, find = which, subtitle = '' } = {}) {
-  if (platform === 'darwin') return { bin: 'osascript', args: [...APPLESCRIPT.flatMap(line => ['-e', line]), title, body, subtitle || ''] };
+// The app a click on the notification brings forward: the one the engine was
+// started from. macOS gives every process it launches from an app that app's
+// bundle id (__CFBundleIdentifier: Terminal, iTerm, VS Code, Ghostty…);
+// AGENTIC_NOTIFY_ACTIVATE overrides it. Only a well-formed bundle id is used.
+const TERM_APPS = { Apple_Terminal: 'com.apple.Terminal', 'iTerm.app': 'com.googlecode.iterm2', vscode: 'com.microsoft.VSCode', WezTerm: 'com.github.wez.wezterm', ghostty: 'com.mitchellh.ghostty', WarpTerminal: 'dev.warp.Warp-Stable' };
+function activateApp(env = process.env) {
+  const id = env.AGENTIC_NOTIFY_ACTIVATE || env.__CFBundleIdentifier || TERM_APPS[env.TERM_PROGRAM] || 'com.apple.Terminal';
+  return /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/.test(String(id)) ? String(id) : 'com.apple.Terminal';
+}
+// macOS: terminal-notifier when installed, so a click brings the terminal
+// forward. A notification sent with osascript belongs to Script Editor, and
+// clicking it opens Script Editor; that stays the fallback.
+function desktopCommand(title, body, { platform = process.platform, find = which, subtitle = '', env = process.env } = {}) {
+  if (platform === 'darwin') {
+    const notifier = find('terminal-notifier', env);
+    if (notifier) return { bin: notifier, args: ['-title', title, '-message', body, ...(subtitle ? ['-subtitle', subtitle] : []), '-group', 'agentic', '-activate', activateApp(env)] };
+    return { bin: 'osascript', args: [...APPLESCRIPT.flatMap(line => ['-e', line]), title, body, subtitle || ''] };
+  }
   if (platform === 'linux') {
     const bin = find('notify-send');
     // `--` ends the options, so a title or body starting with "-" stays text.
@@ -171,14 +187,14 @@ function createNotifier({ env = process.env, platform = process.platform, spawnF
         fs.appendFileSync(env.AI_WORKFLOW_TEST_NOTIFY_LOG, JSON.stringify({ key: event.key || null, kind: event.kind || null, title, body, ...(event.subtitle ? { subtitle: event.subtitle } : {}) }) + '\n');
         return { channel: 'log' };
       }
-      const command = desktopCommand(title, body, { platform, find, subtitle: event.subtitle || '' });
+      const command = desktopCommand(title, body, { platform, find, env, subtitle: event.subtitle || '' });
       if (!command) return { channel: 'none' };
       try {
         const child = spawnFn(command.bin, command.args, { stdio: 'ignore', shell: false });
         child.on?.('error', () => { /* best effort: a missing notifier never stops a run */ });
         child.unref?.();
       } catch { return { channel: 'none' }; }
-      return { channel: platform === 'darwin' ? 'osascript' : 'notify-send' };
+      return { channel: path.basename(command.bin) };
     },
   };
 }
@@ -267,14 +283,22 @@ function selftest() {
 
     // macOS: a constant script; the text travels as argv, untouched by AppleScript parsing.
     const nasty = 'He said "hi" \\ then " & do shell script "touch /tmp/pwned" & "\nsecond line';
-    const mac = desktopCommand('agentic · FEAT-1 needs you', clean(nasty), { platform: 'darwin' });
+    const noNotifier = () => null;
+    const mac = desktopCommand('agentic · FEAT-1 needs you', clean(nasty), { platform: 'darwin', find: noNotifier });
     assert.strictEqual(mac.bin, 'osascript');
     assert.deepStrictEqual(mac.args.slice(0, 6), ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv) subtitle (item 3 of argv)', '-e', 'end run']);
     assert.ok(mac.args.slice(0, 6).every(arg => !arg.includes('FEAT-1') && !arg.includes('pwned')), 'no event text inside the script');
     assert.strictEqual(mac.args[6], 'agentic · FEAT-1 needs you');
     assert.strictEqual(mac.args[7], 'He said "hi" \\ then " & do shell script "touch /tmp/pwned" & " second line', 'quotes and backslashes pass verbatim; the newline is flattened');
     assert.strictEqual(mac.args[8], '', 'no subtitle, an empty third item');
-    assert.strictEqual(desktopCommand('t', 'b', { platform: 'darwin', subtitle: 'run: agentic retry X' }).args[8], 'run: agentic retry X');
+    assert.strictEqual(desktopCommand('t', 'b', { platform: 'darwin', find: noNotifier, subtitle: 'run: agentic retry X' }).args[8], 'run: agentic retry X');
+    // With terminal-notifier, a click brings forward the app the engine runs in.
+    const tn = desktopCommand('agentic · FEAT-1 needs you', '-starts with a dash', { platform: 'darwin', find: bin => (bin === 'terminal-notifier' ? '/opt/homebrew/bin/terminal-notifier' : null), subtitle: 'run: agentic retry FEAT-1', env: { __CFBundleIdentifier: 'com.microsoft.VSCode' } });
+    assert.deepStrictEqual(tn, { bin: '/opt/homebrew/bin/terminal-notifier', args: ['-title', 'agentic · FEAT-1 needs you', '-message', '-starts with a dash', '-subtitle', 'run: agentic retry FEAT-1', '-group', 'agentic', '-activate', 'com.microsoft.VSCode'] });
+    assert.strictEqual(activateApp({ TERM_PROGRAM: 'iTerm.app' }), 'com.googlecode.iterm2');
+    assert.strictEqual(activateApp({ __CFBundleIdentifier: 'com.apple.Terminal', AGENTIC_NOTIFY_ACTIVATE: 'com.mitchellh.ghostty' }), 'com.mitchellh.ghostty', 'the override wins');
+    assert.strictEqual(activateApp({ __CFBundleIdentifier: 'evil"; rm -rf ~' }), 'com.apple.Terminal', 'only a well-formed bundle id');
+    assert.strictEqual(activateApp({}), 'com.apple.Terminal');
     assert.ok(!/\x1b|\x07/.test(clean('a \x1b]52;c;ZXZpbA==\x07 b \x1b[1A\x1b[2K c \u009b d')), 'escape sequences and C1 controls are gone');
     assert.ok(!/[\n\r]/.test(clean('a\nb\r\nc\td')), 'no control characters survive');
     // Linux: notify-send when it is on PATH, else nothing.
@@ -418,4 +442,4 @@ if (require.main === module) {
   else { console.error('usage: notify.js --selftest'); process.exitCode = 1; }
 }
 
-module.exports = { DEFAULTS, BODY_MAX, loadConfig, warnConfig, redactSecrets, clean, which, desktopCommand, createNotifier, attentionEvent, errorEvent, completeEvent, prOpenedEvent, deliver };
+module.exports = { DEFAULTS, BODY_MAX, loadConfig, warnConfig, redactSecrets, clean, which, activateApp, desktopCommand, createNotifier, attentionEvent, errorEvent, completeEvent, prOpenedEvent, deliver };

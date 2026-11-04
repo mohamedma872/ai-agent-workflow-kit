@@ -43,7 +43,7 @@ function specialistFindings(runDir){
 // The human's conflict decisions (05-analysis/conflicts.json, written by
 // `agentic resolve`). Raw conflicts.json is not given to roles: it holds
 // unresolved entries, no finding titles and no size bound.
-// One decision per finding pair: a file written before 1.9.32 can hold two
+// One decision per finding pair: a file written before 1.9.35 can hold two
 // decided pairs under one id, and both decisions bind.
 function resolvedConflicts(runDir){
  let d=null; try{d=JSON.parse(fs.readFileSync(path.join(runDir,'05-analysis','conflicts.json'),'utf8'));}catch{return [];}
@@ -116,6 +116,11 @@ function failureFeedback(runDir,stageId,roleName){
  const lines=[];
  const own=(state.executionAttempts?.[stageId]?.[roleName]||[]).filter(a=>a&&a.ok===false||a?.reason);
  for(const attempt of own.slice(-2)) if(attempt.reason) lines.push(`- this role, attempt ${attempt.attempt||''}: ${String(attempt.reason).slice(0,600)}`);
+ // This role's own rejected report: why its last output was refused, in its
+ // own words. The loop below skips the current stage, so without this a retry
+ // only saw the cut-down reason and repeated the same mistake.
+ const ownRejected=stageId&&roleName?read(path.join(runDir,'engine',`${stageId}-${roleName}.rejected`)):null;
+ if(ownRejected) lines.push(`- your previous output for this stage was rejected; it said:\n\`\`\`\n${ownRejected.slice(0,4000)}\n\`\`\``);
  // Failures survive a retry/rework as lastFailures, because clearing the spent
  // attempts is what lets the work run again.
  for(const [phase,roles] of Object.entries(state.lastFailures||{})){
@@ -145,9 +150,16 @@ function failureFeedback(runDir,stageId,roleName){
  return `## Previous failures to address\n\nThese are recorded failures from this run. Fix the cause named here rather than re-doing the same work.\n\n${lines.join('\n')}`;
 }
 
+// Notes a human left for a stage (<run>/notes/<stage>.md): evidence the role
+// cannot gather itself, or a decision, for its next attempt.
+function humanNotes(runDir,stageId){
+ const t=stageId?read(path.join(runDir,'notes',`${stageId}.md`)):null;
+ return t&&t.trim()?`## Human notes for this stage (notes/${stageId}.md)\n\nA human wrote these for this stage. Treat them as evidence and decisions you can rely on.\n\n${t.slice(0,12000)}`:'';
+}
 function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,stageId,baseSha}){
  const sections=[];
  const failures=failureFeedback(runDir,stageId,roleName);if(failures)sections.push(failures);
+ const notes=humanNotes(runDir,stageId);if(notes)sections.push(notes);
  for(const input of contract.inputs||[]){
    if(INPUT_FILES[input]) for(const f of INPUT_FILES[input]){const t=read(path.join(runDir,f));if(t)sections.push(`## ${f}\n${t.slice(0,16000)}`);}
    else if(input==='changed_files') sections.push('## Changed files\n'+(changedFiles(productRoot,baseSha).join('\n')||'(none)'));
@@ -156,10 +168,13 @@ function buildRoleContext({runDir,productRoot,contract,excludeArtifact,roleName,
    else if(input==='validated_review_findings'){const t=reviewArtifacts(runDir);if(t)sections.push(t);}
    else if(input==='dependency_versions'){const t=dependencyVersions(productRoot);if(t)sections.push(t);}
    else if(input==='pr_template') sections.push(prTemplateSection(productRoot));
+   // The runtime's analyzer comparison against the run base (analyzer-baseline.js),
+   // for the stages that judge "no new analyzer issues".
+   else if(input==='analyzer_baseline'){if(['build-test','post-fix-build-test','verification'].includes(stageId)){const t=read(path.join(runDir,'engine','analyzer-baseline.md'));if(t)sections.push(t.slice(0,16000));}}
    else if(input==='refactor_verification_matrix'){const t=read(path.join(runDir,'engine','refactor-verification-matrix.json'));if(t)sections.push('## Refactor verification matrix\n'+t);}
    else if(input==='run_artifacts'||input==='repository_evidence'){const t=broadArtifacts(runDir,excludeArtifact);if(t)sections.push(t);}
  }
  const rag=hybridRagContext({runDir,productRoot,contract,roleName,stageId,baseSha});if(rag)sections.push(rag);
  return sections.join('\n\n');
 }
-module.exports={PR_TEMPLATES,prTemplate,specialistFindings,resolvedConflicts,conflictDecisions,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};
+module.exports={humanNotes,PR_TEMPLATES,prTemplate,specialistFindings,resolvedConflicts,conflictDecisions,failureFeedback,buildRoleContext,changedFiles,dependencyVersions,retrievalSettings,retrievalQuery,hybridRagContext};

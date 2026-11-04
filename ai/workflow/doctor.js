@@ -9,7 +9,7 @@ const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { runtimeRoot, projectRoot } = require('./paths');
 const { discoverMcps, hasMcp } = require('./mcp-discovery');
-const { APPIUM_MIN_NODE, appiumRuntime, findNode, isAppiumLauncher, launcherSpecFor, resolveFlutter, resolveXcode } = require('./toolchain');
+const { APPIUM_MIN_NODE, appiumRuntime, findNode, isAppiumLauncher, launcherSpecFor, resolveFlutter, resolveXcode, flutterPin } = require('./toolchain');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -181,7 +181,18 @@ function iosChecks(xcodeRequired) {
 
 // A Flutter SDK unpacked into a home directory counts as installed: agentic puts
 // it on PATH for its own runs and says how to make the shell find it too.
-function flutterChecks(required) {
+// The version .fvmrc pins: roles run on it when it is installed (the engine
+// puts it first on PATH); without it they run on another SDK, which rewrites
+// pubspec.lock, analysis_options.yaml and project.pbxproj.
+function flutterPinCheck(root) {
+  let pin = null;
+  try { pin = flutterPin(root); } catch { pin = null; }
+  if (!pin) return [];
+  if (pin.match) return [result('flutter:pin', 'mobile', false, true, `pinned Flutter ${pin.pinned} (.fvmrc) available${pin.env.PATH ? ` at ${tildify(path.dirname(pin.sdkBin))}; agentic runs roles on it` : ''}`)];
+  return [incompatible('flutter:pin', 'mobile', false, `.fvmrc pins Flutter ${pin.pinned}, but this machine has ${pin.localVersion || 'another version'} and no ${pin.pinned} SDK; roles will run on ${pin.localVersion || 'it'}, which re-resolves pubspec.lock`, `fvm install ${pin.pinned}  # agentic then uses ~/fvm/versions/${pin.pinned} for every role`)];
+}
+
+function flutterChecks(required, root) {
   const flutter = resolveFlutter();
   if (!flutter) return [result('flutter', 'mobile', required, false, 'flutter not found on PATH or in the usual SDK locations', 'Install the Flutter SDK (flutter.dev/docs/get-started/install) and add its bin directory to PATH')];
   const label = flutter.version ? `Flutter ${flutter.version}` : 'flutter available';
@@ -189,6 +200,7 @@ function flutterChecks(required) {
   if (flutter.source === 'discovered') {
     checks.push(incompatible('flutter:path', 'mobile', false, `${flutter.binDir.includes(os.homedir()) ? tildify(flutter.binDir) : flutter.binDir} is not on PATH; agentic adds it for its own runs, but flutter commands you run yourself will fail`, `export PATH="${flutter.binDir}:$PATH"  # add to ~/.zshrc`));
   }
+  if (root) checks.push(...flutterPinCheck(root));
   return checks;
 }
 
@@ -222,6 +234,12 @@ function runChecks(options = {}) {
   else checks.push(result('node', 'runtime', true, true, `Node ${process.versions.node}`));
   const gitOk = commandExists('git');
   checks.push(result('git', 'runtime', true, gitOk, gitOk ? commandOutput('git', ['--version']) || 'git available' : 'git not found', 'Install git'));
+  // A notification sent with osascript belongs to Script Editor: clicking it
+  // opens Script Editor. With terminal-notifier a click brings the terminal back.
+  if (process.platform === 'darwin') {
+    const notifier = commandExists('terminal-notifier');
+    checks.push(result('notifications:click', 'runtime', false, notifier, notifier ? `terminal-notifier: clicking a notification brings ${require('./notify').activateApp()} forward` : 'notifications use osascript; clicking one opens Script Editor, not your terminal', notifier ? null : 'brew install terminal-notifier'));
+  }
 
   const agents = readYaml(path.join(ROOT, 'ai', 'agents.yaml'));
   for (const [name, spec] of Object.entries(agents)) {
@@ -260,7 +278,7 @@ function runChecks(options = {}) {
         checks.push(result('android:device', 'mobile', false, count > 0, count ? `${count} connected/ready Android device(s)` : 'no ready Android device currently connected', 'Start/connect an emulator/device before mobile evidence'));
       }
     }
-    if (stacks.includes('flutter')) checks.push(...flutterChecks(mobileRequired));
+    if (stacks.includes('flutter')) checks.push(...flutterChecks(mobileRequired, PROJECT_ROOT));
     if (iosRelevant) checks.push(...iosChecks(mobileRequired && stacks.includes('ios')));
     const appiumConfigured = hasMcp(discoveredMcps, 'appium');
     const appiumInstalled = discoveredMcps.installed.appiumMcp;

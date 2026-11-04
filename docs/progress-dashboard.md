@@ -61,12 +61,13 @@ When the highlighted run waits on a human, a banner sits at the top of its detai
 
 | The run | Headline | Command | Commands: |
 |---|---|---|---|
-| a stage failed or blocked | `<Stage> failed` / `<Stage> blocked` | `agentic retry <id>` (`agentic resume <id>` for the pull request, whose steps repeat safely) | `retry` (+ `retry <role>` per stopped role of a parallel stage), `status`, `doctor`, `log`, `artifact`, `rejected`; the pull request adds `pr` |
+| a stage failed or blocked | `<Stage> failed` / `<Stage> blocked` | `agentic retry <id>` (`agentic resume <id>` for the pull request, whose steps repeat safely) | `retry` (+ `retry <role>` per stopped role of a parallel stage), `why` when the agent's report was rejected, `status`, `doctor`, `log`, `artifact`, `rejected`, `notes` when `notes/<stage>.md` exists; the pull request adds `pr` |
 | a stage's conditional role blocked (verification's `mobile-evidence`) | `<Stage> (<role>) blocked` | `agentic retry <id>` | `retry`, `retry mobile-evidence`, `status`, `doctor`, `log`, `artifact` (`device/mobile-device-qc.md`) |
 | the same failure as last time | `Same failure as last time — this needs a fix outside <Stage>` | the same; retrying is allowed, but the cause is elsewhere | the same block |
 | the plan waits for approval | `The plan waits for your approval` (then the plan digest) | `agentic approve <id>` | `approve`, `rework plan` (`agentic retry <id> plan`), `status`, `doctor`, `artifact` (`06-plan.md`) |
 | architecture selection waits | `Architecture selection waits for you` | `agentic architecture <id> <option-id>` | `select`, `status`, `doctor`, the two `05-architecture-*.md` artifacts |
 | specialist conflicts hold the plan back | `N conflicts need your decision` (reason: ids + topics, resolve + resume commands) | `agentic conflicts <id>` | `conflicts`, `resolve` (with the id when one is left), `resume`, `status`, `doctor`, `artifact` (`05-analysis/conflicts.json`) |
+| verification passed, `pull_request` enabled, no pull request recorded | `Verified — no pull request recorded yet` | `agentic pr <id>` | `pr`, `status`, `doctor`, `log` |
 | a stage is in progress but its engine is gone | `<Stage> is in progress but its engine (pid N) is gone` | `agentic retry <id>` (`resume` for the pull request) | `retry`, `status`, `doctor`, `log`, `owner` (`engine/engine.pid`) |
 
 `status` and `doctor` are in every block; `log` appears whenever `<run>/engine/background.log` exists, `artifact` and `rejected` when the stopped stage's artifact or kept agent output (`engine/<stage>-<role>.rejected`) exists. On a terminal under 24 rows the block is left out so the stages stay visible. The last row is not a needs-you kind: a stage left `in_progress` by an engine that was killed keeps its `engine/engine.pid` record (a normal exit removes it), and when nothing alive holds that record the run is shown as stalled, with the same banner and block, in `agentic status <id>`, `runs.js status` and `agentic runs`. It raises no `⚠` list marker, bell or desktop notification, and a run driven by hand (no record) is never called stalled.
@@ -85,6 +86,8 @@ Notes, role names and the fields of `engine.pid` are shown as printable text onl
 
 The engine sends a desktop notification when a run needs you, completes, or (through `agentic pr`) opens its pull request. It sends it itself, so it arrives with this window closed. The dashboard does not send one. It rings the terminal bell and flashes `⚠ <id> needs you — …` in the hint line for each new event. When it opens it stays quiet about what was already waiting. Each event is shown once: its key is recorded in `state.notifications.sent`. A run that completes again after rework is a new event (the key carries the completion time). The notification's text is redacted before it is shortened (named token variables, any variable whose name ends in `TOKEN`, `SECRET`, `PASSWORD`, `_KEY` and similar, URL credentials and common token shapes), and the command it ends with is never cut. On macOS the command is also the subtitle.
 
+On macOS, install `terminal-notifier` (`brew install terminal-notifier`) so that clicking a notification brings forward the app the engine runs in (Terminal, iTerm, VS Code…; `AGENTIC_NOTIFY_ACTIVATE=<bundle id>` picks another). Without it, notifications go through `osascript`, and clicking one opens Script Editor.
+
 | `.agentic/config.yaml` | Default | Effect |
 |---|---|---|
 | `notifications.desktop` | `true` | `false` stops the engine's desktop notifications (macOS `osascript`, Linux `notify-send`) |
@@ -102,6 +105,7 @@ The engine sends a desktop notification when a run needs you, completes, or (thr
 | `T` | retry its failed or blocked stages (and conditional roles), then resume in the background |
 | `P` | open the highlighted feature's plan (`06-plan.md`) in `$PAGER` |
 | `A` | approve the highlighted feature's plan (asks first), then resume in the background |
+| `d` | switch the pane between the stages and what each running agent is doing (`esc` goes back) |
 | `c` | close the highlighted feature (asks first) |
 | `a` | toggle finished runs |
 | `r` | refresh now |
@@ -110,11 +114,66 @@ The engine sends a desktop notification when a run needs you, completes, or (thr
 
 Five keys write. `enter` updates the `_active` pointer, `c` closes a run after you confirm, `A` approves a plan after you confirm, and `R`, `T` and `A` start the engine. Highlighting alone changes nothing. `A` approves only after you answer `y`; nothing approves on highlight or on a timer, and `A` on a run that is not at the gate says `✗ <id>: nothing waits for approval` and touches nothing.
 
+## Why a stage stopped
+
+When a stage fails because the agent's own report was rejected (its status was not `pass`), the banner reads that report (`<run>/engine/<stage>-<role>.rejected`) instead of the stored note, which is cut to 180 characters:
+
+```
+⚠ NEEDS YOU · Build + Tests failed
+  All tests pass: 80/80 … flutter rewrote pubspec.lock and analysis_options.yaml …
+  Tests: 80 passed, 0 failed, 0 skipped
+  ✗ flutter analyze --no-pub <36 files> — fail: 4,464 issues …
+  ! pubspec.lock changed by its tools
+  · Revert what its tools changed (if still changed): git -C "<worktree>" checkout -- pubspec.lock analysis_options.yaml
+  · Read the full report: agentic why <id>
+  · Leave a note the retry will read (evidence, a decision): edit .agentic-runs/<id>/notes/build-test.md
+→ agentic retry <id>
+```
+
+`agentic why <id>` prints the full story: the stored reason, what the agent said, test counts, failed checks, acceptance criteria it marked failed, files its tools changed (and whether the runtime restored them), what it did not run, and the numbered options. What you write in `<run>/notes/<stage>.md` is given to every role of that stage on its next attempt, and a retried role also sees its own rejected report.
+
+Read-only roles no longer leave tool rewrites behind: the engine snapshots tracked files before such a role runs and restores whatever its tools changed (`ai/workflow/tracked-files.js`), so the revert option only appears for runs that stopped before 1.9.32.
+
+## What each agent is doing
+
+Every role line says what the role does, in one dimmed line under it: the role's `summary` in `ai/workflows/feature.yaml` when it has one, otherwise the first sentence of its `purpose`. Under a running role (or a running single-role stage such as Implementation) a second line says what it is doing now, and how long ago:
+
+```
+🔄 Specialist Analysis      in_progress
+   ✅ docs                 pass · claude
+      Resolve current, version-specific external library/framework documentation…
+   🔄 security             in_progress · claude
+      Threat-model auth, session, storage, PII, permissions, deep links, WebViews…
+      ↳ Read lib/auth/session_store.dart · 4s ago
+```
+
+When the pane is short, the descriptions of finished roles go first, then the running roles' descriptions, then finished roles; what a running role is doing goes last. `agentic progress <id>` and `--watch` show the description and the current action for running roles too.
+
+`d` turns the pane into the details view: one block per running agent, with its executor, how long it has run, what it does, and its last actions with their times, newest last. With nothing running it shows the agent that acted last. `agentic progress --details` opens on it.
+
+```
+● security · claude · 3m12s
+  Threat-model auth, session, storage, PII, permissions, deep links, WebViews…
+  12:01:03  Read lib/auth/session_store.dart
+  12:01:05  $ grep -rn "refresh_token" lib/
+  12:01:09  The refresh token is kept in SharedPreferences, not secure storage.
+```
+
+The same feed is on the command line, for one agent or every running one:
+
+```bash
+agentic activity <run-id>                    # every running agent, last 30 actions
+agentic activity <run-id> security --follow  # one agent, live (ctrl-c stops)
+agentic activity <run-id> implementation --lines 100 --json
+```
+
+Where it comes from: the engine runs each role with `router.js exec … --activity-file <run>/engine/<stage>-<role>.activity.jsonl`. The router then starts the agent with its streaming command (`stream_command` in `ai/agents.yaml`; for Claude, `--output-format stream-json --verbose`; Codex `--json` streams already) and, while it works, writes one line per action: a tool call and its target (`Read`, `Edit`, `Grep`, `Glob`, `Fetch`, `MCP <server>/<tool>`, a subagent), a command (`$ …`), or what the agent said. The artifact, cost and exit status are read from the same stream's final result, exactly as before. Tool results, file contents and the model's thinking are never written. Every line is redacted (the same rules as the notifications), stripped of control characters and cut to 240 characters before it is written. A file over 512 KB is moved to `.prev.jsonl` when the next attempt starts. Without `--activity-file` (evals, a hand-run `router.js exec`) the router runs the plain command as before. The published GitHub progress comment never carries activity.
+
 ## Resume, retry and approve from the dashboard
 
 `R` runs `engine.js resume <id>` as a detached background process (no shell). `T` first runs `runs.js retry <id>`, the same reset as `agentic retry <id>`, then starts that resume. `A` asks `Approve <id>? The plan in <path> becomes binding and the engine resumes in the background.  y = confirm · any other key = cancel`, then runs `runs.js approve <id>` (whose own checks apply: the plan must have passed and analysis be done) and starts that resume; it is the same code path as `agentic approve <id>` (`ai/workflow/engine-launch.js`). The hint line says `resuming…` or `approving…` at once. Then it shows the engine pid and the log, `<run>/engine/background.log`, which collects every background engine's output, each start under a `=== <time> resume|retry|approve started from agentic progress ===` line. The `●` marker appears once the engine has claimed the run.
 
-`R` refuses when the highlighted run's stage failed or blocked (other than the pull request, which a resume continues): `✗ <id>: <Stage> needs a retry first — press T (or run: <command>)`, since the engine leaves a stage whose attempts are spent as it is. On a gate it says `✗ <id> waits for you — run: <command>`, and on a complete run (verified, pull request skipped) `✗ <id> is complete — press c to close it, or open its pull request: agentic pr <id>` (the launcher's command line, `node ai/workflow/engine-launch.js resume <id>`, names the close command instead of the key). The footer and every notice are cut to the terminal width; below 120 columns the footer is a compact `↑↓ · ⏎ active · R resume · T retry · A approve · P plan · …`.
+`R` refuses when the highlighted run's stage failed or blocked (other than the pull request, which a resume continues): `✗ <id>: <Stage> needs a retry first — press T (or run: <command>)`, since the engine leaves a stage whose attempts are spent as it is. On a gate it says `✗ <id> waits for you — run: <command>`, and on a complete run (verified, pull request skipped) `✗ <id> is complete — press c to close it, or open its pull request: agentic pr <id>` (the launcher's command line, `node ai/workflow/engine-launch.js resume <id>`, names the close command instead of the key). The footer and every notice are cut to the terminal width; below 127 columns the footer is a compact `↑↓ · ⏎ active · d details · R resume · T retry · A approve · P plan · …`, and below 107 columns `↑↓ · d details · R resume · T retry · A approve · P plan · c close · q quit`.
 
 Both keys refuse while an engine for that run is alive. That covers one started from another terminal, as a running engine holds `<run>/engine/engine.pid`, and a running parallel-role pool. A record counts only while its pid is a live node process started when the record says; a pid reused by something else, or pid 1, does not hold the run. A closed run is refused too. When `T` finds nothing to retry, the hint line shows retry's own message, for example `nothing to retry; run agentic resume <id>`, and nothing starts.
 

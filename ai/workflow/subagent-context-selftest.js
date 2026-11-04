@@ -53,6 +53,16 @@ assert.match(failureFeedback(run,'implementation','implementation'),/tests hang/
 const reworkContext=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request']},excludeArtifact:null,roleName:'implementation',stageId:'implementation'});
 assert(reworkContext.startsWith('## Previous failures to address'),'failures lead the prompt');
 
+// A retried role sees its own rejected report, and the notes a human left for the stage.
+fs.mkdirSync(path.join(run,'engine'),{recursive:true});
+fs.writeFileSync(path.join(run,'engine','build-test-qa-execute.rejected'),'{"status":"fail","summary":"pub get rewrote pubspec.lock"}');
+assert.match(failureFeedback(run,'build-test','qa-execute'),/your previous output for this stage was rejected[\s\S]*pub get rewrote pubspec\.lock/,'the role sees its own rejected report');
+assert.doesNotMatch(failureFeedback(run,'build-test','code-review'),/pub get rewrote/,'another role of the stage does not get it as its own');
+fs.mkdirSync(path.join(run,'notes'),{recursive:true});
+fs.writeFileSync(path.join(run,'notes','build-test.md'),'The 12 analyzer lints are pre-existing at HEAD.');
+const noted=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'qa-execute',stageId:'build-test'});
+assert.match(noted,/## Human notes for this stage \(notes\/build-test\.md\)[\s\S]*pre-existing at HEAD/,'human notes reach the role');
+assert.doesNotMatch(buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'code-review',stageId:'reviews'}),/Human notes/,'notes stay with their stage');
 // The human's conflict decisions reach the plan (which must cite each id) and
 // the roles after it, never the specialists; unresolved ones are not listed.
 const {resolvedConflicts,conflictDecisions}=require('./subagent-context');
@@ -79,7 +89,7 @@ for(const n of [9,30]){
  for(const c of long){assert(sec.includes(`### ${c.id} ·`),`${n}: ${c.id} header`);assert(sec.includes(`DECISION-${c.id.slice(-3).replace(/^0+/,'')}-START`),`${n}: ${c.id} decision`);}
  if(n===30) assert.match(sec,/… \(truncated; full text in 05-analysis\/conflicts\.json\)/);
 }
-// Two decided pairs under one id (a pre-1.9.32 file): both decisions bind.
+// Two decided pairs under one id (a pre-1.9.35 file): both decisions bind.
 fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:[
  {id:'CONFLICT-001',topic:'storage',findings:['SEC-1','ARCH-2'],status:'resolved',resolution:{decision:'SECURE STORAGE',rationale:'r',owner:'human'}},
  {id:'CONFLICT-001',topic:'caching',findings:['SEC-1','ARCH-3'],status:'resolved',resolution:{decision:'CACHE ONE HOUR',rationale:'r',owner:'human'}}]}));

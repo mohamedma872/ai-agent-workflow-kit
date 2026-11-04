@@ -14,9 +14,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const { projectRoot } = require('./paths');
+const { createWriter: createActivityWriter } = require('./role-activity');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'ai', 'workflows');
@@ -144,6 +145,15 @@ function buildPrompt(workflow, resolved, taskPrompt) {
     `Role purpose: ${resolved.role.purpose || 'Complete the assigned workflow responsibility.'}`,
     `Mode: ${resolved.role.read_only ? 'READ-ONLY analysis/review. Do not modify product files.' : 'May edit product files only within the approved workflow scope.'}`,
   ];
+  // The engine restores what a read-only role's tools change (tracked-files.js);
+  // without saying so, the role fails its stage over a side effect it cannot revert.
+  // Engine-set (toolchain.js flutterPin): the SDK this role runs on.
+  if (process.env.AGENTIC_FLUTTER_PINNED) lines.push(`Flutter: PATH starts with the project's pinned SDK ${process.env.AGENTIC_FLUTTER_PINNED} (.fvmrc). Use plain \`flutter\`/\`dart\` from PATH; do not switch SDKs.`);
+  else if (process.env.AGENTIC_FLUTTER_MISMATCH) {
+    const [pinned, local] = process.env.AGENTIC_FLUTTER_MISMATCH.split('/');
+    lines.push(`Flutter: the project pins ${pinned} (.fvmrc) but only ${local} is installed. Never run \`flutter pub get\`, \`flutter pub upgrade\` or \`dart run build_runner\` without being told to: on this SDK they re-resolve pubspec.lock. Pass \`--no-pub\` to \`flutter test\`, \`flutter analyze\` and \`flutter build\`. Report results as produced on ${local}, not ${pinned}.`);
+  }
+  if (resolved.role.read_only) lines.push('Tool side effects: if a tool you run rewrites a tracked file (an implicit `pub get` re-resolving pubspec.lock or migrating analysis_options.yaml, Xcode rewriting project.pbxproj), do not try to revert it and do not fail the stage for that alone. The runtime restores every tracked file a read-only role changed once you finish. List such files as side effects. To avoid them, pass `--no-pub` to `flutter test`, `flutter analyze` and `flutter build` when `.dart_tool/package_config.json` exists.');
   if (resolved.role.artifact) lines.push(`Expected workflow artifact: ${resolved.role.artifact}`);
   for (const standard of loadRoleStandards(resolved.role)) {
     lines.push('', `Engineering standard — ${standard.name}:`, standard.content);
@@ -161,10 +171,46 @@ function buildPrompt(workflow, resolved, taskPrompt) {
 function finalAnswer(agent, stdout, lastMessageFile) {
   const spec = agent.result || {}; let parsed = null;
   try { parsed = JSON.parse(stdout); } catch { /* event stream or plain text */ }
+  // An event stream (claude stream-json) ends with the same result envelope
+  // --output-format json prints whole: take the last line that carries it.
+  if (!parsed && spec.json_field) parsed = lastJsonLine(stdout, value => typeof value[spec.json_field] === 'string');
   if (spec.json_field && parsed && typeof parsed[spec.json_field] === 'string') return parsed[spec.json_field];
   if (spec.file && fs.existsSync(lastMessageFile)) return fs.readFileSync(lastMessageFile, 'utf8');
   if (parsed && typeof parsed.result === 'string') return parsed.result;
   return String(stdout || '').trim();
+}
+function lastJsonLine(stdout, accept) {
+  for (const line of String(stdout || '').split('\n').reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed[0] !== '{') continue;
+    try { const value = JSON.parse(trimmed); if (value && typeof value === 'object' && accept(value)) return value; } catch { /* not a JSON line */ }
+  }
+  return null;
+}
+// spawnSync's result shape from an async child whose stdout also feeds the
+// activity writer (role-activity.js), so the engine sees the role live while
+// the outcome, timeout included, reads exactly as before.
+function spawnStreaming(bin, argv, options, onStdout) {
+  return new Promise(resolve => {
+    const out = []; const err = []; let outBytes = 0; let error = null; let timedOut = false;
+    let child;
+    try { child = spawn(bin, argv, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (e) { resolve({ status: null, signal: null, stdout: '', stderr: '', error: e }); return; }
+    const timer = options.timeout ? setTimeout(() => { timedOut = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 10000).unref(); }, options.timeout) : null;
+    child.stdout.on('data', chunk => {
+      outBytes += chunk.length;
+      if (outBytes <= options.maxBuffer) out.push(chunk);
+      else if (!error) { error = Object.assign(new Error(`spawn ${bin} ENOBUFS`), { code: 'ENOBUFS' }); child.kill('SIGTERM'); }
+      try { onStdout(chunk); } catch { /* activity is best effort */ }
+    });
+    child.stderr.on('data', chunk => err.push(chunk));
+    child.on('error', e => { error = error || e; });
+    child.on('close', (status, signal) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) error = Object.assign(new Error(`spawnSync ${bin} ETIMEDOUT`), { code: 'ETIMEDOUT' });
+      resolve({ status, signal, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), error });
+    });
+  });
 }
 // A failing executor reports why in its own event stream, not on stderr: codex
 // --json ends with a task_complete carrying error.message (a usage limit, a
@@ -256,17 +302,34 @@ function execute(workflow, agents, roleName, args) {
   const budget = Number(args.budget) || 20;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `ai-workflow-${workflow.name}-${roleName}-`));
   const lastMessageFile = path.join(tempDir, 'last-message.txt');
-  const argv = (resolved.agent.command || []).map(a => fill(a, { prompt, budget, cwd, last_message_file: lastMessageFile }));
+  // With --activity-file the agent runs with its streaming command (agents.yaml
+  // `stream_command`; codex --json streams already) and each action it takes
+  // is summarized into that file while it works.
+  const activity = args['activity-file'] && typeof args['activity-file'] === 'string' ? path.resolve(args['activity-file']) : null;
+  const template = (activity && resolved.agent.stream_command) || resolved.agent.command || [];
+  const argv = template.map(a => fill(a, { prompt, budget, cwd, last_message_file: lastMessageFile }));
   if (process.env.AI_AGENTIC_CLI === '1' && resolved.agentName === 'claude') argv.push('--settings', path.join(ROOT, 'ai', 'cli', 'claude-settings.json'));
   if (!argv.length) throw new Error(`executor "${resolved.agentName}" has no command`);
   const summary = { workflow: workflow.name, role: roleName, executor: resolved.agentName, runId, command: argv.map(a => /\s/.test(a) ? JSON.stringify(a.length > 120 ? `${a.slice(0, 117)}…` : a) : a).join(' ') };
   if (args['dry-run']) { console.log(args.json ? JSON.stringify(summary, null, 2) : `${workflow.name}/${roleName} → ${resolved.agentName}${runId ? ` [run ${runId}]` : ''}\n${summary.command}`); return 0; }
   if (!onPath(argv[0])) throw new Error(`executor "${resolved.agentName}": "${argv[0]}" is not on PATH`);
-  const res = spawnSync(argv[0], argv.slice(1), {
+  const spawnOptions = {
     cwd,
     env: { ...process.env, ...noPushGitEnv(process.env), AI_AGENTIC_WORKFLOW: '1', AI_WORKFLOW: workflow.name, AI_WORKFLOW_ROLE: roleName, ...(runId ? { FEATURE_RUN_ID: String(runId) } : {}) },
     encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, timeout: (Number(args['timeout-min']) || 60) * 60 * 1000, stdio: ['ignore', 'pipe', 'pipe'],
+  };
+  const finish = res => finishExecution(resolved, args, budget, lastMessageFile, res);
+  if (!activity) return finish(spawnSync(argv[0], argv.slice(1), spawnOptions));
+  const writer = createActivityWriter(activity, { cwd });
+  writer.note('start', `${resolved.agentName} started`);
+  return spawnStreaming(argv[0], argv.slice(1), spawnOptions, chunk => writer.push(chunk)).then(res => {
+    writer.end();
+    if (res.error && res.error.code === 'ETIMEDOUT') writer.note('error', `${resolved.agentName} timed out`);
+    else if (res.error || res.status !== 0) writer.note('error', `${resolved.agentName} exited ${res.status ?? res.signal ?? 'with an error'}`);
+    return finish(res);
   });
+}
+function finishExecution(resolved, args, budget, lastMessageFile, res) {
   const answer = finalAnswer(resolved.agent, res.stdout || '', lastMessageFile);
   if (args['output-file']) { const output = path.resolve(args['output-file']); fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, answer.endsWith('\n') ? answer : `${answer}\n`); }
   if (args['meta-file']) { const meta = path.resolve(args['meta-file']); fs.mkdirSync(path.dirname(meta), { recursive: true }); fs.writeFileSync(meta, JSON.stringify({ executor: resolved.agentName, budget_usd: budget, ...executorMetrics(res.stdout || '') }, null, 2)); }
@@ -341,12 +404,65 @@ function selftest() {
       assert.ok(chained.GIT_CONFIG_KEY_2 && !chained.GIT_CONFIG_KEY_0);
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   }
-  console.log('router selftest OK');
+  // An event stream gives the same final answer as the whole JSON envelope.
+  const streamed = `{"type":"system","subtype":"init"}\n{"type":"assistant","message":{"content":[]}}\n${JSON.stringify({ type: 'result', result: 'the artifact', total_cost_usd: 0.1 })}\n`;
+  assert.strictEqual(finalAnswer({ result: { json_field: 'result' } }, streamed, '/nonexistent'), 'the artifact');
+  assert.strictEqual(finalAnswer({ result: { json_field: 'result' } }, '{"result":"whole"}', '/nonexistent'), 'whole');
+  return streamingSelftest(assert).then(() => console.log('router selftest OK'));
+}
+
+// --activity-file: the agent runs with its stream_command, each action lands in
+// the activity file while it works, and the artifact, exit code and timeout
+// read exactly as they do without it.
+async function streamingSelftest(assert) {
+  const { readActivity } = require('./role-activity');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'router-stream-'));
+  try {
+    const agentScript = path.join(tmp, 'agent.js');
+    fs.writeFileSync(agentScript, `
+      const mode = process.argv[2];
+      if (mode !== 'stream') { console.log(JSON.stringify({ type: 'result', result: 'not streamed' })); process.exit(0); }
+      const emit = event => process.stdout.write(JSON.stringify(event) + '\\n');
+      emit({ type: 'system', subtype: 'init', model: 'fake-1' });
+      emit({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: process.cwd() + '/lib/a.dart' } }] } });
+      setTimeout(() => {
+        if (process.env.FAKE_HANG) return setInterval(() => {}, 1000);
+        emit({ type: 'result', result: 'the artifact', num_turns: 2, total_cost_usd: 0.05 });
+        process.exit(Number(process.env.FAKE_EXIT || 0));
+      }, 50);
+    `);
+    const workflow = { name: 'selftest', roles: { worker: { executor: 'fake', purpose: 'test' } } };
+    const agents = { fake: { command: [process.execPath, agentScript], stream_command: [process.execPath, agentScript, 'stream'], result: { json_field: 'result' } } };
+    const promptFile = path.join(tmp, 'prompt.md'); fs.writeFileSync(promptFile, 'do it');
+    const activity = path.join(tmp, 'run', 'engine', 'build-worker.activity.jsonl');
+    const output = path.join(tmp, 'out.md');
+    const args = extra => ({ 'prompt-file': promptFile, cwd: tmp, 'output-file': output, 'activity-file': activity, ...extra });
+    const quiet = async fn => { const write = process.stderr.write; process.stderr.write = () => true; try { return await fn(); } finally { process.stderr.write = write; } };
+
+    assert.strictEqual(await quiet(() => execute(workflow, agents, 'worker', args())), 0);
+    assert.strictEqual(fs.readFileSync(output, 'utf8'), 'the artifact\n', 'the artifact comes from the stream');
+    assert.deepStrictEqual(readActivity(activity).map(e => e.text), ['fake started', 'session started · fake-1', 'Read lib/a.dart', 'finished · 2 turns · $0.05']);
+    // Without --activity-file nothing changes: the plain command, synchronously.
+    const plain = execute(workflow, agents, 'worker', { 'prompt-file': promptFile, cwd: tmp, 'output-file': output });
+    assert.strictEqual(plain, 0, 'no activity file → the synchronous path');
+    assert.strictEqual(fs.readFileSync(output, 'utf8'), 'not streamed\n');
+
+    process.env.FAKE_EXIT = '3';
+    try { assert.strictEqual(await quiet(() => execute(workflow, agents, 'worker', args())), 3, 'the exit code is passed on'); }
+    finally { delete process.env.FAKE_EXIT; }
+    assert.strictEqual(readActivity(activity, 1)[0].text, 'fake exited 3');
+
+    process.env.FAKE_HANG = '1';
+    try {
+      await assert.rejects(quiet(() => execute(workflow, agents, 'worker', args({ 'timeout-min': 0.002 }))), error => error.code === 'ETIMEDOUT', 'a timeout reads as before');
+    } finally { delete process.env.FAKE_HANG; }
+    assert.strictEqual(readActivity(activity, 1)[0].text, 'fake timed out');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2)); const [cmd, workflowName, roleOrStage] = args._; let agents;
-  if (process.argv.slice(2).includes('--selftest')) { selftest(); return; }
+  if (process.argv.slice(2).includes('--selftest')) { selftest().catch(e => { console.error(e); process.exit(1); }); return; }
   try { agents = loadAgents(); } catch (e) { fail(e.message); }
   try {
     switch (cmd) {
@@ -363,13 +479,16 @@ if (require.main === module) {
         if (!workflowName || !roleOrStage) fail('usage: router.js exec <workflow> <role|stage> --prompt-file FILE [--run ID] [--agent NAME] [--output-file FILE] [--dry-run]');
         const { data } = loadWorkflow(workflowName); let roleName = roleOrStage; const stage = stageFor(data, roleOrStage);
         if (stage) { if (!stage.role) fail(`stage "${roleOrStage}" cannot be executed as one role; choose one of: ${(stage.roles || []).join(', ') || 'orchestrator/human'}`); roleName = stage.role; }
-        process.exitCode = execute(data, agents, roleName, args); break;
+        const code = execute(data, agents, roleName, args);
+        if (code && typeof code.then === 'function') code.then(value => { process.exitCode = value; }, e => fail(e.message));
+        else process.exitCode = code;
+        break;
       }
       case 'check': {
         const all = []; for (const name of listWorkflows()) { try { const { data } = loadWorkflow(name); all.push(...validateWorkflow(name, data, agents)); } catch (e) { all.push(e.message); } }
         if (all.length) { for (const p of all) console.error(`✗ ${p}`); process.exitCode = 1; } else console.log(`✓ ${listWorkflows().length} workflow(s) valid · executors: ${Object.keys(agents).join(', ')}`); break;
       }
-      default: console.error('usage: router.js list | show <workflow> [--json] | resolve <workflow> <role|stage> [--agent NAME] [--json] | exec <workflow> <role|stage> --prompt-file FILE [--run ID] [--agent NAME] [--output-file FILE] [--meta-file FILE] [--budget USD] [--timeout-min M] [--cwd DIR] [--dry-run] | check'); process.exitCode = 1;
+      default: console.error('usage: router.js list | show <workflow> [--json] | resolve <workflow> <role|stage> [--agent NAME] [--json] | exec <workflow> <role|stage> --prompt-file FILE [--run ID] [--agent NAME] [--output-file FILE] [--meta-file FILE] [--activity-file FILE] [--budget USD] [--timeout-min M] [--cwd DIR] [--dry-run] | check'); process.exitCode = 1;
     }
   } catch (e) { fail(e.message); }
 }

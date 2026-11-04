@@ -39,7 +39,7 @@ function renderList(items,{id,cli}={}){
  else lines.push(open?`${open} unresolved conflict(s) block the plan. Resolve with:\n  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."`:'All conflicts resolved — the plan stage can run.');
  return lines.join('\n');
 }
-// Two entries with one id (a conflicts.json written before 1.9.32 renumbering
+// Two entries with one id (a conflicts.json written before 1.9.35 renumbering
 // kept the old id on a carried-forward decision) cannot be told apart: refuse.
 function resolveData(d,conflictId,{decision,rationale,owner}){
  if(!decision||!rationale||!owner) throw new Error('resolve requires --decision, --rationale and --owner');

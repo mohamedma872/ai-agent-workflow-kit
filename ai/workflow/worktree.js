@@ -43,12 +43,29 @@ function inspect(runtimeRoot, id) {
   const unpublished = upstream.unpublished === null ? current !== meta.baseSha : upstream.unpublished;
   return { ...meta, exists: true, currentSha: current, dirty: status(meta.path) !== '', upstream: upstream.upstream, ahead: upstream.ahead, unpublished };
 }
+// A run created before 1.9.31 on a branch made beforehand recorded the main
+// checkout's HEAD as its base, a commit that is not even in the run's history.
+// Diffs against it carry another branch's commits: false analyzer issues, a
+// pull request base guessed wrong. A recorded base that is not an ancestor of
+// the worktree's HEAD is replaced by where HEAD leaves its upstream (the branch
+// the run branch was cut from), or HEAD itself when it has none. The old value
+// is kept in baseRepaired.
+function repairBase(meta) {
+  if (!meta?.baseSha || !meta.path || !fs.existsSync(meta.path)) return meta;
+  if (git(meta.path, ['merge-base', '--is-ancestor', meta.baseSha, 'HEAD'], { allowFailure: true }).status === 0) return meta;
+  const upstream = git(meta.path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { allowFailure: true });
+  const via = upstream.status === 0 ? String(upstream.stdout).trim() : null;
+  const fork = via ? git(meta.path, ['merge-base', 'HEAD', via], { allowFailure: true }) : null;
+  const to = fork && fork.status === 0 && String(fork.stdout).trim() ? String(fork.stdout).trim() : currentSha(meta.path);
+  return { ...meta, baseSha: to, baseRepaired: { from: meta.baseSha, to, via: via || 'HEAD', at: new Date().toISOString(), reason: 'the recorded base is not an ancestor of the run\'s HEAD' } };
+}
+
 function ensure(runtimeRoot, id, options = {}) {
   safeRunId(id);
   const sourceRoot = repoTop(options.sourceRoot || runtimeRoot);
   const existing = inspect(runtimeRoot, id);
   if (existing?.exists) {
-    const updated = { ...existing, currentSha: currentSha(existing.path), resumedAt: new Date().toISOString() };
+    const updated = { ...repairBase(existing), currentSha: currentSha(existing.path), resumedAt: new Date().toISOString() };
     delete updated.dirty; delete updated.upstream; delete updated.ahead; delete updated.unpublished; delete updated.exists;
     atomicJson(metadataFile(runtimeRoot, id), updated);
     return { ...updated, exists: true };
@@ -137,6 +154,27 @@ function selftest() {
   cleanup(repo, 'RUN-A', { force: true });
   const clean = cleanup(repo, 'RUN-B');
   assert.strictEqual(clean.removed, true);
+  // A base that is not in the run's history (a run from before 1.9.31) is
+  // repaired on resume: to the fork point from the upstream, else to HEAD.
+  {
+    git(repo, ['branch', 'trunk']);
+    git(repo, ['checkout', '-q', '-b', 'side']);
+    fs.writeFileSync(path.join(repo, 'side.txt'), 'side\n'); git(repo, ['add', '.']); git(repo, ['commit', '-qm', 'side work']);
+    const sideTip = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['checkout', '-q', 'trunk']);
+    const trunkTip = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['branch', '--track', 'ai/run/RUN-LEGACY', 'trunk']);
+    const legacy = ensure(repo, 'RUN-LEGACY');
+    const file = metadataFile(repo, 'RUN-LEGACY');
+    atomicJson(file, { ...readJson(file), baseSha: sideTip, baseBranch: undefined, branchPreexisted: undefined });
+    const resumed = ensure(repo, 'RUN-LEGACY');
+    assert.strictEqual(resumed.baseSha, trunkTip, 'repaired to where the run leaves its upstream');
+    assert.deepStrictEqual([resumed.baseRepaired.from, resumed.baseRepaired.via], [sideTip, 'trunk']);
+    assert.strictEqual(readJson(file).baseSha, trunkTip, 'and saved');
+    assert.strictEqual(ensure(repo, 'RUN-LEGACY').baseRepaired.from, sideTip, 'a valid base is left alone');
+    assert.strictEqual(repairBase({ ...legacy, baseSha: trunkTip }).baseRepaired, undefined);
+    cleanup(repo, 'RUN-LEGACY', { force: true });
+  }
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('worktree isolation selftest OK');
 }
@@ -153,4 +191,4 @@ if (require.main === module) {
     else throw new Error('usage: worktree.js ensure|show|refresh|cleanup <run-id> [--force] | selftest');
   } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 }
-module.exports = { ensure, inspect, refresh, cleanup, branchName, worktreesRoot, metadataFile };
+module.exports = { ensure, repairBase, inspect, refresh, cleanup, branchName, worktreesRoot, metadataFile };
