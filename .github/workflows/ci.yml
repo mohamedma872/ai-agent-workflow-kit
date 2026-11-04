@@ -55,6 +55,8 @@ jobs:
           node --check ai/workflow/artifacts.js
           node --check ai/workflow/execution-policy.js
           node --check ai/workflow/attempts.js
+          node --check ai/workflow/state-lock.js
+          node --check ai/workflow/parallel-roles.js
           node --check ai/workflow/worktree.js
           node --check ai/workflow/progress.js
           node --check ai/workflow/dashboard.js
@@ -119,6 +121,8 @@ jobs:
           node ai/workflow/execution-policy.js --selftest
           node ai/workflow/router.js --selftest
           node ai/workflow/attempts.js --selftest
+          node ai/workflow/state-lock.js --selftest
+          node ai/workflow/parallel-roles.js --selftest
           node ai/workflow/worktree.js selftest
           node ai/workflow/engine.js selftest
           node ai/workflow/refactor-mode.js --selftest

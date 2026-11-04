@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 ai/evals/results/
 ai/runs/
 .ai-worktrees/

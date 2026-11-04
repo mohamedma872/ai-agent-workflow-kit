@@ -4,6 +4,21 @@
 
 - No unreleased runtime changes.
 
+## 1.9.30 — 2026-11-04
+
+- **Parallel stages now run their roles at the same time.** `analysis` and `reviews` are declared `strategy: parallel`, but `executeParallel()` ran the selected roles one after another and waited for each. A real run took about 25 minutes for 9 analysis roles that each took 1.5–6 minutes. The stage now takes about as long as its slowest role.
+  - Each pending role runs as its own `engine.js run-role <id> <stage> <role>` process, started by the new `ai/workflow/parallel-roles.js`. Output is streamed with a `[role]` prefix. A per-role summary (exit code, signal, duration) is kept at `engine/<stage>-parallel-summary.json`.
+  - At most 4 roles run at once. Set `AI_WORKFLOW_MAX_PARALLEL` to change it, or an optional `max_parallel` on the stage in the workflow file (which wins). A value that is not a whole number of at least 1 runs the roles one at a time, with a warning. With a cap of 1, or one pending role, the old sequential loop runs unchanged and stops at the first failure.
+  - A failing role no longer stops the others. When all have finished, the stage fails once and names every failed role. A role whose process died before recording its result is marked failed, so `retry` resets it.
+  - A role that reads its siblings' results runs after them. `behavior-regression-review` takes `validated_review_findings`, the other reviews' artifacts, so it starts only once the concurrent reviews have all passed. Any role whose contract lists that input is treated the same way.
+  - While any selected role is still running, the stage shows `in_progress`, even if a sibling has already failed. Its `fail` or `blocked` shows once nothing is running.
+  - Each role runs in its own process group. Stopping the stage (Ctrl-C, a signal to the runner, or the engine process dying) stops each role and the agent under it. The engine waits with `spawnSync` and cannot pass signals on, so the runner checks every second that the engine is still alive. Once stopping, the runner waits until every role's process group is gone, including an agent that outlived its role, and SIGKILLs any group still alive after 10 s. Roles stopped this way are marked failed with `interrupted: <signal|parent-exit>`, so `resume` starts them again.
+  - If the runner itself is killed outright (SIGKILL, out of memory) while the engine lives, its roles are still stopped. Each `run-role` process checks every second that the runner is alive and stops its own group (the role, `router.js` and the agent) when it is gone. The engine also stops every group listed in `engine/<stage>-parallel.pgids` (SIGTERM, then SIGKILL after 10 s) before marking the roles failed.
+  - While the runner works, its pid is in `engine/<stage>-parallel.pid`. `runs.js retry` refuses to reset an `in_progress` role of that stage while that pid is alive. A pid file left by a crashed runner does not block it.
+- **State writes are locked.** Every `runs.js` command, `recordAttempt`, the engine's mode record and the mobile-evidence runner loaded `state.json`, changed it and renamed a new copy into place, with no lock. Two writers at once lost one update; parallel roles made that routine. The new `ai/workflow/state-lock.js` serializes every read-modify-write across processes: a `state.json.lock` directory with the holder's pid, a stale-lock takeover when that pid is dead or the lock is older than 60 s, and a clear error after 90 s.
+  - The mobile-evidence runner saved the state it loaded at the start of a device run, so it could overwrite everything written meanwhile. It now applies only its own change to a fresh copy.
+- The progress view names every running role of a parallel stage, not just the first.
+
 ## 1.9.29 — 2026-11-02
 
 - **Subagent evals report real cost.** The cost column showed `$–` for every subagent run because the adapter hard-coded `cost_usd: null`, and the router discarded Claude's result envelope.

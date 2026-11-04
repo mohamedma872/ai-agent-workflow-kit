@@ -14,6 +14,7 @@ const yaml = require('js-yaml');
 const { validateAttestation } = require('./evidence-attestation');
 const { validateArtifactFile, sidecarForMarkdown } = require('../../workflow/artifacts');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../../workflow/paths');
+const { withStateLock } = require('../../workflow/state-lock');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -45,11 +46,17 @@ const activeId = () => { try { const id = fs.readFileSync(ACTIVE, 'utf8').trim()
 const resolveId = explicit => explicit || process.env.FEATURE_RUN_ID || activeId();
 const stateFile = id => path.join(RUNS, id, 'state.json');
 const load = id => { try { return JSON.parse(fs.readFileSync(stateFile(id), 'utf8')); } catch { return null; } };
+// Every command that writes state.json is its own process, and roles of a
+// parallel stage run at the same time, so load -> modify -> save holds the
+// run's state lock or concurrent transitions overwrite each other.
+const locked = (id, fn) => withStateLock(stateFile(id), fn);
 const phaseStatus = (state, phase) => state.phases?.[phase]?.status || 'pending';
 const deviceDir = id => path.join(RUNS, id, 'device');
 const screenshotDir = id => path.join(deviceDir(id), 'screenshots');
 const deviceManifest = id => path.join(deviceDir(id), 'mobile-device-qc.md');
 const evidenceFile = id => path.join(deviceDir(id), 'evidence.json');
+// Written by parallel-roles.js while it runs a stage's roles (engine.js names it).
+const parallelPidFile = (id, group) => path.join(RUNS, id, 'engine', `${group}-parallel.pid`);
 
 function runtimeMetadata() {
   try { return JSON.parse(fs.readFileSync(RUNTIME_VERSION_FILE, 'utf8')); }
@@ -129,9 +136,13 @@ function deriveRoleGroupStatus(state, group, { allowLegacy = false } = {}) {
   const names = selectedRoleNames(state, group);
   if (!names.length) return null;
   const statuses = names.map(role => state.roles?.[group]?.[role]?.status || 'pending');
+  // Roles of a parallel stage run at the same time: while any is still running
+  // the stage is running, even if a sibling already failed. Its fail or blocked
+  // shows once nothing is running any more.
+  if (statuses.includes('in_progress')) return 'in_progress';
   if (statuses.includes('fail')) return 'fail';
   if (statuses.includes('blocked')) return 'blocked';
-  if (statuses.some(status => status === 'pending' || status === 'in_progress')) return 'in_progress';
+  if (statuses.includes('pending')) return 'in_progress';
   if (statuses.every(status => status === 'skipped')) return 'skipped';
   if (statuses.every(status => status === 'pass' || status === 'skipped')) return 'pass';
   return 'in_progress';
@@ -363,6 +374,22 @@ function transitionRole(id, state, group, role, action, executor, reason) {
   return to;
 }
 
+// The pid of the live parallel-role pool running `group`, or null. A pid file
+// whose process is gone is left over from a crash and does not count.
+function liveParallelOwner(id, group) {
+  let pid;
+  try { pid = Number.parseInt(fs.readFileSync(parallelPidFile(id, group), 'utf8'), 10); } catch { return null; }
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : null; }
+}
+// `retry` must not reset a role that a live engine is still running: the role
+// would run twice at once, and its result would land on a reset entry.
+function refuseLiveRole(id, group, role, status) {
+  if (status !== 'in_progress') return;
+  const pid = liveParallelOwner(id, group);
+  if (pid) throw new Error(`${group}/${role} is still running in the workflow engine (parallel role runner pid ${pid}); wait for the stage to finish or stop that run first, then retry`);
+}
+
 function render(id, state) {
   reconcileState(id, state);
   console.log(`${id} — /feature run (${state.status})${fs.existsSync(path.join(RUNS, id, 'plan.approved')) ? ' · plan approved' : ' · plan NOT approved (edits outside ai/runs are denied)'}`);
@@ -398,6 +425,17 @@ function selftest() {
   assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'in_progress');
   selected.roles.analysis.security.status = 'pass';
   assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'pass');
+  // A sibling's failure only shows once no selected role is still running.
+  selected.roles.analysis = { architect: { status: 'fail' }, security: { status: 'in_progress' } };
+  assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'in_progress', 'running roles keep the stage in_progress');
+  reconcileState('TEST', selected);
+  assert.strictEqual(selected.phases.analysis.status, 'in_progress', 'reconcile does not fail a stage that is still running');
+  selected.roles.analysis.security.status = 'blocked';
+  assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'fail');
+  selected.roles.analysis.architect.status = 'pass';
+  assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'blocked');
+  selected.roles.analysis.architect.status = 'pending';
+  assert.strictEqual(deriveRoleGroupStatus(selected, 'analysis'), 'blocked', 'a blocked role still blocks while others wait to start');
 
   const archGate = ensureShape({ phases: { 'architecture-options': { status: 'skipped' } }, roles: {}, selectedRoles: {} }, 'TEST');
   assert.throws(() => transitionPhase('TEST', archGate, 'architecture-selection', 'skip', 'human', 'not a whole-app refactor'), /human gate/);
@@ -455,6 +493,33 @@ function selftest() {
   const afterStuckRoleRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
   assert.strictEqual(afterStuckRoleRetry.roles.analysis.security.status, 'pending');
 
+  // While a live parallel-role pool owns the stage, its in_progress roles are
+  // not "stuck" and retry refuses to reset them. A pid file left by a dead pool
+  // does not block.
+  runCli(['role-begin', 'analysis', 'security', 'claude']);
+  const pidFile = path.join(retryRoot, 'RETRY-TEST', 'engine', 'analysis-parallel.pid');
+  fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+  // The stand-in pool is orphaned at once, so init reaps it when it is killed;
+  // a child of this (synchronous) selftest would linger as a zombie and look alive.
+  const launcher = spawnSync(process.execPath, ['-e', "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid);"], { encoding: 'utf8' });
+  const poolPid = Number(String(launcher.stdout).trim());
+  assert.ok(poolPid > 0, launcher.stderr);
+  const poolAlive = () => { try { process.kill(poolPid, 0); return true; } catch { return false; } };
+  try {
+    fs.writeFileSync(pidFile, `${poolPid}\n`);
+    for (const argv of [['retry', 'RETRY-TEST'], ['retry', 'RETRY-TEST', 'security']]) {
+      const refused = runCli(argv);
+      assert.notStrictEqual(refused.status, 0, `${argv.join(' ')} refuses while the pool runs`);
+      assert.match(refused.stderr, new RegExp(`analysis/security is still running in the workflow engine \\(parallel role runner pid ${poolPid}\\)`), refused.stderr);
+    }
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8')).roles.analysis.security.status, 'in_progress', 'refused retry changed nothing');
+  } finally { try { process.kill(poolPid, 'SIGKILL'); } catch { /* gone */ } }
+  for (const until = Date.now() + 5000; poolAlive() && Date.now() < until;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  const afterDeadPool = runCli(['retry', 'RETRY-TEST', 'security']);
+  assert.strictEqual(afterDeadPool.status, 0, `a dead pool's pid file does not block retry: ${afterDeadPool.stderr}`);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8')).roles.analysis.security.status, 'pending');
+  fs.rmSync(pidFile, { force: true });
+
   runCli(['start', 'RETRY-PHASE-TEST']);
   for (const p of ['request', 'requirements', 'acceptance-criteria', 'definition-of-done']) runCli(['skip', p, 'claude', 'test']);
   runCli(['begin', 'inspection', 'claude']);
@@ -466,6 +531,34 @@ function selftest() {
   const afterStuckPhaseRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-PHASE-TEST', 'state.json'), 'utf8'));
   assert.strictEqual(afterStuckPhaseRetry.phases.inspection.status, 'pending');
   assert.strictEqual(runCli(['begin', 'inspection', 'claude']).status, 0, 'inspection is beginnable again after retry');
+
+  // Roles of a parallel stage transition from separate processes at the same
+  // time. Without the state lock most of these updates were lost (last rename wins).
+  runCli(['start', 'CONCURRENT-TEST']);
+  for (const p of ['request', 'requirements', 'acceptance-criteria', 'definition-of-done', 'inspection', 'behavior-baseline', 'refactor-invariants', 'architecture-assessment', 'architecture-options']) runCli(['skip', p, 'claude', 'test']);
+  runCli(['skip', 'architecture-selection', 'workflow-engine', 'test']);
+  for (const p of ['target-architecture', 'c4-model', 'architecture-migration', 'refactor-coverage']) runCli(['skip', p, 'claude', 'test']);
+  const concurrentRoles = ['docs', 'architect', 'qa-plan', 'security', 'performance', 'android'];
+  assert.strictEqual(runCli(['select-roles', 'analysis', ...concurrentRoles]).status, 0);
+  const burst = `
+    const { spawn } = require('child_process');
+    const roles = ${JSON.stringify(concurrentRoles)};
+    const run = argv => new Promise(resolve => spawn(process.execPath, [${JSON.stringify(__filename)}, ...argv], { env: { ...process.env, FEATURE_RUN_ID: 'CONCURRENT-TEST' }, stdio: 'ignore' }).on('close', resolve));
+    (async () => {
+      const begun = await Promise.all(roles.map(r => run(['role-begin', 'analysis', r, 'claude'])));
+      const failed = await Promise.all(roles.map(r => run(['role-fail', 'analysis', r, 'claude', 'concurrent ' + r])));
+      process.exitCode = [...begun, ...failed].every(code => code === 0) ? 0 : 1;
+    })();
+  `;
+  const burstResult = spawnSync(process.execPath, ['-e', burst], { env: runEnv, encoding: 'utf8' });
+  assert.strictEqual(burstResult.status, 0, `concurrent role transitions all succeed: ${burstResult.stderr}`);
+  const afterBurst = JSON.parse(fs.readFileSync(path.join(retryRoot, 'CONCURRENT-TEST', 'state.json'), 'utf8'));
+  for (const r of concurrentRoles) {
+    assert.strictEqual(afterBurst.roles.analysis[r].status, 'fail', `${r} kept its own transition`);
+    assert.strictEqual(afterBurst.roles.analysis[r].note, `concurrent ${r}`);
+  }
+  assert.strictEqual(afterBurst.history.filter(h => h.kind === 'role' && h.group === 'analysis').length, concurrentRoles.length * 2, 'no history entry was lost');
+  assert.ok(!fs.existsSync(path.join(retryRoot, 'CONCURRENT-TEST', 'state.json.lock')), 'state lock released');
 
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
@@ -480,9 +573,12 @@ try {
       fs.mkdirSync(path.join(RUNS, id, '05-analysis'), { recursive: true });
       fs.mkdirSync(path.join(RUNS, id, '09-reviews'), { recursive: true });
       fs.mkdirSync(screenshotDir(id), { recursive: true });
-      let state = load(id);
-      if (!state) { state = ensureShape(null, id); atomicSave(id, state); console.log(`created ${relativeStatePath(id)}/`); }
-      else { state = ensureShape(state, id); if (reconcileState(id, state)) atomicSave(id, state); console.log(`${relativeStatePath(id)}/ exists — resuming`); }
+      const state = locked(id, () => {
+        let value = load(id);
+        if (!value) { value = ensureShape(null, id); atomicSave(id, value); console.log(`created ${relativeStatePath(id)}/`); }
+        else { value = ensureShape(value, id); if (reconcileState(id, value)) atomicSave(id, value); console.log(`${relativeStatePath(id)}/ exists — resuming`); }
+        return value;
+      });
       fs.writeFileSync(ACTIVE, `${id}\n`);
       render(id, state);
       break;
@@ -504,9 +600,12 @@ try {
       const reason = rest.slice(2).join(' ');
       const id = resolveId();
       if (!id) throw new Error('no run id; start a run or set FEATURE_RUN_ID');
-      const state = ensureShape(load(id), id);
-      const to = transitionPhase(id, state, phase, cmd, executor || '-', reason);
-      atomicSave(id, state);
+      const to = locked(id, () => {
+        const state = ensureShape(load(id), id);
+        const result = transitionPhase(id, state, phase, cmd, executor || '-', reason);
+        atomicSave(id, state);
+        return result;
+      });
       console.log(`${id} ${phase} → ${to}${reason ? ` (${reason})` : ''}`);
       break;
     }
@@ -516,18 +615,20 @@ try {
       if (!id) throw new Error('no run id');
       if (!ROLE_GROUPS.includes(group)) throw new Error(`unknown role group "${group}" — one of: ${ROLE_GROUPS.join(', ')}`);
       if (!roles.length || roles.some(role => !safeRole(role))) throw new Error('select-roles requires valid role names');
-      const state = ensureShape(load(id), id);
-      const deps = dependencyProblems(group, state);
-      if (deps.length) throw new Error(`${group}: dependencies are incomplete: ${deps.join(', ')}`);
-      if (!['pending', 'in_progress', 'fail', 'blocked'].includes(phaseStatus(state, group))) throw new Error(`${group}: cannot select roles while phase is ${phaseStatus(state, group)}`);
       const unique = [...new Set(roles)];
-      state.selectedRoles[group] = unique;
-      state.roles[group] ||= {};
-      for (const role of unique) state.roles[group][role] ||= { status: 'pending', updatedAt: now() };
-      const from = phaseStatus(state, group);
-      state.phases[group] = { ...(state.phases[group] || {}), status: 'in_progress', updatedAt: now() };
-      record(state, { kind: 'phase', phase: group, action: 'begin', from, to: 'in_progress', reason: `selected roles: ${unique.join(', ')}` });
-      atomicSave(id, state);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        const deps = dependencyProblems(group, state);
+        if (deps.length) throw new Error(`${group}: dependencies are incomplete: ${deps.join(', ')}`);
+        if (!['pending', 'in_progress', 'fail', 'blocked'].includes(phaseStatus(state, group))) throw new Error(`${group}: cannot select roles while phase is ${phaseStatus(state, group)}`);
+        state.selectedRoles[group] = unique;
+        state.roles[group] ||= {};
+        for (const role of unique) state.roles[group][role] ||= { status: 'pending', updatedAt: now() };
+        const from = phaseStatus(state, group);
+        state.phases[group] = { ...(state.phases[group] || {}), status: 'in_progress', updatedAt: now() };
+        record(state, { kind: 'phase', phase: group, action: 'begin', from, to: 'in_progress', reason: `selected roles: ${unique.join(', ')}` });
+        atomicSave(id, state);
+      });
       console.log(`${id} ${group} selected roles → ${unique.join(', ')}`);
       break;
     }
@@ -541,9 +642,12 @@ try {
       const action = cmd.replace('role-', '');
       const id = resolveId();
       if (!id) throw new Error('no run id');
-      const state = ensureShape(load(id), id);
-      const to = transitionRole(id, state, group, role, action, executor || '-', reason);
-      atomicSave(id, state);
+      const to = locked(id, () => {
+        const state = ensureShape(load(id), id);
+        const result = transitionRole(id, state, group, role, action, executor || '-', reason);
+        atomicSave(id, state);
+        return result;
+      });
       console.log(`${id} ${group}/${role} → ${to}`);
       break;
     }
@@ -554,12 +658,14 @@ try {
       if (!id) throw new Error('no run id');
       if (!['required', 'not-required'].includes(requirement)) throw new Error('evidence requirement must be required or not-required');
       if (requirement === 'not-required' && !reason) throw new Error('not-required evidence classification needs a reason');
-      const state = ensureShape(load(id), id);
-      const previous = state.evidence.mobileScreenshots?.requirement || 'unclassified';
-      state.evidence.mobileScreenshots = { requirement, updatedAt: now(), ...(reason ? { reason } : {}) };
-      record(state, { kind: 'evidence', from: previous, to: requirement, reason: reason || null });
-      fs.mkdirSync(screenshotDir(id), { recursive: true });
-      atomicSave(id, state);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        const previous = state.evidence.mobileScreenshots?.requirement || 'unclassified';
+        state.evidence.mobileScreenshots = { requirement, updatedAt: now(), ...(reason ? { reason } : {}) };
+        record(state, { kind: 'evidence', from: previous, to: requirement, reason: reason || null });
+        fs.mkdirSync(screenshotDir(id), { recursive: true });
+        atomicSave(id, state);
+      });
       console.log(`${id}: mobile screenshot evidence → ${requirement}${reason ? ` (${reason})` : ''}`);
       break;
     }
@@ -569,20 +675,25 @@ try {
       const id = resolveId();
       if (!id) throw new Error('no run id');
       if (!safeRole(role) || !['pass', 'fail', 'blocked', 'skipped'].includes(status)) throw new Error('conditional requires <phase> <role> <pass|fail|blocked|skipped>');
-      const state = ensureShape(load(id), id);
-      state.conditionals[phase] ||= {};
-      state.conditionals[phase][role] = { status, updatedAt: now(), ...(reason ? { reason } : {}) };
-      record(state, { kind: 'conditional-role', phase, role, to: status, reason: reason || null });
-      atomicSave(id, state);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        state.conditionals[phase] ||= {};
+        state.conditionals[phase][role] = { status, updatedAt: now(), ...(reason ? { reason } : {}) };
+        record(state, { kind: 'conditional-role', phase, role, to: status, reason: reason || null });
+        atomicSave(id, state);
+      });
       console.log(`${id} conditional ${phase}/${role} → ${status}`);
       break;
     }
     case 'reconcile': {
       const id = resolveId(rest[0]);
       if (!id || !safeId(id)) throw new Error('no valid run to reconcile');
-      const state = ensureShape(load(id), id);
-      const changed = reconcileState(id, state);
-      if (changed) atomicSave(id, state);
+      const { state, changed } = locked(id, () => {
+        const value = ensureShape(load(id), id);
+        const didChange = reconcileState(id, value);
+        if (didChange) atomicSave(id, value);
+        return { state: value, changed: didChange };
+      });
       console.log(`${id}: ${changed ? 'state reconciled' : 'state already consistent'}`);
       render(id, state);
       break;
@@ -591,89 +702,93 @@ try {
       const [id, ...roles] = rest;
       if (!id || !safeId(id) || !fs.existsSync(path.join(RUNS, id))) throw new Error('retry requires a valid run id');
       if (roles.some(role => !safeRole(role))) throw new Error('retry requires valid role names');
-      const state = ensureShape(load(id), id);
-      reconcileState(id, state);
-      const retried = [];
-      const RETRYABLE = ['fail', 'blocked', 'in_progress'];
-      // Resetting the status is not enough: the execution policy reads the
-      // recorded attempts and refuses a rerun after a deterministic failure
-      // ("last failure type deterministic is not retryable"), so the spent
-      // attempts for what is being retried have to go too.
-      // Clearing attempts also erases why the work failed, which is exactly what
-      // the next agent needs, so the last reason is kept aside as feedback.
-      const rememberFailure = (phaseId, roleName, attempts) => {
-        const last = [...(attempts || [])].reverse().find(a => a && a.reason);
-        if (!last) return;
-        state.lastFailures ||= {};
-        state.lastFailures[phaseId] ||= {};
-        state.lastFailures[phaseId][roleName || phaseId] = { reason: String(last.reason).slice(0, 1200), at: now() };
-      };
-      const clearAttempts = (phaseId, roleName) => {
-        const forPhase = state.executionAttempts?.[phaseId];
-        if (!forPhase) return;
-        if (roleName) { rememberFailure(phaseId, roleName, forPhase[roleName]); delete forPhase[roleName]; }
-        else for (const key of Object.keys(forPhase)) { rememberFailure(phaseId, key, forPhase[key]); delete forPhase[key]; }
-        if (!Object.keys(forPhase).length) delete state.executionAttempts[phaseId];
-      };
-      for (const group of ROLE_GROUPS) {
-        for (const [role, roleState] of Object.entries(state.roles?.[group] || {})) {
-          if (roles.length ? !roles.includes(role) : false) continue;
-          if (!RETRYABLE.includes(roleState.status)) continue;
-          state.roles[group][role] = { status: 'pending', updatedAt: now() };
-          clearAttempts(group, role);
-          record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
-          retried.push(`${group}/${role}`);
-        }
-      }
-      if (!roles.length) {
-        for (const phaseId of PHASES) {
-          if (ROLE_GROUPS.includes(phaseId)) continue;
-          const from = phaseStatus(state, phaseId);
-          if (!RETRYABLE.includes(from)) continue;
-          state.phases[phaseId] = { ...(state.phases[phaseId] || {}), status: 'pending', updatedAt: now() };
-          clearAttempts(phaseId);
-          record(state, { kind: 'phase', phase: phaseId, action: 'retry', from, to: 'pending', reason: 'retry requested' });
-          retried.push(phaseId);
-        }
-      }
-      // Naming a stage explicitly sends it back for rework even though it passed:
-      // when a later stage fails (tests red after implementation), the earlier
-      // stage has to run again or the failure repeats forever. Human gates are
-      // never reworked this way — they stay with the human.
-      if (!retried.length && roles.length) {
-        const gates = new Set(['approval', 'architecture-selection']);
-        for (const name of roles) {
-          if (!PHASES.includes(name)) continue;
-          if (gates.has(name)) throw new Error(`${name} is a human gate and cannot be reset; re-approve it instead`);
-          const from = phaseStatus(state, name);
-          state.phases[name] = { ...(state.phases[name] || {}), status: 'pending', updatedAt: now() };
-          clearAttempts(name);
-          record(state, { kind: 'phase', phase: name, action: 'rework', from, to: 'pending', reason: 'rework requested' });
-          retried.push(`${name} (rework from ${from})`);
-          // Rework means "redo from here": the stage that failed downstream is
-          // why we are reworking, and it keeps its spent attempts otherwise —
-          // so the resume stalls again on the previous deterministic failure.
-          for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
-            if (gates.has(later)) continue;
-            const status = phaseStatus(state, later);
-            if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
-            state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
-            clearAttempts(later);
-            for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {
-              if (!['fail', 'blocked', 'in_progress'].includes(roleState?.status)) continue;
-              // Keep the note: it says what went wrong, and the reworked role reads it.
-              state.roles[later][role] = { ...roleState, status: 'pending', updatedAt: now() };
-              clearAttempts(later, role);
-            }
-            record(state, { kind: 'phase', phase: later, action: 'rework-downstream', from: status, to: 'pending', reason: `reset for rework of ${name}` });
-            retried.push(`${later} (downstream of ${name})`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        reconcileState(id, state);
+        const retried = [];
+        const RETRYABLE = ['fail', 'blocked', 'in_progress'];
+        // Resetting the status is not enough: the execution policy reads the
+        // recorded attempts and refuses a rerun after a deterministic failure
+        // ("last failure type deterministic is not retryable"), so the spent
+        // attempts for what is being retried have to go too.
+        // Clearing attempts also erases why the work failed, which is exactly what
+        // the next agent needs, so the last reason is kept aside as feedback.
+        const rememberFailure = (phaseId, roleName, attempts) => {
+          const last = [...(attempts || [])].reverse().find(a => a && a.reason);
+          if (!last) return;
+          state.lastFailures ||= {};
+          state.lastFailures[phaseId] ||= {};
+          state.lastFailures[phaseId][roleName || phaseId] = { reason: String(last.reason).slice(0, 1200), at: now() };
+        };
+        const clearAttempts = (phaseId, roleName) => {
+          const forPhase = state.executionAttempts?.[phaseId];
+          if (!forPhase) return;
+          if (roleName) { rememberFailure(phaseId, roleName, forPhase[roleName]); delete forPhase[roleName]; }
+          else for (const key of Object.keys(forPhase)) { rememberFailure(phaseId, key, forPhase[key]); delete forPhase[key]; }
+          if (!Object.keys(forPhase).length) delete state.executionAttempts[phaseId];
+        };
+        for (const group of ROLE_GROUPS) {
+          for (const [role, roleState] of Object.entries(state.roles?.[group] || {})) {
+            if (roles.length ? !roles.includes(role) : false) continue;
+            if (!RETRYABLE.includes(roleState.status)) continue;
+            refuseLiveRole(id, group, role, roleState.status);
+            state.roles[group][role] = { status: 'pending', updatedAt: now() };
+            clearAttempts(group, role);
+            record(state, { kind: 'role', group, role, action: 'retry', from: roleState.status, to: 'pending', executor: actor(), reason: 'retry requested' });
+            retried.push(`${group}/${role}`);
           }
         }
-      }
-      if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
-      reconcileState(id, state);
-      atomicSave(id, state);
-      console.log(`${id}: retried ${retried.join(', ')}`);
+        if (!roles.length) {
+          for (const phaseId of PHASES) {
+            if (ROLE_GROUPS.includes(phaseId)) continue;
+            const from = phaseStatus(state, phaseId);
+            if (!RETRYABLE.includes(from)) continue;
+            state.phases[phaseId] = { ...(state.phases[phaseId] || {}), status: 'pending', updatedAt: now() };
+            clearAttempts(phaseId);
+            record(state, { kind: 'phase', phase: phaseId, action: 'retry', from, to: 'pending', reason: 'retry requested' });
+            retried.push(phaseId);
+          }
+        }
+        // Naming a stage explicitly sends it back for rework even though it passed:
+        // when a later stage fails (tests red after implementation), the earlier
+        // stage has to run again or the failure repeats forever. Human gates are
+        // never reworked this way — they stay with the human.
+        if (!retried.length && roles.length) {
+          const gates = new Set(['approval', 'architecture-selection']);
+          for (const name of roles) {
+            if (!PHASES.includes(name)) continue;
+            if (gates.has(name)) throw new Error(`${name} is a human gate and cannot be reset; re-approve it instead`);
+            const from = phaseStatus(state, name);
+            state.phases[name] = { ...(state.phases[name] || {}), status: 'pending', updatedAt: now() };
+            clearAttempts(name);
+            record(state, { kind: 'phase', phase: name, action: 'rework', from, to: 'pending', reason: 'rework requested' });
+            retried.push(`${name} (rework from ${from})`);
+            // Rework means "redo from here": the stage that failed downstream is
+            // why we are reworking, and it keeps its spent attempts otherwise —
+            // so the resume stalls again on the previous deterministic failure.
+            for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
+              if (gates.has(later)) continue;
+              const status = phaseStatus(state, later);
+              if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
+              state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
+              clearAttempts(later);
+              for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {
+                if (!['fail', 'blocked', 'in_progress'].includes(roleState?.status)) continue;
+                refuseLiveRole(id, later, role, roleState.status);
+                // Keep the note: it says what went wrong, and the reworked role reads it.
+                state.roles[later][role] = { ...roleState, status: 'pending', updatedAt: now() };
+                clearAttempts(later, role);
+              }
+              record(state, { kind: 'phase', phase: later, action: 'rework-downstream', from: status, to: 'pending', reason: `reset for rework of ${name}` });
+              retried.push(`${later} (downstream of ${name})`);
+            }
+          }
+        }
+        if (!retried.length) throw new Error(roles.length ? `no failed/blocked/in-progress role(s) matching ${roles.join(', ')}` : 'nothing to retry — no failed, blocked, or stuck in-progress phase/role');
+        reconcileState(id, state);
+        atomicSave(id, state);
+        console.log(`${id}: retried ${retried.join(', ')}`);
+      });
       break;
     }
     case 'architecture-select': {
@@ -689,29 +804,31 @@ try {
       const options = JSON.parse(fs.readFileSync(optionsFile, 'utf8'));
       const selected = (options.options || []).find(x => x.id === optionId);
       if (!selected) throw new Error(`unknown architecture option "${optionId}" — choose one of: ${(options.options || []).map(x => x.id).join(', ')}`);
-      const state = ensureShape(load(id), id);
-      reconcileState(id, state);
-      if (phaseStatus(state, 'architecture-options') !== 'pass') throw new Error(`architecture-options is ${phaseStatus(state, 'architecture-options')} — complete option analysis first`);
-      const selectedAt = now();
-      const decision = {
-        schemaVersion: 1,
-        runId: id,
-        selectedOptionId: selected.id,
-        selectedOptionName: selected.name,
-        selectedAt,
-        selectedBy: 'human',
-        note: note || null,
-      };
-      fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.json'), JSON.stringify(decision, null, 2) + '\n');
-      fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.md'),
-        `# Human architecture decision\n\nSelected option: **${selected.id} — ${selected.name}**\n\nSelected at: ${selectedAt}\n\n${note ? `Human note: ${note}\n\n` : ''}The agent recommendation was advisory; this file records the explicit human decision.\n`);
-      fs.writeFileSync(path.join(RUNS, id, 'architecture.selected'), `selected: ${selected.id}\nat: ${selectedAt}\n`);
-      const from = phaseStatus(state, 'architecture-selection');
-      state.phases['architecture-selection'] = { status: 'pass', updatedAt: selectedAt, note: `human selected ${selected.id}` };
-      state.architectureDecision = decision;
-      record(state, { kind: 'phase', phase: 'architecture-selection', action: 'select', from, to: 'pass', executor: 'human', reason: `selected architecture ${selected.id}` });
-      atomicSave(id, state);
-      console.log(`${id}: architecture selected → ${selected.id} — ${selected.name}`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        reconcileState(id, state);
+        if (phaseStatus(state, 'architecture-options') !== 'pass') throw new Error(`architecture-options is ${phaseStatus(state, 'architecture-options')} — complete option analysis first`);
+        const selectedAt = now();
+        const decision = {
+          schemaVersion: 1,
+          runId: id,
+          selectedOptionId: selected.id,
+          selectedOptionName: selected.name,
+          selectedAt,
+          selectedBy: 'human',
+          note: note || null,
+        };
+        fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.json'), JSON.stringify(decision, null, 2) + '\n');
+        fs.writeFileSync(path.join(RUNS, id, '05-architecture-selection.md'),
+          `# Human architecture decision\n\nSelected option: **${selected.id} — ${selected.name}**\n\nSelected at: ${selectedAt}\n\n${note ? `Human note: ${note}\n\n` : ''}The agent recommendation was advisory; this file records the explicit human decision.\n`);
+        fs.writeFileSync(path.join(RUNS, id, 'architecture.selected'), `selected: ${selected.id}\nat: ${selectedAt}\n`);
+        const from = phaseStatus(state, 'architecture-selection');
+        state.phases['architecture-selection'] = { status: 'pass', updatedAt: selectedAt, note: `human selected ${selected.id}` };
+        state.architectureDecision = decision;
+        record(state, { kind: 'phase', phase: 'architecture-selection', action: 'select', from, to: 'pass', executor: 'human', reason: `selected architecture ${selected.id}` });
+        atomicSave(id, state);
+        console.log(`${id}: architecture selected → ${selected.id} — ${selected.name}`);
+      });
       break;
     }
     case 'approve': {
@@ -721,17 +838,19 @@ try {
       if (!fs.existsSync(plan) || fs.statSync(plan).size < 80) throw new Error(`${relativeStatePath(id, '06-plan.md')} is missing or empty — nothing to approve`);
       const planProblem = phaseArtifactProblem(id, 'plan');
       if (planProblem) throw new Error(`cannot approve plan: ${planProblem}`);
-      const state = ensureShape(load(id), id);
-      reconcileState(id, state);
-      if (phaseStatus(state, 'plan') !== 'pass') throw new Error(`plan is ${phaseStatus(state, 'plan')} — the engine must complete the plan stage before approval`);
-      if (!['pass', 'skipped'].includes(phaseStatus(state, 'analysis'))) throw new Error(`analysis is ${phaseStatus(state, 'analysis')} — complete selected analysis roles before approval`);
-      const marker = path.join(RUNS, id, 'plan.approved');
-      fs.writeFileSync(marker, `approved: ${now()}\n`);
-      const from = phaseStatus(state, 'approval');
-      state.phases.approval = { status: 'pass', updatedAt: now(), note: 'approved via runs.js' };
-      record(state, { kind: 'phase', phase: 'approval', action: 'approve', from, to: 'pass', executor: 'human', reason: 'human plan approval' });
-      atomicSave(id, state);
-      console.log(`${id}: plan approved — approval → pass; edits outside ai/runs are allowed`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        reconcileState(id, state);
+        if (phaseStatus(state, 'plan') !== 'pass') throw new Error(`plan is ${phaseStatus(state, 'plan')} — the engine must complete the plan stage before approval`);
+        if (!['pass', 'skipped'].includes(phaseStatus(state, 'analysis'))) throw new Error(`analysis is ${phaseStatus(state, 'analysis')} — complete selected analysis roles before approval`);
+        const marker = path.join(RUNS, id, 'plan.approved');
+        fs.writeFileSync(marker, `approved: ${now()}\n`);
+        const from = phaseStatus(state, 'approval');
+        state.phases.approval = { status: 'pass', updatedAt: now(), note: 'approved via runs.js' };
+        record(state, { kind: 'phase', phase: 'approval', action: 'approve', from, to: 'pass', executor: 'human', reason: 'human plan approval' });
+        atomicSave(id, state);
+        console.log(`${id}: plan approved — approval → pass; edits outside ai/runs are allowed`);
+      });
       break;
     }
     case 'close': {
@@ -739,24 +858,26 @@ try {
       if (!id) { console.log('no active run'); break; }
       // Without this, closing a mistyped id would create the run it closes.
       if (!fs.existsSync(stateFile(id))) throw new Error(`unknown run ${id}: no ${path.join(id, 'state.json')} in ${RUNS}`);
-      const state = ensureShape(load(id), id);
-      reconcileState(id, state);
-      const verified = phaseStatus(state, 'verification') === 'pass';
-      if (!verified && process.env.AI_WORKFLOW_ADMIN !== '1') throw new Error(`cannot close ${id}: verification=${phaseStatus(state, 'verification')}`);
-      // A run closed before verification is abandoned, not completed; say so in
-      // the state and the history instead of leaving it to look finished.
-      const reason = rest.slice(1).join(' ').trim() || null;
-      state.status = 'done';
-      state.closedAt = now();
-      if (!verified) {
-        state.abandoned = true;
-        state.abandonedAt = state.closedAt;
-      }
-      if (reason) state.closedReason = reason;
-      record(state, { kind: 'run', action: verified ? 'close' : 'abandon', to: 'done', ...(reason ? { reason } : {}) });
-      atomicSave(id, state);
-      if (activeId() === id && fs.existsSync(ACTIVE)) fs.unlinkSync(ACTIVE);
-      console.log(`${id}: ${verified ? 'closed' : 'abandoned before verification'}`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        reconcileState(id, state);
+        const verified = phaseStatus(state, 'verification') === 'pass';
+        if (!verified && process.env.AI_WORKFLOW_ADMIN !== '1') throw new Error(`cannot close ${id}: verification=${phaseStatus(state, 'verification')}`);
+        // A run closed before verification is abandoned, not completed; say so in
+        // the state and the history instead of leaving it to look finished.
+        const reason = rest.slice(1).join(' ').trim() || null;
+        state.status = 'done';
+        state.closedAt = now();
+        if (!verified) {
+          state.abandoned = true;
+          state.abandonedAt = state.closedAt;
+        }
+        if (reason) state.closedReason = reason;
+        record(state, { kind: 'run', action: verified ? 'close' : 'abandon', to: 'done', ...(reason ? { reason } : {}) });
+        atomicSave(id, state);
+        if (activeId() === id && fs.existsSync(ACTIVE)) fs.unlinkSync(ACTIVE);
+        console.log(`${id}: ${verified ? 'closed' : 'abandoned before verification'}`);
+      });
       break;
     }
     case 'set': {
@@ -765,12 +886,14 @@ try {
       const note = rest.slice(2).join(' ');
       const id = resolveId();
       if (!id || !PHASES.includes(phase) || !STATUSES.includes(status)) usage();
-      const state = ensureShape(load(id), id);
-      const from = phaseStatus(state, phase);
-      state.phases[phase] = { status, updatedAt: now(), ...(note ? { note } : {}) };
-      record(state, { kind: 'admin-phase-set', phase, from, to: status, reason: note || null });
-      atomicSave(id, state);
-      console.log(`${id} ${phase} → ${status} (admin)`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        const from = phaseStatus(state, phase);
+        state.phases[phase] = { status, updatedAt: now(), ...(note ? { note } : {}) };
+        record(state, { kind: 'admin-phase-set', phase, from, to: status, reason: note || null });
+        atomicSave(id, state);
+        console.log(`${id} ${phase} → ${status} (admin)`);
+      });
       break;
     }
     case 'set-role': {
@@ -779,14 +902,16 @@ try {
       const note = rest.slice(4).join(' ');
       const id = resolveId();
       if (!id || !ROLE_GROUPS.includes(group) || !safeRole(role) || !STATUSES.includes(status)) usage();
-      const state = ensureShape(load(id), id);
-      state.roles[group] ||= {};
-      const from = state.roles[group][role]?.status || 'pending';
-      state.roles[group][role] = { status, updatedAt: now(), ...(executor && executor !== '-' ? { executor } : {}), ...(note ? { note } : {}) };
-      record(state, { kind: 'admin-role-set', group, role, from, to: status, executor: executor || null, reason: note || null });
-      reconcileState(id, state);
-      atomicSave(id, state);
-      console.log(`${id} ${group}/${role} → ${status} (admin)`);
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        state.roles[group] ||= {};
+        const from = state.roles[group][role]?.status || 'pending';
+        state.roles[group][role] = { status, updatedAt: now(), ...(executor && executor !== '-' ? { executor } : {}), ...(note ? { note } : {}) };
+        record(state, { kind: 'admin-role-set', group, role, from, to: status, executor: executor || null, reason: note || null });
+        reconcileState(id, state);
+        atomicSave(id, state);
+        console.log(`${id} ${group}/${role} → ${status} (admin)`);
+      });
       break;
     }
     case 'selftest': selftest(); break;

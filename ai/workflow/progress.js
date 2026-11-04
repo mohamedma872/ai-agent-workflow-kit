@@ -134,9 +134,13 @@ function deriveRoleGroupStatus(state, group) {
   if (!names.length) return null;
   const statuses = names.map(role => state?.roles?.[group]?.[role]?.status || 'pending');
 
+  // Roles of a parallel stage run at the same time: while any is still running
+  // the stage is running, even if a sibling already failed. Its fail or blocked
+  // shows once nothing is running any more.
+  if (statuses.includes('in_progress')) return 'in_progress';
   if (statuses.includes('fail')) return 'fail';
   if (statuses.includes('blocked')) return 'blocked';
-  if (statuses.some(status => status === 'pending' || status === 'in_progress')) return 'in_progress';
+  if (statuses.includes('pending')) return 'in_progress';
   if (statuses.every(status => status === 'skipped')) return 'skipped';
   if (statuses.every(status => status === 'pass' || status === 'skipped')) return 'pass';
   return 'in_progress';
@@ -198,8 +202,9 @@ function currentWork(state) {
   for (const phase of [...PHASES].reverse()) {
     if (effectiveStatus(state, phase) !== 'in_progress') continue;
     if (phase === 'analysis' || phase === 'reviews') {
-      const running = roleEntries(state, phase).find(([, entry]) => entry.status === 'in_progress');
-      if (running) return `${LABELS[phase]} → ${running[0]}`;
+      // Roles of a parallel stage run at the same time, so name all of them.
+      const running = roleEntries(state, phase).filter(([, entry]) => entry.status === 'in_progress').map(([name]) => name);
+      if (running.length) return `${LABELS[phase]} → ${running.join(', ')}`;
     }
     return LABELS[phase];
   }
