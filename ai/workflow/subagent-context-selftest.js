@@ -70,6 +70,20 @@ const implCtx=decisionsFor('implementation');
 assert.match(implCtx,/Binding conflict decisions/);assert.doesNotMatch(implCtx,/engine rejects a plan/);
 assert.deepStrictEqual(resolvedConflicts(run).map(c=>c.id),['CONFLICT-001']);
 assert(!decisionsFor('analysis',['request']).includes('Binding conflict decisions'),'specialists never get the decisions');
+// Many long decisions: every id and every decision is in the section (the plan
+// gate demands each id), each shortened with a marker, never dropped whole.
+for(const n of [9,30]){
+ const long=Array.from({length:n},(_,i)=>({id:`CONFLICT-${String(i+1).padStart(3,'0')}`,topic:'t'.repeat(150),findings:[`SEC-${i}`,`ARCH-${i}`],status:'resolved',resolution:{decision:`DECISION-${i+1}-START `+'d'.repeat(900),rationale:'r'.repeat(400),owner:'human',resolvedAt:'2026-11-04T00:00:00Z'}}));
+ fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:long}));
+ const sec=conflictDecisions(run,'plan');
+ for(const c of long){assert(sec.includes(`### ${c.id} ·`),`${n}: ${c.id} header`);assert(sec.includes(`DECISION-${c.id.slice(-3).replace(/^0+/,'')}-START`),`${n}: ${c.id} decision`);}
+ if(n===30) assert.match(sec,/… \(truncated; full text in 05-analysis\/conflicts\.json\)/);
+}
+// Two decided pairs under one id (a pre-1.9.32 file): both decisions bind.
+fs.writeFileSync(path.join(run,'05-analysis','conflicts.json'),JSON.stringify({conflicts:[
+ {id:'CONFLICT-001',topic:'storage',findings:['SEC-1','ARCH-2'],status:'resolved',resolution:{decision:'SECURE STORAGE',rationale:'r',owner:'human'}},
+ {id:'CONFLICT-001',topic:'caching',findings:['SEC-1','ARCH-3'],status:'resolved',resolution:{decision:'CACHE ONE HOUR',rationale:'r',owner:'human'}}]}));
+assert.strictEqual(resolvedConflicts(run).length,2);for(const d of ['SECURE STORAGE','CACHE ONE HOUR']) assert(conflictDecisions(run,'plan').includes(d),d);
 fs.unlinkSync(path.join(run,'05-analysis','conflicts.json'));
 assert.strictEqual(conflictDecisions(run,'plan'),'','a run with no conflicts gets no section');
 const {roleContract}=require('./subagent-contracts');

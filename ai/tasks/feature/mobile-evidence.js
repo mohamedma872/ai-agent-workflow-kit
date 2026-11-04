@@ -47,8 +47,10 @@ function phaseStatus(state, phase) { return state.phases?.[phase]?.status || 'pe
 
 function assertReadyForEvidence(state) {
   const requirements = [['implementation', new Set(['pass'])], ['build-test', new Set(['pass'])], ['reviews', new Set(['pass', 'skipped'])], ['fixes', new Set(['pass', 'skipped'])], ['post-fix-build-test', new Set(['pass', 'skipped'])]];
-  // A run verified before the post-fix re-run existed never had it.
-  const status = phase => (phase === 'post-fix-build-test' && !state.phases?.[phase] && phaseStatus(state, 'verification') === 'pass' ? 'skipped' : phaseStatus(state, phase));
+  // Only the engine records the post-fix re-run (it always does, pass or skipped,
+  // before verification). No entry means a /feature skill or manual run, or one
+  // verified before the stage existed: not required.
+  const status = phase => (phase === 'post-fix-build-test' && !state.phases?.[phase] ? 'skipped' : phaseStatus(state, phase));
   const problems = requirements.filter(([phase, allowed]) => !allowed.has(status(phase))).map(([phase]) => `${phase}=${status(phase)}`);
   if (problems.length) throw new Error(`mobile evidence cannot run before the post-fix build is ready: ${problems.join(', ')}`);
 }
@@ -299,6 +301,8 @@ function selftest() {
   assert.throws(() => assertReadyForEvidence({ phases: {} }), /implementation=pending/);
   assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'skipped' }, 'post-fix-build-test': { status: 'skipped' } } }));
   assert.throws(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' }, 'post-fix-build-test': { status: 'pending' } } }), /post-fix-build-test=pending/);
+  // A skill-driven run (fixes pass, no post-fix entry, verification pending) is ready.
+  assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' } } }));
   assert.doesNotThrow(() => assertReadyForEvidence({ phases: { implementation: { status: 'pass' }, 'build-test': { status: 'pass' }, reviews: { status: 'pass' }, fixes: { status: 'pass' }, verification: { status: 'pass' } } }), 'a run verified before the re-run existed');
   const prompt = buildPrompt('TEST', ['android'], 'ATTEMPT');
   assert.match(prompt, /You do NOT write any evidence file yourself/);

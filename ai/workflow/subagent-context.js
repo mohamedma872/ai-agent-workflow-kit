@@ -43,10 +43,12 @@ function specialistFindings(runDir){
 // The human's conflict decisions (05-analysis/conflicts.json, written by
 // `agentic resolve`). Raw conflicts.json is not given to roles: it holds
 // unresolved entries, no finding titles and no size bound.
+// One decision per finding pair: a file written before 1.9.32 can hold two
+// decided pairs under one id, and both decisions bind.
 function resolvedConflicts(runDir){
  let d=null; try{d=JSON.parse(fs.readFileSync(path.join(runDir,'05-analysis','conflicts.json'),'utf8'));}catch{return [];}
- const seen=new Set();
- return (d?.conflicts||[]).filter(c=>c&&c.status==='resolved'&&c.resolution&&/^CONFLICT-\d+$/.test(String(c.id))&&!seen.has(c.id)&&seen.add(c.id));
+ const seen=new Set(), key=c=>Array.isArray(c.findings)&&c.findings.length?c.findings.map(String).sort().join('|'):`id:${c.id}`;
+ return (d?.conflicts||[]).filter(c=>c&&c.status==='resolved'&&c.resolution&&/^CONFLICT-\d+$/.test(String(c.id))&&!seen.has(key(c))&&seen.add(key(c)));
 }
 function findingTitles(runDir){
  const dir=path.join(runDir,'05-analysis'), out=new Map(); let files=[];
@@ -55,15 +57,20 @@ function findingTitles(runDir){
  return out;
 }
 // Binding for the plan (which must cite each id) and for every role after it.
+// Each entry is bounded, never the list: the plan gate demands every id, so
+// every id and decision is here, shortened with a marker when there are many.
 function conflictDecisions(runDir,stageId){
  const list=resolvedConflicts(runDir); if(!list.length) return '';
- const titles=findingTitles(runDir), lines=[];
- const finding=id=>{const t=titles.get(id);return t?`${id} (${t.agent}, ${t.severity}: ${String(t.title||'').slice(0,120)})`:String(id);};
- for(const c of list){const r=c.resolution;lines.push(`### ${c.id} · ${String(c.topic||'disputed').slice(0,120)}\n- findings: ${(c.findings||[]).map(finding).join(' vs ')}\n- decision: ${String(r.decision||'').slice(0,1200)}\n- rationale: ${String(r.rationale||'').slice(0,400)}\n- owner: ${r.owner||'human'} (${String(r.resolvedAt||'').slice(0,10)})`);}
+ const titles=findingTitles(runDir), lines=[], share=Math.floor(11000/list.length);
+ const cap=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+ const lim={decision:cap(Math.floor(share*0.55),200,1200),rationale:cap(Math.floor(share*0.15),80,400),title:cap(Math.floor(share*0.06),40,120),topic:cap(Math.floor(share*0.06),40,120)};
+ const clip=(v,n)=>{v=String(v||'');return v.length>n?`${v.slice(0,n)}… (truncated; full text in 05-analysis/conflicts.json)`:v;};
+ const finding=id=>{const t=titles.get(id);return t?`${id} (${t.agent}, ${t.severity}: ${String(t.title||'').slice(0,lim.title)})`:String(id);};
+ for(const c of list){const r=c.resolution;lines.push(`### ${c.id} · ${String(c.topic||'disputed').slice(0,lim.topic)}\n- findings: ${(c.findings||[]).map(finding).join(' vs ')}\n- decision: ${clip(r.decision,lim.decision)}\n- rationale: ${clip(r.rationale,lim.rationale)}\n- owner: ${r.owner||'human'} (${String(r.resolvedAt||'').slice(0,10)})`);}
  const how=stageId==='plan'
   ?'Apply every decision in the steps and cite each conflict id in "conflictDecisions" (rendered as "Conflict decisions applied"): one entry per id saying how and in which steps it is applied. The engine rejects a plan that leaves out any id below.'
   :'The approved plan applies these under "Conflict decisions applied". Where the plan, AC or DoD still contradicts a decision, follow the decision and say so.';
- return `## Binding conflict decisions (05-analysis/conflicts.json)\nA human resolved these specialist disagreements. Each decision is binding: it overrides any specialist recommendation, and any acceptance-criteria, definition-of-done or plan wording, that it contradicts.\n${how}\n\n${lines.join('\n\n')}`.slice(0,12000);
+ return `## Binding conflict decisions (05-analysis/conflicts.json)\nA human resolved these specialist disagreements. Each decision is binding: it overrides any specialist recommendation, and any acceptance-criteria, definition-of-done or plan wording, that it contradicts.\n${how}\n\n${lines.join('\n\n')}`;
 }
 function prTemplate(productRoot){if(!productRoot)return null;for(const rel of PR_TEMPLATES){const t=read(path.join(productRoot,rel));if(t&&t.trim())return {path:rel,text:t};}return null;}
 function prTemplateSection(productRoot){

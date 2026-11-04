@@ -39,12 +39,23 @@ function renderList(items,{id,cli}={}){
  else lines.push(open?`${open} unresolved conflict(s) block the plan. Resolve with:\n  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."`:'All conflicts resolved — the plan stage can run.');
  return lines.join('\n');
 }
+// Two entries with one id (a conflicts.json written before 1.9.32 renumbering
+// kept the old id on a carried-forward decision) cannot be told apart: refuse.
 function resolveData(d,conflictId,{decision,rationale,owner}){
  if(!decision||!rationale||!owner) throw new Error('resolve requires --decision, --rationale and --owner');
- const c=(d.conflicts||[]).find(x=>x.id===conflictId); if(!c) throw new Error('unknown conflict '+conflictId);
- c.status='resolved';c.resolution={decision,rationale,owner,resolvedAt:new Date().toISOString()}; return c;
+ const hits=(d.conflicts||[]).filter(x=>x.id===conflictId); if(!hits.length) throw new Error('unknown conflict '+conflictId);
+ if(hits.length>1) throw new Error(`${conflictId} names ${hits.length} conflicts; resume the run once so the ids are renumbered, then list them again`);
+ const c=hits[0]; c.status='resolved';c.resolution={decision,rationale,owner,resolvedAt:new Date().toISOString()}; return c;
+}
+// A decision made after the plan passed would reach the later roles as binding
+// while the plan they follow says otherwise. Send the plan back first.
+function planGuard(id,state){
+ const st=state?.phases?.plan?.status;
+ if(['pass','skipped'].includes(st)) throw new Error(`the plan already ${st==='pass'?'passed':'was skipped'}, so a decision now would contradict it. Rework the plan first (${process.env.AI_AGENTIC_CLI==='1'?'agentic':'node ai/tasks/feature/runs.js'} retry ${id} plan), then resolve, then: ${commandFor('resume',id,process.env.AI_AGENTIC_CLI==='1')}`);
 }
 function resolve(id,conflictId,opts){
+ let state=null; try{state=JSON.parse(fs.readFileSync(path.join(RUNS,id,'state.json'),'utf8'));}catch{}
+ planGuard(id,state);
  const d=load(id), c=resolveData(d,conflictId,opts);
  fs.writeFileSync(file(id),JSON.stringify(d,null,2)+'\n'); return c;
 }
@@ -58,6 +69,12 @@ function selftest(){
  const done=renderList([{id:'CONFLICT-001',topic:'storage',status:'resolved',positions:[],resolution:{decision:'plain preferences',rationale:'no PII stored',owner:'human',resolvedAt:'now'}}]);
  assert.match(done,/All conflicts resolved/);assert.match(done,/no PII stored/);
  assert.match(renderList([]),/No specialist conflicts/);
+ // A duplicated id is refused, never resolved on whichever entry comes first.
+ const dup={conflicts:[{id:'CONFLICT-002',status:'resolved',findings:['C','D'],resolution:{decision:'x'}},{id:'CONFLICT-002',status:'unresolved',findings:['G','H']}]};
+ assert.throws(()=>resolveData(dup,'CONFLICT-002',{decision:'x',rationale:'y',owner:'z'}),/names 2 conflicts/);assert.equal(dup.conflicts[1].status,'unresolved');
+ // After the plan passed, a (re-)decision is refused and points at a plan rework.
+ assert.throws(()=>planGuard('FEAT-1',{phases:{plan:{status:'pass'}}}),/Rework the plan first \(.*retry FEAT-1 plan\), then resolve, then: .*resume FEAT-1/);
+ assert.doesNotThrow(()=>planGuard('FEAT-1',{phases:{plan:{status:'pending'}}}));assert.doesNotThrow(()=>planGuard('FEAT-1',null));
  // With the run id: the exact resolve and resume commands, as this install spells them.
  const openItems=[{id:'CONFLICT-001',topic:'storage',status:'unresolved',positions:[]}];
  const cliList=renderList(openItems,{id:'FEAT-1',cli:true});
@@ -78,4 +95,4 @@ if(require.main===module){try{
   else throw new Error('usage: conflicts.js list <run> [--json] | resolve <run> <conflict-id> --decision TEXT --rationale TEXT [--owner NAME]');
  }
 }catch(e){console.error('✗ '+e.message);process.exitCode=1;}}
-module.exports={resolve,resolveData,list,renderList,findingIndex};
+module.exports={resolve,resolveData,planGuard,list,renderList,findingIndex};

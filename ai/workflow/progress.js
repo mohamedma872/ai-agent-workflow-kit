@@ -42,7 +42,7 @@ const LABELS = {
   'build-test': 'Build + Tests',
   reviews: 'Independent Reviews',
   fixes: 'Validated Fixes',
-  'post-fix-build-test': 'Build + Tests (after fixes)',
+  'post-fix-build-test': 'Post-fix Build + Tests',
   verification: 'Final Verification',
   'pull-request': 'Pull Request',
 };
@@ -404,8 +404,10 @@ function needsYou(id, state, options = {}) {
       const ids = open.map(c => oneLine(c.id, 40)), n = ids.length;
       // Topics only (the arbitration tag), never finding titles or recommendations.
       const named = open.map(c => `${oneLine(c.id, 40)} (${oneLine(c.topic || 'disputed', 40)})`);
-      const tail = `Decide each with: ${commandFor('resolve', id, cli, n === 1 ? ids[0] : '<conflict-id>')}, then: ${commandFor('resume', id, cli)}`;
+      let tail = `Decide each with: ${commandFor('resolve', id, cli, n === 1 ? ids[0] : '<conflict-id>')}, then: ${commandFor('resume', id, cli)}`;
       const list = k => `${named.slice(0, k).join(', ')}${k < n ? ` +${n - k} more` : ''}`;
+      // Never cut a command: past the budget, keep only the resume (the list command is `command`).
+      if (`${list(1)}. ${tail}`.length > reasonMax) tail = `Decide each, then: ${commandFor('resume', id, cli)}`;
       let shown = n; while (shown > 1 && `${list(shown)}. ${tail}`.length > reasonMax) shown--;
       // The key names each conflict's finding pair: ids are renumbered on every synthesis.
       const key = open.map(c => `${oneLine(c.id, 40)}=${(c.findings || []).map(f => oneLine(f, 40)).sort().join('+')}`).join(',');

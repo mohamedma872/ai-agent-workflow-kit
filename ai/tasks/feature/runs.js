@@ -398,13 +398,17 @@ function refuseLiveRole(id, group, role, status) {
   if (pid) throw new Error(`${group}/${role} is still running in the workflow engine (parallel role runner pid ${pid}); wait for the stage to finish or stop that run first, then retry`);
 }
 
+// A stage that repeats a check (post-fix-build-test) and has no entry on a run
+// verified before it existed: read as skipped, the rule progress.js uses.
+function legacyUnrecorded(state, phase) { return Boolean(STAGE_BY_ID.get(phase)?.repeats) && !state.phases?.[phase] && TERMINAL_OK.has(phaseStatus(state, 'verification')); }
+
 // Why `retry` has nothing to do, and what would move the run instead.
 function nothingToRetry(id, state) {
   const cli = process.env.AI_AGENTIC_CLI === '1';
   if (state.status === 'done') return `nothing to retry — ${id} is closed`;
   const attention = needsYou(id, state, { root: RUNS });
   if (attention?.kind === 'waiting') return `nothing to retry; ${attention.headline.charAt(0).toLowerCase()}${attention.headline.slice(1)} — run: ${attention.command}`;
-  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)))) return `nothing to retry — ${id} is complete`;
+  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)) || legacyUnrecorded(state, phase))) return `nothing to retry — ${id} is complete`;
   return `nothing to retry; run ${cli ? 'agentic resume' : 'node ai/workflow/engine.js resume'} ${id}`;
 }
 
@@ -417,7 +421,7 @@ function render(id, state) {
   // is finished, not waiting on one.
   const legacyClosed = state.status === 'done' && !state.phases?.['pull-request'] && !state.abandoned && phaseStatus(state, 'verification') === 'pass';
   for (const phase of PHASES) {
-    const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : { status: 'pending' });
+    const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : legacyUnrecorded(state, phase) ? { status: 'skipped', note: 'the run was verified before this stage existed' } : { status: 'pending' });
     // Notes quote agent and tool output: printable text only on the terminal.
     console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${printable(entry.status).padEnd(12)}${entry.note ? ` — ${printable(entry.note)}` : ''}`);
     for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${printable(role).padEnd(18)} ${printable(roleState.status).padEnd(12)}${roleState.executor ? ` · ${printable(roleState.executor)}` : ''}${roleState.note ? ` — ${printable(roleState.note)}` : ''}`);
@@ -426,7 +430,7 @@ function render(id, state) {
   console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · execution ${evidence.execution?.status || 'missing'} · attestation ${evidence.attestation ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
   if (state.pullRequest?.url) console.log(`  🔗 pull request         #${state.pullRequest.number ?? '?'} ${state.pullRequest.url} (${state.pullRequest.status || 'open'}, ${state.pullRequest.branch} → ${state.pullRequest.base})`);
   else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
-  const next = state.status === 'done' ? null : PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
+  const next = state.status === 'done' ? null : PHASES.find(phase => (!state.phases?.[phase] && !legacyUnrecorded(state, phase)) || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases?.[phase]?.status));
   console.log(`\n→ resume at: ${next || 'done'}`);
   // The same needs-you line as the progress views and the engine's notification.
   const engine = liveEngine(path.join(RUNS, id));
@@ -715,6 +719,27 @@ function selftest() {
     assert.strictEqual(stateOf().lastFailures['post-fix-build-test']['qa-execute'].reason, 'flutter test: 1 failing');
   }
 
+  // A run verified before post-fix-build-test existed: status reads it as
+  // skipped (as progress does), resumes past it, and a finished one is complete.
+  {
+    const id = 'LEG-1';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES) if (p !== 'post-fix-build-test') st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    st.phases['pull-request'] = { status: 'fail', note: 'push rejected' };
+    st.evidence = { mobileScreenshots: { requirement: 'not-required', reason: 'selftest' } };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /~ post-fix-build-test\s+skipped\s+— the run was verified before this stage existed/, shown);
+    assert.match(shown, /→ resume at: pull-request/, shown);
+    st.phases['pull-request'] = { status: 'pass' };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const nothing = cli(['retry', id]);
+    assert.match(nothing.stderr, /nothing to retry — LEG-1 is complete/, nothing.stderr);
+  }
+
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
   console.log('runs.js selftest OK');
@@ -945,7 +970,9 @@ try {
               const status = phaseStatus(state, later);
               // A stage that repeats an earlier check (post-fix-build-test) runs again
               // after any rework before it, even if it passed: the reworked code is untested.
-              const recheck = STAGE_BY_ID.get(later)?.repeats && TERMINAL_OK.has(status);
+              // A run verified before that stage existed has no entry for it (read as
+              // skipped); create it, or the engine takes the legacy shortcut again.
+              const recheck = STAGE_BY_ID.get(later)?.repeats && (TERMINAL_OK.has(status) || legacyUnrecorded(state, later));
               if (!['fail', 'blocked', 'in_progress'].includes(status) && !recheck) continue;
               state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
               clearAttempts(later);

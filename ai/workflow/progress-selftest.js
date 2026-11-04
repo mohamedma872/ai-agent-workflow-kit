@@ -188,14 +188,16 @@ function staleApprovedState() {
   const { labelOf } = require('./progress');
   assert.strictEqual(PHASES.indexOf('post-fix-build-test'), PHASES.indexOf('fixes') + 1);
   assert.ok(PHASES.indexOf('post-fix-build-test') < PHASES.indexOf('verification'));
-  assert.strictEqual(labelOf('post-fix-build-test'), 'Build + Tests (after fixes)');
+  assert.strictEqual(labelOf('post-fix-build-test'), 'Post-fix Build + Tests');
+  // Every label fits the 24-column status table of `agentic progress`.
+  for (const p of PHASES) assert.ok(labelOf(p).length <= 24, `${p}: ${labelOf(p)}`);
   const upToFixes = Object.fromEntries(PHASES.slice(0, PHASES.indexOf('post-fix-build-test')).map(p => [p, { status: 'pass' }]));
   const red = { status: 'active', roles: {}, phases: { ...upToFixes, 'post-fix-build-test': { status: 'fail', note: 'flutter test: 1 failing', updatedAt: 't' } } };
   const attention = needsYou('FEAT-1', red, { root: os.tmpdir(), cli: true });
-  assert.deepStrictEqual([attention.stage, attention.headline, attention.command], ['post-fix-build-test', 'Build + Tests (after fixes) failed', 'agentic retry FEAT-1']);
-  assert.strictEqual(currentWork(red), 'Build + Tests (after fixes) (fail)');
+  assert.deepStrictEqual([attention.stage, attention.headline, attention.command], ['post-fix-build-test', 'Post-fix Build + Tests failed', 'agentic retry FEAT-1']);
+  assert.strictEqual(currentWork(red), 'Post-fix Build + Tests (fail)');
   red.phases['post-fix-build-test'] = { status: 'in_progress' };
-  assert.strictEqual(currentWork(red), 'Build + Tests (after fixes)');
+  assert.strictEqual(currentWork(red), 'Post-fix Build + Tests');
   // A run verified and closed before the stage existed is still 100%, with no stored-status note.
   const legacy = { status: 'done', roles: {}, phases: Object.fromEntries(PHASES.filter(p => p !== 'post-fix-build-test').map(p => [p, { status: 'pass' }])) };
   assert.strictEqual(effectiveStatus(legacy, 'post-fix-build-test'), 'skipped');
@@ -361,6 +363,23 @@ function staleApprovedState() {
     assert.ok(many.reason.length <= 220, many.reason.length);
     assert.ok(many.reason.includes(' more. Decide each with:'), many.reason);
     assert.ok(many.reason.endsWith('agentic resume FEAT-8'), many.reason);
+    // Node form with a long run id: the resolve template gives way, the resume command is whole.
+    fs.mkdirSync(path.join(root, 'APPCONFIG-master2', '05-analysis'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'APPCONFIG-master2', '05-analysis', 'conflicts.json'), JSON.stringify({ conflicts: ['token storage location', 'cache ttl', 'retry policy'].map((topic, i) => ({ id: `CONFLICT-00${i + 1}`, topic, findings: [`A${i}`, `B${i}`], status: 'unresolved' })) }));
+    for (const [cli, resume] of [[false, 'node ai/workflow/engine.js resume APPCONFIG-master2'], [true, 'agentic resume APPCONFIG-master2']]) {
+      const node = needsYou('APPCONFIG-master2', conflicts, { root, cli });
+      assert.ok(node.reason.length <= 220 && node.reason.endsWith(resume), node.reason);
+      assert.ok(!node.reason.includes('…'), node.reason);
+    }
+    const longId = 'X'.repeat(40);
+    fs.mkdirSync(path.join(root, longId, '05-analysis'), { recursive: true });
+    fs.copyFileSync(path.join(root, 'APPCONFIG-master2', '05-analysis', 'conflicts.json'), path.join(root, longId, '05-analysis', 'conflicts.json'));
+    assert.ok(needsYou(longId, conflicts, { root, cli: true }).reason.endsWith(`agentic resume ${longId}`));
+    // Arbitration re-ran after the file was written (a rework): it is stale, no banner.
+    const stale = path.join(root, 'APPCONFIG-master2', '05-analysis');
+    fs.writeFileSync(path.join(stale, 'arbitration.json'), '{"conflicts":[]}');
+    fs.utimesSync(path.join(stale, 'conflicts.json'), 1000, 1000); fs.utimesSync(path.join(stale, 'arbitration.json'), 2000, 2000);
+    assert.strictEqual(needsYou('APPCONFIG-master2', conflicts, { root, cli: true }), null);
     const manyFull = needsYou('FEAT-8', conflicts, { root, cli: true, reasonMax: Infinity });
     for (let i = 1; i <= 7; i++) assert.ok(manyFull.reason.includes(`CONFLICT-00${i}`), manyFull.reason);
     assert.strictEqual(commandFor('resolve', 'R1', true, 'CONFLICT-004'), 'agentic resolve R1 CONFLICT-004 --decision "..." --rationale "..."');

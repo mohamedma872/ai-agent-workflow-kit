@@ -94,9 +94,10 @@ function attributionProblems(text) {
 // options.conflictIds: the resolved conflicts the plan must cite (engine runs only).
 function semanticProblems(name, data, options = {}) {
   const errors = [];
-  // The ids lead the message, so they survive the 180-character phase note.
+  // A malformed plan (steps not an array) cannot render; search its JSON so the
+  // schema errors and the missing ids still reach the retry feedback.
   if (name === 'plan' && options.conflictIds?.length) {
-    const text = renderMarkdown('plan', data);
+    let text; try { text = renderMarkdown('plan', data); } catch { text = JSON.stringify(data); }
     const missing = [...new Set(options.conflictIds)].filter(id => !new RegExp(`\\b${String(id).replace(/[^A-Za-z0-9-]/g, '')}\\b`).test(text));
     if (missing.length) errors.push(`$.conflictDecisions: missing ${missing.join(', ')} — every resolved conflict must be cited in 06-plan.md`);
   }
@@ -443,7 +444,10 @@ function validateArtifactData(name, data, expectedRunId, options = {}) {
     if (!Array.isArray(semantic)) throw new Error(`${name}: semanticProblems must return an array of error strings, got ${typeof semantic}`);
     errors.push(...semantic);
   }
-  return errors;
+  // The missing conflict ids lead the message, so they survive the 180-character
+  // phase note and the 600-character retry feedback ahead of any schema errors.
+  const lead = e => e.startsWith('$.conflictDecisions: missing ');
+  return [...errors.filter(lead), ...errors.filter(e => !lead(e))];
 }
 
 function validateArtifactFile(name, file, expectedRunId, options = {}) {
@@ -525,6 +529,11 @@ function selftest() {
   const gatedText = fs.readFileSync(gatedMd, 'utf8');
   for (const part of ['## Conflict decisions applied', 'CONFLICT-002', '(steps: 1)']) assert.ok(gatedText.includes(part), part);
   assert.match(validateArtifactData('plan', { ...plan, summary: 'see CONFLICT-0010' }, 'TEST', { conflictIds: ['CONFLICT-001'] }).join('\n'), /missing CONFLICT-001/, 'CONFLICT-0010 does not cite CONFLICT-001');
+  // A malformed plan still reports its schema errors and the missing ids, ids first.
+  const malformed = validateArtifactData('plan', { ...plan, steps: { a: 1 } }, 'TEST', { conflictIds: ['CONFLICT-001'] });
+  assert.match(malformed[0], /missing CONFLICT-001/); assert.ok(malformed.some(e => /\$\.steps: expected type array/.test(e)), JSON.stringify(malformed));
+  const noDesc = validateArtifactData('plan', { ...plan, steps: [{ id: '1' }, { id: '2' }, { id: '3' }] }, 'TEST', { conflictIds: ['CONFLICT-001', 'CONFLICT-002'] });
+  assert.match(noDesc[0], /^\$\.conflictDecisions: missing CONFLICT-001, CONFLICT-002/); assert.strictEqual(noDesc.length, 4, JSON.stringify(noDesc));
   const badEntry = validateArtifactData('plan', { ...plan, conflictDecisions: [{ conflictId: 'X' }] }, 'TEST');
   assert.ok(badEntry.some(e => /conflictId: does not match/.test(e)) && badEntry.some(e => /applied: required/.test(e)), JSON.stringify(badEntry));
   const verification = { schemaVersion: 1, runId: 'TEST', status: 'pass', acceptanceCriteria: [{ id: 'AC-1', status: 'pass', evidence: ['test output'] }], definitionOfDone: [{ item: 'tests', status: 'pass' }] };

@@ -319,7 +319,9 @@ function synthesizeAnalysis(id) {
   try {
     const previous = JSON.parse(fs.readFileSync(path.join(dir, 'conflicts.json'), 'utf8')).conflicts || [];
     const resolved = new Map(previous.filter(x => x.status === 'resolved' && x.resolution).map(x => [x.findings.slice().sort().join('|'), x]));
-    conflicts = conflicts.map(x => resolved.get(x.findings.slice().sort().join('|')) || x);
+    // Carry the decision, never the old id: ids are renumbered here, and an old
+    // id on a carried decision can name a different, still open, pair.
+    conflicts = conflicts.map(x => { const prev = resolved.get(x.findings.slice().sort().join('|')); return prev ? { ...x, status: 'resolved', resolution: prev.resolution } : x; });
   } catch { /* first synthesis */ }
   fs.writeFileSync(path.join(dir, 'synthesis.json'), JSON.stringify({ version: 1, findings }, null, 2) + '\n');
   fs.writeFileSync(path.join(dir, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts }, null, 2) + '\n');
@@ -347,7 +349,9 @@ function evaluateCondition(name, id, state) {
     return { known: true, value, reason: value ? 'whole-app behavior-preserving refactor' : 'not a whole-app refactor' };
   }
   if (name === 'changed_since_build_test') {
-    if (TERMINAL_OK.has(phaseStatus(state, 'verification'))) return { known: true, value: false, reason: 'verification passed before the post-fix re-run existed' };
+    // Legacy only (the rule progress.js uses): a run verified before this stage existed.
+    // A stage that exists (reset by a rework of fixes) compares the tree.
+    if (!state?.phases?.['post-fix-build-test'] && TERMINAL_OK.has(phaseStatus(state, 'verification'))) return { known: true, value: false, reason: 'verification passed before the post-fix re-run existed' };
     const tested = state?.testedWorkspace?.fingerprint, current = treeFingerprint(productRoot(id));
     if (!tested || !current) return { known: true, value: true, reason: tested ? 'the worktree fingerprint cannot be read' : 'no record of the tree Build + Tests passed on' };
     return current === tested ? { known: true, value: false, reason: `fixes changed no files since ${state.testedWorkspace.stage} passed` } : { known: true, value: true, reason: `the worktree changed after ${state.testedWorkspace.stage} passed` };
@@ -957,6 +961,9 @@ function executeStage(id, wf, stage, args = {}) {
       const telemetry=refactorTelemetry({baseline,equivalence,checkpoints,verificationMatrix:matrix});
       fs.writeFileSync(path.join(engineDir(id),'refactor-telemetry.json'),JSON.stringify(telemetry,null,2)+'\n');
     }
+    // conflicts.json follows the arbitration just written, so the views and
+    // `agentic conflicts` never show pairs it no longer declares.
+    if (stage.id === 'conflict-arbitration') synthesizeAnalysis(id);
     phase(id, 'complete', stage.id, execution.executor || preferredExecutor, `engine completed ${roleName}`);
     // The tree it passed on, taken after the run, so its own pod install, pub get or codegen never re-trigger it.
     if (testsTree(stage)) {
@@ -1554,6 +1561,31 @@ function conflictDecisionSelftest() {
     h.prepare('N-NOCONFLICT', before);
     assert.strictEqual(h.resume('N-NOCONFLICT', stubEnv('')).result, 'waiting');
     assert.ok(!fs.readFileSync(path.join(h.states, 'N-NOCONFLICT', 'engine', 'plan-orchestration.md'), 'utf8').includes('## Binding conflict decisions'), 'no section (the schema description names it, the section is absent)');
+    // (d) Re-arbitration adds a pair that sorts ahead of a decided one: ids stay
+    // unique, the banner's exact resolve command decides the open pair (not the
+    // decided one), and both decisions reach the plan.
+    h.prepare('N-RENUM', before);
+    const renum = path.join(h.states, 'N-RENUM', '05-analysis');
+    fs.mkdirSync(renum, { recursive: true });
+    for (const f of ['security-reviewer.json', 'mobile-architect.json']) fs.copyFileSync(path.join(analysis, f), path.join(renum, f));
+    const arbitrate = pairs => fs.writeFileSync(path.join(renum, 'arbitration.json'), JSON.stringify({ conflicts: pairs }));
+    const conflictsNow = () => JSON.parse(fs.readFileSync(path.join(renum, 'conflicts.json'), 'utf8')).conflicts;
+    const resolveCli = (cid, decision) => spawnSync(process.execPath, [path.join(__dirname, 'conflicts.js'), 'resolve', 'N-RENUM', cid, '--decision', decision, '--rationale', 'selftest'], { env: h.env, encoding: 'utf8' });
+    arbitrate([{ findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }]);
+    assert.strictEqual(h.resume('N-RENUM', stubEnv('')).result, 'waiting');
+    assert.strictEqual(resolveCli(conflictsNow()[0].id, 'CACHE ONE HOUR').status, 0);
+    arbitrate([{ findingA: 'SEC-1', findingB: 'ARCH-3', topic: 'caching' }, { findingA: 'SEC-1', findingB: 'ARCH-2', topic: 'storage' }]);
+    const held = h.resume('N-RENUM', stubEnv(''));
+    assert.strictEqual(held.result, 'waiting', held.stdout);
+    const ids = conflictsNow().map(c => c.id);
+    assert.strictEqual(new Set(ids).size, ids.length, `ids are unique: ${ids}`);
+    const told = (held.stdout.match(/conflicts\.js resolve N-RENUM (CONFLICT-\d+) /) || [])[1];
+    assert.strictEqual(told, conflictsNow().find(c => c.status !== 'resolved').id, held.stdout);
+    assert.strictEqual(resolveCli(told, 'SECURE STORAGE').status, 0);
+    assert.ok(conflictsNow().every(c => c.status === 'resolved'), 'the printed command decided the open pair');
+    assert.strictEqual(h.resume('N-RENUM', stubEnv(ids.join(','))).result, 'waiting', 'through to the approval gate');
+    const renumPrompt = fs.readFileSync(path.join(h.states, 'N-RENUM', 'engine', 'plan-orchestration.md'), 'utf8');
+    for (const part of ['CACHE ONE HOUR', 'SECURE STORAGE']) assert.ok(renumPrompt.includes(part), part);
   } finally { h.cleanup(); }
 }
 
@@ -1627,7 +1659,7 @@ function postFixBuildTestSelftest() {
     assert.deepStrictEqual([st.phases[STAGE].status, st.phases.fixes.status, st.phases.verification?.status || 'pending'], ['fail', 'pass', 'pending']);
     let own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
     assert.strictEqual(own.length, 1, JSON.stringify(own));
-    assert.match(own[0].body, /^Build \+ Tests \(after fixes\) failed: /);
+    assert.match(own[0].body, /^Post-fix Build \+ Tests failed: /);
     const before = calledTimes();
     const again = h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
     assert.strictEqual(again.result, 'fail', again.stdout);
@@ -1643,7 +1675,7 @@ function postFixBuildTestSelftest() {
     assert.strictEqual(h.stateOf('P-FAIL').phases[STAGE].repeatedFailure, 2);
     own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
     assert.strictEqual(own.length, 2);
-    assert.match(own[1].body, /^Same failure as last time — this needs a fix outside Build \+ Tests \(after fixes\)\./);
+    assert.match(own[1].body, /^Same failure as last time — this needs a fix outside Post-fix Build \+ Tests\./);
     // A failed re-run whose tree is back to the tested one is begun, then skipped.
     edit('two\n');
     assert.strictEqual(once('P-FAIL').result, 'skipped');
@@ -1668,6 +1700,23 @@ function postFixBuildTestSelftest() {
     seed('P-VERIFIED', h.stages.filter(x => x !== STAGE && x !== 'pull-request'));
     assert.strictEqual(once('P-VERIFIED').result, 'skipped');
     assert.match(h.stateOf('P-VERIFIED').phases[STAGE].note, /verification passed before/);
+
+    // P7. A verified run whose fixes are reworked: the re-run exists (reset to
+    // pending), so the tree is compared, not the legacy verification shortcut.
+    seed('P-REWORK', h.stages.filter(x => x !== 'pull-request'), { testedWorkspace: { stage: STAGE, fingerprint: treeFingerprint(h.product) } });
+    h.retry('P-REWORK', 'fixes');
+    st = h.stateOf('P-REWORK');
+    assert.deepStrictEqual([st.phases.fixes.status, st.phases[STAGE].status, st.phases.verification.status], ['pending', 'pending', 'pass']);
+    edit('four\n');
+    assert.strictEqual(once('P-REWORK').result, 'pass', 'fixes runs again');
+    assert.strictEqual(once('P-REWORK', { STUB_BUILD: 'pass' }).result, 'pass', 'the changed tree is tested again');
+    assert.doesNotMatch(h.stateOf('P-REWORK').phases[STAGE].note || '', /verification passed before/);
+    // The same rework on a run verified before the stage existed creates it, so it runs too.
+    seed('P-OLDREWORK', h.stages.filter(x => x !== STAGE && x !== 'pull-request'));
+    assert.match(h.retry('P-OLDREWORK', 'fixes'), /post-fix-build-test \(downstream of fixes\)/);
+    assert.strictEqual(h.stateOf('P-OLDREWORK').phases[STAGE].status, 'pending');
+    assert.strictEqual(once('P-OLDREWORK').result, 'pass');
+    assert.strictEqual(once('P-OLDREWORK', { STUB_BUILD: 'pass' }).result, 'pass', 'no recorded tree: tested again');
   } finally { h.cleanup(); }
 }
 

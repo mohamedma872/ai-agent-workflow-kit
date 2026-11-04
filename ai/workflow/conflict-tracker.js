@@ -23,7 +23,10 @@ function detectConflicts(findings){
 function unresolvedBlocking(conflicts){return (conflicts||[]).filter(c=>c.status!=='resolved');}
 // The open conflicts a run's 05-analysis/conflicts.json records: the file the
 // engine wrote on its last plan attempt and the one `agentic resolve` edits.
-function openConflicts(runDir){try{return unresolvedBlocking(JSON.parse(fs.readFileSync(path.join(runDir,'05-analysis','conflicts.json'),'utf8')).conflicts||[]);}catch{return [];}}
+// Older than arbitration.json, it holds the previous arbitration's pairs (the
+// engine re-derives them before the plan), so it reports none.
+function stale(dir){try{return fs.statSync(path.join(dir,'arbitration.json')).mtimeMs>fs.statSync(path.join(dir,'conflicts.json')).mtimeMs;}catch{return false;}}
+function openConflicts(runDir){const dir=path.join(runDir,'05-analysis');if(stale(dir))return [];try{return unresolvedBlocking(JSON.parse(fs.readFileSync(path.join(dir,'conflicts.json'),'utf8')).conflicts||[]);}catch{return [];}}
 function selftest(){
  const x=detectConflicts([{id:'A',tags:['storage'],conflictsWith:['B']},{id:'B',tags:['storage']}]);
  assert.equal(x.length,1);assert.equal(unresolvedBlocking(x).length,1);
@@ -45,6 +48,11 @@ function selftest(){
   const mixed=[{id:'CONFLICT-001',status:'resolved'},{id:'CONFLICT-002',status:'unresolved'},{id:'CONFLICT-003'}];
   fs.writeFileSync(path.join(tmp,'05-analysis','conflicts.json'),JSON.stringify({conflicts:mixed}));
   assert.deepEqual(openConflicts(tmp),unresolvedBlocking(mixed));assert.deepEqual(openConflicts(tmp).map(c=>c.id),['CONFLICT-002','CONFLICT-003']);
+  // A newer arbitration.json makes the file stale (re-arbitrated after a rework); an older one does not.
+  const at=(f,s)=>fs.utimesSync(path.join(tmp,'05-analysis',f),s,s);
+  fs.writeFileSync(path.join(tmp,'05-analysis','arbitration.json'),'{}');at('conflicts.json',1000);at('arbitration.json',2000);
+  assert.deepEqual(openConflicts(tmp),[],'stale conflicts.json reports none');
+  at('conflicts.json',3000);assert.deepEqual(openConflicts(tmp).map(c=>c.id),['CONFLICT-002','CONFLICT-003']);
  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
  console.log('conflict-tracker selftest OK');
 }
