@@ -27,7 +27,7 @@ const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
 const pullRequest = require('./pull-request');
 const notify = require('./notify');
 const engineOwner = require('./engine-owner');
-const { needsYou, needsYouLines, commandFor } = require('./progress');
+const { needsYou, needsYouLines, recoveryCommands, commandFor, labelOf, oneLine } = require('./progress');
 const { workspaceFingerprint, gitSha } = require('../tasks/feature/evidence-attestation');
 
 const RUNTIME_ROOT = runtimeRoot();
@@ -901,9 +901,8 @@ function executeStage(id, wf, stage, args = {}) {
         const command = cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
         console.log(`${id}: waiting for architecture selection — review ${artifact('05-architecture-assessment.md')} and ${artifact('05-architecture-options.md')} then run: ${command}`);
       } else {
-        // The same block the views show: the plan digest and the exact command.
-        const lines = needsYouLines(needsYou(id, loadState(id), { root: RUNS, cli, reasonMax: 2000 }));
-        console.log([`${id}: waiting for human approval`, ...(lines.length ? lines : [`  review ${artifact('06-plan.md')} then run: ${commandFor('approve', id, cli)}`])].join('\n'));
+        // What happened; the plan digest and the commands follow from runLoop (stopMessage).
+        console.log(`${id}: waiting for human approval — review ${artifact('06-plan.md')}`);
       }
       return 'waiting';
     }
@@ -912,7 +911,7 @@ function executeStage(id, wf, stage, args = {}) {
   if (stage.id === 'plan') {
     const unresolved = unresolvedBlocking(synthesizeAnalysis(id).conflicts);
     // A human decision, like the gates above: say what waits and how to continue, then wait.
-    if (unresolved.length) { console.log([`${id}: the plan waits on ${unresolved.length} unresolved conflict(s): ${unresolved.map(x => x.id).join(', ')}`, ...needsYouLines(needsYou(id, loadState(id), { root: RUNS, cli: process.env.AI_AGENTIC_CLI === '1', reasonMax: 2000 }))].join('\n')); return 'waiting'; }
+    if (unresolved.length) { console.log(`${id}: the plan waits on ${unresolved.length} unresolved conflict(s): ${unresolved.map(x => x.id).join(', ')}`); return 'waiting'; }
   }
   if (stage.strategy === 'parallel') { executeParallel(id, wf, stage); return 'pass'; }
   if (testsTree(stage) && readMode(id)==='behavior_preserving_refactor') {
@@ -998,6 +997,23 @@ function claimRun(id, command) {
 // the views show), else the error that stopped it, else completion. notify.js
 // dedupes by event key in state.notifications.sent, so a resume that stops on
 // the same block does not tell them again. A notification never fails a run.
+// The attention shape for a stop the state does not record: the same mapping
+// notify.errorEvent uses, so the terminal block and the notification agree.
+function errorAttention(id, stageId, error, cli) {
+  return { kind: 'error', stage: stageId, role: null, label: labelOf(stageId), headline: `${labelOf(stageId)} stopped`, reason: oneLine(error.message, 2000), command: commandFor(stageId === PR_STAGE ? 'resume' : 'retry', id, cli), repeated: 0 };
+}
+// The engine's terminal stop message: the needs-you block (what waits, why,
+// the command) and every command that moves the run on, so a background
+// engine's log says the same as the dashboard and `agentic status`.
+function stopMessage(id, { stageId = null, error = null } = {}) {
+  try {
+    const state = loadState(id);
+    if (!state) return;
+    const cli = process.env.AI_AGENTIC_CLI === '1';
+    const attention = needsYou(id, state, { root: RUNS, cli, reasonMax: 2000 }) || (error && stageId ? errorAttention(id, stageId, error, cli) : null);
+    if (attention) console.log(needsYouLines(attention, recoveryCommands(id, attention, { root: RUNS, cli, state })).join('\n'));
+  } catch (e) { console.warn(`⚠ stop message not shown: ${e.message}`); }
+}
 function notifyRun(id, { stageId = null, error = null, complete = false } = {}) {
   try {
     const state = loadState(id);
@@ -1006,8 +1022,9 @@ function notifyRun(id, { stageId = null, error = null, complete = false } = {}) 
     // The whole reason: notify.js redacts it before it cuts it, so a cut never
     // lands inside a secret and leaves half of it in the notification.
     const attention = needsYou(id, state, { root: RUNS, cli, reasonMax: Infinity });
-    const event = attention ? notify.attentionEvent(id, attention)
-      : error && stageId ? notify.errorEvent(id, stageId, error.message, state, { cli })
+    const recovery = attention || (error && stageId) ? recoveryCommands(id, attention || errorAttention(id, stageId, error, cli), { root: RUNS, cli, state }) : null;
+    const event = attention ? notify.attentionEvent(id, attention, process.env, recovery)
+      : error && stageId ? notify.errorEvent(id, stageId, error.message, state, { cli, recovery })
         : complete ? notify.completeEvent(id, state, { cli })
           : null;
     return event ? notify.deliver(stateFile(id), event, { root: PROJECT_ROOT }) : null;
@@ -1077,11 +1094,11 @@ function runLoop(id, opts = {}) {
     console.log(`${id}: ${stage.id} (${phaseStatus(state, stage.id)})`);
     let result;
     try { result = executeStage(id, wf, stage, opts); }
-    catch (e) { if (!opts['dry-run']) notifyRun(id, { stageId: stage.id, error: e }); throw e; }
+    catch (e) { if (!opts['dry-run']) { stopMessage(id, { stageId: stage.id, error: e }); notifyRun(id, { stageId: stage.id, error: e }); } throw e; }
     if (result === 'dry-run') return result;
-    if (result === 'waiting') { notifyRun(id); return result; }
+    if (result === 'waiting') { stopMessage(id); notifyRun(id); return result; }
     const updated = loadState(id);
-    if (['fail', 'blocked'].includes(phaseStatus(updated, stage.id))) { notifyRun(id, { stageId: stage.id, error: new Error(updated.phases?.[stage.id]?.note || phaseStatus(updated, stage.id)) }); return phaseStatus(updated, stage.id); }
+    if (['fail', 'blocked'].includes(phaseStatus(updated, stage.id))) { const stop = { stageId: stage.id, error: new Error(updated.phases?.[stage.id]?.note || phaseStatus(updated, stage.id)) }; stopMessage(id, stop); notifyRun(id, stop); return phaseStatus(updated, stage.id); }
     if (opts.once) return result;
   }
   throw new Error('workflow exceeded 50 engine iterations');
@@ -1318,6 +1335,11 @@ function notificationSelftest() {
     assert.strictEqual(sent[0].key, `N-FAIL|acceptance-criteria|fail|${failed.phases['acceptance-criteria'].updatedAt}`);
     assert.strictEqual(sent[0].title, 'agentic · N-FAIL needs you');
     assert.match(sent[0].body, /^Acceptance Criteria failed: acceptance-criteria\/orchestration: artifact\/worktree validation failed.* — run: node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL$/, sent[0].body);
+    // The terminal gets the needs-you block with every recovery command and
+    // the rejected agent output; the block is printed once.
+    assert.match(first.stdout, /⚠ Needs you: Acceptance Criteria failed\n.*\n {2}→ run: node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL\n {2}Commands:\n {4}retry\s+node ai\/tasks\/feature\/runs\.js retry N-FAIL && node ai\/workflow\/engine\.js resume N-FAIL\n {4}status\s+node ai\/workflow\/progress\.js --run N-FAIL\n {4}doctor\s+node ai\/workflow\/doctor\.js\n/, first.stdout);
+    assert.match(first.stdout, /\n {4}rejected\s+ai\/runs\/N-FAIL\/engine\/acceptance-criteria-orchestration\.rejected\n/, first.stdout);
+    assert.strictEqual((first.stdout.match(/Commands:/g) || []).length, 1, first.stdout);
     assert.deepStrictEqual(failed.notifications.sent, [sent[0].key], 'the key is recorded in the run state');
     assert.ok(!fs.existsSync(path.join(states, 'N-FAIL', 'engine', 'engine.pid')), 'the engine released the run when it exited');
 
@@ -1361,9 +1383,11 @@ function notificationSelftest() {
     for (let i = 0; i < 2; i++) {
       const held = resume('N-GATE');
       assert.strictEqual(held.result, 'waiting');
-      assert.match(held.stdout, /N-GATE: waiting for human approval\n⚠ Needs you: The plan waits for your approval\n/, held.stdout);
+      assert.match(held.stdout, /N-GATE: waiting for human approval — review ai\/runs\/N-GATE\/06-plan\.md\n⚠ Needs you: The plan waits for your approval\n/, held.stdout);
       assert.match(held.stdout, /\n {2}Plan: 1 steps · 2 acceptance criteria · 0 risks\n {4}│ Add the setting and its tests\.\n/, held.stdout);
       assert.ok(held.stdout.includes(`→ run: ${commandFor('approve', 'N-GATE', false)}`), held.stdout);
+      assert.match(held.stdout, /\n {2}Commands:\n {4}approve\s+node ai\/tasks\/feature\/runs\.js approve N-GATE && node ai\/workflow\/engine\.js resume N-GATE\n {4}rework plan\s+node ai\/tasks\/feature\/runs\.js retry N-GATE plan && /, held.stdout);
+      assert.match(held.stdout, /\n {4}artifact\s+ai\/runs\/N-GATE\/06-plan\.md\n/, held.stdout);
     }
     const gate = events().filter(e => e.key.startsWith('N-GATE|'));
     assert.strictEqual(gate.length, 1, JSON.stringify(gate));
@@ -1384,6 +1408,8 @@ function notificationSelftest() {
       assert.strictEqual(held.result, 'waiting', held.stdout);
       assert.match(held.stdout, /⚠ Needs you: 1 conflict needs your decision/);
       assert.match(held.stdout, /→ run: node ai\/workflow\/conflicts\.js list N-CONF/);
+      assert.match(held.stdout, /\n {4}resolve\s+node ai\/workflow\/conflicts\.js resolve N-CONF CONFLICT-001 --decision "\.\.\." --rationale "\.\.\."\n {4}resume\s+node ai\/workflow\/engine\.js resume N-CONF\n/, held.stdout);
+      assert.match(held.stdout, /\n {4}artifact\s+ai\/runs\/N-CONF\/05-analysis\/conflicts\.json\n/, held.stdout);
       assert.strictEqual(stateOf('N-CONF').phases.plan?.status || 'pending', 'pending');
     }
     const conf = events().filter(e => e.key.startsWith('N-CONF|'));

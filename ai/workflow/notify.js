@@ -128,11 +128,19 @@ function trimTo(text, max) {
   if (value.length <= max) return value;
   return max >= 2 ? `${value.slice(0, max - 1)}…` : '';
 }
-// "<lead><reason><tail>": the tail (the command) is kept whole and the reason
-// gets what is left of BODY_MAX, up to REASON_MAX; too little left, no reason.
-function fitBody(lead, reason, tail, fallbackLead) {
+// "<lead><reason>[ · extra]…<tail>": the tail (the command) is kept whole and
+// the reason gets what is left of BODY_MAX, up to REASON_MAX; too little left,
+// no reason. The extras (the recovery commands) follow in order, each whole or
+// not at all, before the tail, so the primary command stays last.
+function fitBody(lead, reason, tail, fallbackLead, extras = [], env = process.env) {
   const room = Math.min(REASON_MAX, BODY_MAX - lead.length - tail.length);
-  return room >= 20 && reason ? `${lead}${trimTo(reason, room)}${tail}` : `${fallbackLead}${tail}`;
+  let body = room >= 20 && reason ? `${lead}${trimTo(reason, room)}` : fallbackLead;
+  for (const item of extras) {
+    const extra = ` · ${clean(item, Infinity, env)}`;
+    if (body.length + extra.length + tail.length > BODY_MAX) break;
+    body += extra;
+  }
+  return `${body}${tail}`;
 }
 
 function which(bin, env = process.env) {
@@ -178,20 +186,22 @@ function createNotifier({ env = process.env, platform = process.platform, spawnF
 // ---------------------------------------------------------------- events
 
 // `attention` is progress.js needsYou(); the engine asks it for the whole
-// reason (reasonMax: Infinity), so redaction sees every character before any cut.
-function attentionEvent(id, attention, env = process.env) {
+// reason (reasonMax: Infinity), so redaction sees every character before any
+// cut. `recovery` is progress.js recoveryCommands(): its short form rides
+// along as far as it fits.
+function attentionEvent(id, attention, env = process.env, recovery = null) {
   const headline = clean(attention.headline, 120, env);
   const command = clean(attention.command, Infinity, env);
   const lead = attention.repeated ? `${headline}. ${clean(attention.label, 40, env)}: ` : `${headline}: `;
-  const body = fitBody(lead, clean(attention.reason, Infinity, env), ` — run: ${command}`, headline);
+  const body = fitBody(lead, clean(attention.reason, Infinity, env), ` — run: ${command}`, headline, recovery?.short || [], env);
   return { key: attention.key, kind: attention.kind, title: clean(`agentic · ${id} needs you`, TITLE_MAX, env), subtitle: `run: ${command}`, body };
 }
 // An engine error the state does not record (an unknown condition, a missing
 // dependency): still a stop, still worth telling.
-function errorEvent(id, stageId, message, state, { cli, env = process.env } = {}) {
+function errorEvent(id, stageId, message, state, { cli, env = process.env, recovery = null } = {}) {
   const command = clean(commandFor(stageId === 'pull-request' ? 'resume' : 'retry', id, cli), Infinity, env);
   const label = clean(labelOf(stageId), 40, env);
-  const body = fitBody(`${label} stopped: `, clean(message, Infinity, env), ` — run: ${command}`, `${label} stopped`);
+  const body = fitBody(`${label} stopped: `, clean(message, Infinity, env), ` — run: ${command}`, `${label} stopped`, recovery?.short || [], env);
   return { key: `${id}|${stageId}|error|${state?.updatedAt || ''}`, kind: 'error', title: clean(`agentic · ${id} needs you`, TITLE_MAX, env), subtitle: `run: ${command}`, body };
 }
 // The key carries the moment the run completed, so a run that completes again
@@ -344,6 +354,22 @@ function selftest() {
     assert.ok(stopped.body.length <= BODY_MAX);
     const repeated = attentionEvent('FEAT-1', { kind: 'blocked', key: 'k2', label: 'Final Verification', headline: 'Same failure as last time — this needs a fix outside Final Verification', reason: 'mobile-evidence: no booted emulator', command: 'agentic retry FEAT-1', repeated: 3 });
     assert.match(repeated.body, /^Same failure as last time — this needs a fix outside Final Verification\. Final Verification: mobile-evidence: no booted emulator — run: agentic retry FEAT-1$/);
+    // The recovery commands ride along before the primary command, each whole
+    // or not at all; the primary command stays last.
+    const { recoveryCommands } = require('./progress');
+    const stuck = { kind: 'fail', key: 'k3', stage: 'build-test', label: 'Build + Tests', headline: 'Build + Tests failed', reason: '3 widget tests fail', command: 'agentic retry FEAT-1', repeated: 0 };
+    const withRecovery = attentionEvent('FEAT-1', stuck, { PATH: '' }, recoveryCommands('FEAT-1', stuck, { cli: true, exists: rel => rel === 'engine/background.log' }));
+    assert.match(withRecovery.body, /^Build \+ Tests failed: 3 widget tests fail · status: agentic status FEAT-1 · doctor: agentic doctor · log: \S*FEAT-1\/engine\/background\.log — run: agentic retry FEAT-1$/);
+    assert.ok(withRecovery.body.length <= BODY_MAX);
+    const repeatedRecovery = attentionEvent('FEAT-1', { ...repeated, ...{ kind: 'blocked', key: 'k2', stage: 'verification', role: 'mobile-evidence', label: 'Final Verification', headline: 'Same failure as last time — this needs a fix outside Final Verification', reason: 'mobile-evidence: no booted emulator', command: 'agentic retry FEAT-1', repeated: 3 } }, { PATH: '' }, recoveryCommands('FEAT-1', { kind: 'blocked', stage: 'verification', role: 'mobile-evidence', command: 'agentic retry FEAT-1' }, { cli: true, exists: () => false }));
+    assert.match(repeatedRecovery.body, /^Same failure as last time — this needs a fix outside Final Verification\. Final Verification: mobile-evidence: no booted emulator · retry mobile-evidence: agentic retry FEAT-1 mobile-evidence · status: agentic status FEAT-1 · doctor: agentic doctor — run: agentic retry FEAT-1$/);
+    // The Node form with a long id: items that do not fit are dropped whole, never cut.
+    const longStuck = { ...stuck, reason: longReason, command: nonCli };
+    const longBody = attentionEvent('FEAT-2738-master-refactor', longStuck, { PATH: '' }, recoveryCommands('FEAT-2738-master-refactor', longStuck, { cli: false, exists: () => true })).body;
+    assert.ok(longBody.endsWith(` — run: ${nonCli}`) && longBody.length <= BODY_MAX, longBody);
+    assert.ok(!/ · [^·]*…/.test(longBody.slice(longBody.indexOf(' · ') >= 0 ? longBody.indexOf(' · ') : longBody.length)), 'no extra is cut');
+    const errorRecovery = errorEvent('FEAT-1', 'build-test', 'boom', {}, { cli: true, env: { PATH: '' }, recovery: recoveryCommands('FEAT-1', { kind: 'error', stage: 'build-test', command: 'agentic retry FEAT-1' }, { cli: true, exists: () => false }) });
+    assert.strictEqual(errorRecovery.body, 'Build + Tests stopped: boom · status: agentic status FEAT-1 · doctor: agentic doctor — run: agentic retry FEAT-1');
     assert.strictEqual(completeEvent('FEAT-1', { pullRequest: { number: 12, url: 'https://github.com/o/r/pull/12' } }).body, 'Pull request #12 https://github.com/o/r/pull/12');
     assert.match(completeEvent('FEAT-1', { phases: { 'pull-request': { status: 'skipped' } } }, { cli: true }).body, /agentic pr FEAT-1$/);
     // A run that completes again after rework is a new event.

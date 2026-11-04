@@ -16,6 +16,7 @@ const {
   buildSummary,
   commandFor,
   needsYouLines,
+  recoveryCommands,
   planDigestLines,
   renderTerminal,
   renderMarkdown,
@@ -425,6 +426,93 @@ function staleApprovedState() {
     // An architecture selection gate.
     const arch = { status: 'active', roles: {}, phases: { 'architecture-options': { status: 'pass', updatedAt: 'a1' } } };
     assert.deepStrictEqual([needsYou('FEAT-7', arch, { root, cli: true }).stage, needsYou('FEAT-7', arch, { root, cli: true }).command], ['architecture-selection', 'agentic architecture FEAT-7 <option-id>']);
+
+    // Recovery commands: the "Commands:" block under a needs-you, with every
+    // command that moves the run on, and the log and artifacts that exist.
+    const { relativeStatePath } = require('./paths');
+    const pairs = r => r.items.map(i => [i.label, i.text]);
+    const touch = (id, rel) => { fs.mkdirSync(path.dirname(path.join(root, id, rel)), { recursive: true }); fs.writeFileSync(path.join(root, id, rel), 'x'); };
+    assert.strictEqual(recoveryCommands('FEAT-1', null), null);
+    assert.deepStrictEqual([commandFor('status', 'R1', true), commandFor('status', 'R1', false), commandFor('doctor', 'R1', true), commandFor('doctor', 'R1', false), commandFor('pr', 'R1', true), commandFor('pr', 'R1', false), commandFor('retry-role', 'R1', true, 'plan'), commandFor('retry-role', 'R1', false, 'fixes')],
+      ['agentic status R1', 'node ai/workflow/progress.js --run R1', 'agentic doctor', 'node ai/workflow/doctor.js', 'agentic pr R1', 'node ai/workflow/engine.js pr R1', 'agentic retry R1 plan', 'node ai/tasks/feature/runs.js retry R1 fixes && node ai/workflow/engine.js resume R1']);
+    // A failed stage: retry, status, doctor; the log and the stage's files once they exist.
+    const failedAttention = needsYou('FEAT-1', failed, { root, cli: true });
+    const failedRec = recoveryCommands('FEAT-1', failedAttention, { root, cli: true, state: failed });
+    assert.deepStrictEqual(pairs(failedRec), [['retry', 'agentic retry FEAT-1'], ['status', 'agentic status FEAT-1'], ['doctor', 'agentic doctor']]);
+    assert.deepStrictEqual(failedRec.lines, ['Commands:', '  retry   agentic retry FEAT-1', '  status  agentic status FEAT-1', '  doctor  agentic doctor']);
+    assert.deepStrictEqual(failedRec.short, ['status: agentic status FEAT-1', 'doctor: agentic doctor'], 'the short form leaves the primary command out');
+    for (const rel of ['engine/background.log', '08-build-test.md', 'engine/build-test-qa-execute.rejected']) touch('FEAT-1', rel);
+    const withFiles = recoveryCommands('FEAT-1', failedAttention, { root, cli: true, state: failed });
+    assert.deepStrictEqual(pairs(withFiles).slice(3), [['log', relativeStatePath('FEAT-1', 'engine/background.log')], ['artifact', relativeStatePath('FEAT-1', '08-build-test.md')], ['rejected', relativeStatePath('FEAT-1', 'engine/build-test-qa-execute.rejected')]]);
+    const nodeForm = recoveryCommands('FEAT-1', needsYou('FEAT-1', failed, { root, cli: false }), { root, cli: false, state: failed });
+    assert.deepStrictEqual(pairs(nodeForm), [['retry', 'node ai/tasks/feature/runs.js retry FEAT-1 && node ai/workflow/engine.js resume FEAT-1'], ['status', 'node ai/workflow/progress.js --run FEAT-1'], ['doctor', 'node ai/workflow/doctor.js'], ['log', 'ai/runs/FEAT-1/engine/background.log'], ['artifact', 'ai/runs/FEAT-1/08-build-test.md'], ['rejected', 'ai/runs/FEAT-1/engine/build-test-qa-execute.rejected']]);
+    assert.ok(nodeForm.items.every(i => !i.text.includes('…')), 'every item is whole');
+    assert.strictEqual(nodeForm.lines[1], '  retry     node ai/tasks/feature/runs.js retry FEAT-1 && node ai/workflow/engine.js resume FEAT-1', 'labels are padded to the widest');
+    const withBlock = needsYouLines(failedAttention, withFiles);
+    assert.deepStrictEqual(withBlock.slice(3), withFiles.lines.map(l => `  ${l}`), 'the block ends the needs-you lines');
+    assert.strictEqual(withBlock[3], '  Commands:');
+    // The same failure again gives the same block; the headline already says the fix is elsewhere.
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-1', { ...failedAttention, repeated: 3 }, { root, cli: true, state: failed })), pairs(withFiles));
+    const fileSummary = buildSummary('FEAT-1', failed, { root });
+    assert.deepStrictEqual(fileSummary.recovery.items.map(i => i.label), ['retry', 'status', 'doctor', 'log', 'artifact', 'rejected']);
+    assert.match(renderTerminal(fileSummary), /\n {3}→ run: .*\n {3}Commands:\n {5}retry\s+/);
+    assert.match(renderMarkdown(fileSummary), /> Run: `.*`  \n> Commands:  \n> retry: `.*`  \n> status: `/);
+    assert.ok(!renderMarkdown(fileSummary, { published: true }).includes('Commands'), 'the published comment carries no block');
+    for (const [text, what] of [[renderMarkdown(fileSummary), 'markdown with block']]) {
+      const lines = text.split('\n');
+      const at = lines.indexOf('| Stage | Status |');
+      assert.strictEqual(lines[at - 1], '', `${what}: an empty line before the stage table`);
+      for (let i = 1; i < at; i++) if (lines[i - 1].startsWith('>') && !lines[i].startsWith('>')) assert.strictEqual(lines[i], '');
+    }
+    // A parallel stage: one retry per stopped role, and its artifact.
+    touch('FEAT-2', '09-reviews/security-reviewer.md');
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-2', review, { root, cli: true, state: reviews })), [['retry', 'agentic retry FEAT-2'], ['retry security-review', 'agentic retry FEAT-2 security-review'], ['status', 'agentic status FEAT-2'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-2', '09-reviews/security-reviewer.md')]]);
+    // A blocked conditional role: its own retry and its device artifact.
+    const cond = { status: 'active', roles: {}, phases: passed('verification'), conditionals: { verification: { 'mobile-evidence': { status: 'blocked', reason: 'no booted Android emulator', updatedAt: 't2' } } } };
+    touch('FEAT-3', 'device/mobile-device-qc.md');
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-3', needsYou('FEAT-3', cond, { root, cli: true }), { root, cli: true, state: cond })), [['retry', 'agentic retry FEAT-3'], ['retry mobile-evidence', 'agentic retry FEAT-3 mobile-evidence'], ['status', 'agentic status FEAT-3'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-3', 'device/mobile-device-qc.md')]]);
+    // A blocked pull request: resume, pr, the artifact and the rejected description.
+    for (const rel of ['12-pull-request.md', 'engine/pull-request-pr-description.rejected']) touch('FEAT-4', rel);
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-4', needsYou('FEAT-4', pr, { root, cli: true }), { root, cli: true, state: pr })), [['resume', 'agentic resume FEAT-4'], ['pr', 'agentic pr FEAT-4'], ['status', 'agentic status FEAT-4'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-4', '12-pull-request.md')], ['rejected', relativeStatePath('FEAT-4', 'engine/pull-request-pr-description.rejected')]]);
+    // The approval gate: approve, rework the plan, the plan file.
+    fs.unlinkSync(path.join(root, 'FEAT-5', 'plan.approved'));
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-5', needsYou('FEAT-5', gate, { root, cli: true }), { root, cli: true, state: gate })), [['approve', 'agentic approve FEAT-5'], ['rework plan', 'agentic retry FEAT-5 plan'], ['status', 'agentic status FEAT-5'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-5', '06-plan.md')]]);
+    // The architecture gate: select, both files.
+    for (const rel of ['05-architecture-assessment.md', '05-architecture-options.md']) touch('FEAT-7', rel);
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-7', needsYou('FEAT-7', arch, { root, cli: true }), { root, cli: true, state: arch })), [['select', 'agentic architecture FEAT-7 <option-id>'], ['status', 'agentic status FEAT-7'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-7', '05-architecture-assessment.md')], ['artifact', relativeStatePath('FEAT-7', '05-architecture-options.md')]]);
+    // Open conflicts: list, resolve (the real id when one is left), resume, the file.
+    writeConflicts(six);
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-6', needsYou('FEAT-6', conflicts, { root, cli: true }), { root, cli: true, state: conflicts })), [['conflicts', 'agentic conflicts FEAT-6'], ['resolve', 'agentic resolve FEAT-6 <conflict-id> --decision "..." --rationale "..."'], ['resume', 'agentic resume FEAT-6'], ['status', 'agentic status FEAT-6'], ['doctor', 'agentic doctor'], ['artifact', relativeStatePath('FEAT-6', '05-analysis/conflicts.json')]]);
+    writeConflicts([six[0], { ...six[1], status: 'resolved' }, six[2]]);
+    assert.strictEqual(recoveryCommands('FEAT-6', needsYou('FEAT-6', conflicts, { root, cli: true }), { root, cli: true, state: conflicts }).items[1].text, 'agentic resolve FEAT-6 CONFLICT-002 --decision "..." --rationale "..."');
+    // An error the state does not record, and a stage id from state.json that
+    // the workflow does not know: a command, never a path.
+    assert.deepStrictEqual(pairs(recoveryCommands('FEAT-9', { kind: 'error', stage: 'build-test', role: null, command: 'agentic retry FEAT-9' }, { root, cli: true })), [['retry', 'agentic retry FEAT-9'], ['status', 'agentic status FEAT-9'], ['doctor', 'agentic doctor']]);
+    const hostileStage = { status: 'active', roles: {}, phases: { ...passed('build-test'), '../../evil': { status: 'fail', note: 'x', updatedAt: 't' } } };
+    const hostileRec = recoveryCommands('FEAT-9', needsYou('FEAT-9', hostileStage, { root, cli: true }), { root, cli: true, state: hostileStage, exists: () => true });
+    assert.ok(hostileRec.items.every(i => !i.text.includes('evil')), JSON.stringify(hostileRec.items));
+    // Stalled: a stage in progress whose engine left its record and is gone.
+    const { recordFor } = require('./engine-owner');
+    const { stalledAttention } = require('./progress');
+    const half = { status: 'active', roles: {}, phases: { ...passed('implementation'), implementation: { status: 'in_progress', updatedAt: 't' } } };
+    fs.mkdirSync(path.join(root, 'FEAT-10', 'engine'), { recursive: true });
+    assert.strictEqual(buildSummary('FEAT-10', half, { root }).stalled, null, 'no record (a run driven by hand): not stalled');
+    fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), recordFor(999999, 'resume'));
+    const stalledSummary = buildSummary('FEAT-10', half, { root });
+    assert.strictEqual(stalledSummary.needsYou, null, 'needsYou stays as it is');
+    assert.deepStrictEqual([stalledSummary.stalled.kind, stalledSummary.stalled.stage, stalledSummary.stalled.headline, stalledSummary.engine], ['stalled', 'implementation', 'Implementation is in progress but its engine (pid 999999) is gone', null]);
+    assert.match(stalledSummary.stalled.key, /^FEAT-10\|implementation\|stalled\|/);
+    assert.deepStrictEqual(stalledSummary.recovery.items.map(i => i.label), ['retry', 'status', 'doctor', 'owner']);
+    assert.strictEqual(stalledSummary.recovery.items[0].text, stalledSummary.stalled.command);
+    assert.match(renderTerminal(stalledSummary), /⚠ Needs you: Implementation is in progress but its engine \(pid 999999\) is gone\n.*\n {3}→ run: .*\n {3}Commands:\n/);
+    assert.match(renderMarkdown(stalledSummary), /\*\*Needs you:\*\* Implementation is in progress but its engine/);
+    assert.strictEqual(stalledAttention('FEAT-10', { ...half, status: 'done' }, root), null);
+    assert.strictEqual(stalledAttention('FEAT-10', { ...half, phases: passed('implementation') }, root), null, 'nothing in progress');
+    assert.strictEqual(buildSummary('FEAT-10', failed, { root }).stalled, null, 'a stopped stage is a needs-you, not a stall');
+    assert.strictEqual(stalledAttention('FEAT-10', half, root, true).command, 'agentic retry FEAT-10');
+    fs.writeFileSync(path.join(root, 'FEAT-10', 'engine', 'engine.pid'), recordFor(process.pid, 'resume'));
+    const driving = buildSummary('FEAT-10', half, { root });
+    assert.deepStrictEqual([driving.stalled, driving.engine.pid], [null, process.pid], 'a live engine wins');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

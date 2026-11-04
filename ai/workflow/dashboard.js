@@ -147,15 +147,18 @@ function wrap(text, size, max) {
 
 // The "needs you" banner: what stopped, why (one or two lines), at the
 // approval gate the plan digest (counts, up to `planLines` of the summary, the
-// file and the keys), and the exact command. Nothing approves on highlight.
-function bannerLines(run, color, size = 60, planLines = 6) {
+// file and the keys), the exact command, and the recovery commands unless the
+// terminal is short (`compact`). A run whose engine died mid-stage (stalled)
+// gets the same banner. Nothing approves on highlight.
+function bannerLines(run, color, size = 60, planLines = 6, compact = false) {
   if (!run || !run.inProgress) return [];
   if (run.engine) return [paint(`${RUNNING} engine running · ${describeEngine(run.engine)}`, COLORS.cyan, color), ''];
-  const attention = run.needsYou;
+  const attention = run.needsYou || run.stalled;
   if (!attention) return [];
   const tone = attention.kind === 'waiting' ? COLORS.yellow : COLORS.red;
   const inner = Math.max(10, size - 2);
   const plan = attention.plan ? planDigestLines(attention.plan) : [];
+  const recovery = !compact && run.recovery ? run.recovery.lines : [];
   // Each part wraps to two lines, so a narrow pane still shows the whole command.
   return [
     ...wrap(`${NEEDS_YOU} NEEDS YOU · ${attention.headline}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, color ? COLORS.bold + tone : '', color)),
@@ -166,6 +169,8 @@ function bannerLines(run, color, size = 60, planLines = 6) {
       ...wrap(`  Full plan: ${attention.plan.path} · P opens it · A approves`, inner, 2).map(line => `  ${line}`),
     ] : []),
     ...wrap(`→ ${attention.command}`, inner, 2).map((line, i) => paint(i ? `  ${line}` : line, COLORS.bold, color)),
+    // A line that fits keeps its column alignment; a longer one wraps to two.
+    ...recovery.flatMap((line, i) => (width(line) <= inner - 2 ? [line] : wrap(line, inner - 2, 2)).map((part, j) => paint(`  ${j ? '  ' : ''}${part}`, i === 0 ? COLORS.dim : '', color))),
     '',
   ];
 }
@@ -181,8 +186,8 @@ function detailLines(run, rows, color, size = 60) {
     // The number comes before the URL, so a narrow pane clips the URL, not the number.
     ...(pullRequestLine(run) ? [paint(pullRequestLine(run), run.pullRequest ? COLORS.cyan : COLORS.dim, color)] : []),
     '',
-    // A short terminal keeps room for the stages: fewer summary lines.
-    ...bannerLines(run, color, size, Math.max(2, Math.min(6, rows - 22))),
+    // A short terminal keeps room for the stages: fewer summary lines, no recovery block.
+    ...bannerLines(run, color, size, Math.max(2, Math.min(6, rows - 22)), rows < 24),
   ];
   const foot = [
     '',
@@ -782,6 +787,25 @@ function selftest() {
   assert(needs.includes('R resume · T retry'), 'the footer lists the new keys');
   for (const line of needLines.filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100, `banner lines keep the frame width: ${JSON.stringify(line)}`);
   for (const line of renderFrame({ runs, index: 2, width: 60, height: 30, color: false }).split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 60);
+  // The recovery block follows the command on a normal terminal, wrapped
+  // inside the pane; a short terminal leaves it out and keeps the stages.
+  assert.ok(blockedRun.recovery && blockedRun.recovery.lines[0] === 'Commands:');
+  assert(detailText.includes('Commands:'), detailText);
+  assert(detailText.includes(`status ${blockedRun.recovery.items.find(i => i.label === 'status').text}`) || detailText.includes('status  node ai/workflow/progress.js --run FEAT-011'), detailText);
+  for (const height of [12, 16]) {
+    const short = renderFrame({ runs, index: 2, width: 100, height, color: false });
+    assert(!short.includes('Commands:'), `${height} rows: no block`);
+    assert(short.includes('NEEDS YOU'), `${height} rows: the banner stays`);
+  }
+  // A run whose engine died mid-stage: the same (red) banner from `stalled`,
+  // and no ⚠ list marker (the list marks needs-you only).
+  const stalledRun = { ...runs[1], needsYou: null, engine: null, stalled: { kind: 'stalled', stage: 'implementation', label: 'Implementation', headline: 'Implementation is in progress but its engine (pid 999) is gone', reason: 'no engine has claimed FEAT-007 since t; retry resets the stage', command: 'agentic retry FEAT-007', repeated: 0, key: 'FEAT-007|implementation|stalled|t' }, recovery: { items: [{ label: 'retry', text: 'agentic retry FEAT-007' }, { label: 'owner', text: '.agentic-runs/FEAT-007/engine/engine.pid' }], lines: ['Commands:', '  retry  agentic retry FEAT-007', '  owner  .agentic-runs/FEAT-007/engine/engine.pid'], short: [] } };
+  const stalledFrame = renderFrame({ runs: [stalledRun], index: 0, width: 100, height: 34, color: false });
+  const stalledText = stalledFrame.split('\n').filter(l => l.startsWith('│')).map(l => l.split('│')[2].trim()).filter(Boolean).join(' ');
+  assert(stalledText.includes('⚠ NEEDS YOU · Implementation is in progress but its engine (pid 999) is gone'), stalledText);
+  assert(stalledFrame.includes('owner  .agentic-runs/FEAT-007/engine/engine.pid'), 'a block line that fits keeps its alignment');
+  assert(!stalledFrame.split('\n').some(l => /⚠ FEAT-007/.test(l)), 'no list marker for a stalled run');
+  assert(renderFrame({ runs: [stalledRun], index: 0, width: 100, height: 34, color: true }).includes(`${COLORS.bold}${COLORS.red}⚠ NEEDS YOU`), 'a stall is painted red');
   // A running engine: its own marker and line, no needs-you banner.
   const running = [{ ...blockedRun, engine: { pid: 4242, kind: 'engine', command: 'resume', startedAt: null, host: os.hostname() } }];
   const runningFrame = renderFrame({ runs: running, index: 0, width: 100, height: 30, color: false });

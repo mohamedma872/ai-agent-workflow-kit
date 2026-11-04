@@ -131,8 +131,14 @@ function renderList(runs, options = {}) {
     lines.push(`${marker}${String(run.id).padEnd(idWidth)}  ${feature.padEnd(featureWidth)}  ${String(run.percent).padStart(3)}%  ${state.padEnd(9)}  ${current.padEnd(30)}  ${ago(run.updatedAt)}`);
   }
   lines.push('');
-  const waiting = runs.filter(r => r.inProgress && r.needsYou && !r.engine);
-  for (const run of waiting) lines.push(`⚠ ${run.id}: ${run.needsYou.headline} — run: ${run.needsYou.command}`);
+  // Each run that waits on a human, or whose engine died mid-stage, with its
+  // headline, its command and the recovery block.
+  const waiting = runs.filter(r => r.inProgress && (r.needsYou || r.stalled) && !r.engine);
+  for (const run of waiting) {
+    const attention = run.needsYou || run.stalled;
+    lines.push(`⚠ ${run.id}: ${attention.headline} — run: ${attention.command}`);
+    for (const line of run.recovery?.lines || []) lines.push(`    ${line}`);
+  }
   if (waiting.length) lines.push('');
   lines.push(`${runs.filter(r => r.inProgress).length} in progress · ▸ = active run · open the GUI with: agentic progress`);
   return lines.join('\n');
@@ -206,13 +212,35 @@ function selftest() {
   const stuckTable = renderList([stuck], {});
   assert.match(stuckTable, /needs-you/);
   assert.match(stuckTable, /⚠ FEAT-STUCK: Build \+ Tests failed — run: /);
+  // The recovery block follows, indented, with the status command as this install spells it.
+  assert.match(stuckTable, /\n {4}Commands:\n {6}retry\s+/);
+  assert.match(stuckTable, /\n {6}status\s+(agentic status FEAT-STUCK|node ai\/workflow\/progress\.js --run FEAT-STUCK)\n/);
+  assert.ok(stuckTable.trim().endsWith('open the GUI with: agentic progress'), 'the count line stays last');
+  // A record left by a dead engine: the stopped stage still wins (needs-you).
   fs.mkdirSync(path.join(temp, 'FEAT-STUCK', 'engine'), { recursive: true });
+  fs.writeFileSync(path.join(temp, 'FEAT-STUCK', 'engine', 'engine.pid'), JSON.stringify({ pid: 999999, host: os.hostname(), command: 'resume', startedAt: new Date().toISOString() }));
+  const deadStuck = runEntry('FEAT-STUCK', temp);
+  assert.deepStrictEqual([deadStuck.engine, deadStuck.stalled, deadStuck.needsYou.headline], [null, null, 'Build + Tests failed']);
+  assert.match(renderList([deadStuck], {}), /⚠ FEAT-STUCK: Build \+ Tests failed — run: /);
   fs.writeFileSync(path.join(temp, 'FEAT-STUCK', 'engine', 'engine.pid'), JSON.stringify({ pid: process.pid, host: os.hostname(), command: 'resume', startedAt: new Date().toISOString() }));
   const runningEntry = runEntry('FEAT-STUCK', temp);
   assert.strictEqual(runningEntry.engine.pid, process.pid, 'a live engine is detected');
   assert.match(renderList([runningEntry], {}), /running/);
   assert.ok(!/⚠ FEAT-STUCK/.test(renderList([runningEntry], {})));
   fs.rmSync(path.join(temp, 'FEAT-STUCK'), { recursive: true });
+  // A stage left in progress by an engine that is gone: listed with its block
+  // and the record; a run with no record (FEAT-2, driven by hand) is not.
+  write('FEAT-DEAD', { id: 'FEAT-DEAD', status: 'active', updatedAt: '2026-09-07T11:00:00.000Z', phases: { request: at('2026-09-07T11:00:00.000Z'), implementation: { status: 'in_progress' } } }, { approved: true });
+  fs.mkdirSync(path.join(temp, 'FEAT-DEAD', 'engine'), { recursive: true });
+  fs.writeFileSync(path.join(temp, 'FEAT-DEAD', 'engine', 'engine.pid'), JSON.stringify({ pid: 999999, host: os.hostname(), command: 'resume', startedAt: '2026-09-07T11:00:00.000Z' }));
+  const dead = runEntry('FEAT-DEAD', temp);
+  assert.deepStrictEqual([dead.needsYou, dead.engine, dead.stalled.kind], [null, null, 'stalled']);
+  const deadTable = renderList([dead, runEntry('FEAT-2', temp)], {});
+  assert.match(deadTable, /⚠ FEAT-DEAD: Implementation is in progress but its engine \(pid 999999\) is gone — run: /);
+  assert.match(deadTable, /\n {6}owner\s+\S+FEAT-DEAD\/engine\/engine\.pid\n/);
+  assert.ok(!/⚠ FEAT-2/.test(deadTable), 'no record, no stall');
+  assert.match(deadTable, /FEAT-DEAD .*approved/, 'the STATE column is unchanged');
+  fs.rmSync(path.join(temp, 'FEAT-DEAD'), { recursive: true });
 
   // Open specialist conflicts: the plan waits for a decision, and CURRENT says so.
   write('FEAT-CONF', { id: 'FEAT-CONF', status: 'active', updatedAt: '2026-09-08T10:00:00.000Z', phases: { analysis: { status: 'pass' }, 'conflict-arbitration': { status: 'pass' } } });

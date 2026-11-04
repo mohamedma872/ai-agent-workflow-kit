@@ -6,7 +6,7 @@ const path = require('path');
 const yaml = require('js-yaml');
 const { stateRoot, relativeStatePath } = require('./paths');
 const { openConflicts } = require('./conflict-tracker');
-const { liveEngine, describe: describeEngine } = require('./engine-owner');
+const { liveEngine, readOwner, describe: describeEngine } = require('./engine-owner');
 
 const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
@@ -299,13 +299,35 @@ function pullRequestLine(summary) {
 // or architecture selection gate; or unresolved specialist conflicts that hold
 // the plan back. Returns null when nothing waits on a human.
 
-// Stage order from the workflow, so refactor-only stages sort where they run.
-let workflowOrder = null;
-function stageOrder() {
-  if (workflowOrder) return workflowOrder;
-  try { workflowOrder = (yaml.load(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'feature.yaml'), 'utf8')).stages || []).map(stage => stage.id); }
-  catch { workflowOrder = PHASES; }
-  return workflowOrder;
+// The workflow: stage order (so refactor-only stages sort where they run),
+// each stage's spec and the role specs, for the artifact a stopped stage wrote.
+let workflowSpec = null;
+function loadWorkflow() {
+  if (workflowSpec) return workflowSpec;
+  try {
+    const wf = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'feature.yaml'), 'utf8')) || {};
+    workflowSpec = { order: (wf.stages || []).map(stage => stage.id), stages: new Map((wf.stages || []).map(stage => [stage.id, stage])), roles: wf.roles || {} };
+  } catch { workflowSpec = { order: PHASES, stages: new Map(), roles: {} }; }
+  return workflowSpec;
+}
+function stageOrder() { return loadWorkflow().order; }
+// A run file as this install spells it: relative to the project with `agentic`, ai/runs/<id>/… otherwise.
+function runFile(id, file, cli) { return cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`; }
+// The roles of a parallel stage that failed or blocked, plus the conditional role when one did.
+function stoppedEntries(state, phase) { return roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked'); }
+function stoppedRoles(state, phase, role) { return [...stoppedEntries(state, phase).map(([name]) => name), ...(role ? [role] : [])]; }
+// The files a stopped stage leaves behind, from the workflow: the stage's or
+// its role's artifact, the artifact of each stopped role, and the rejected
+// agent output the engine keeps (engine/<stage>-<role>.rejected). A stage the
+// workflow does not know yields nothing, so a stage id taken from state.json
+// never becomes a path. The caller keeps the ones that exist.
+function stageFiles(stage, role, state) {
+  const { stages, roles } = loadWorkflow();
+  const spec = stages.get(stage);
+  if (!spec) return [];
+  const stopped = stoppedRoles(state, stage, role);
+  const names = spec.role ? [spec.role] : stopped.length ? stopped : spec.owner === 'orchestrator' ? ['orchestration'] : [];
+  return [...new Set([spec.artifact, roles[spec.role]?.artifact, ...stopped.map(name => roles[name]?.artifact), ...names.map(name => `engine/${stage}-${name}.rejected`)].filter(Boolean))];
 }
 function labelOf(phase) { return LABELS[phase] || oneLine(String(phase).split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '), 60); }
 // Escape sequences (CSI, OSC such as the OSC 52 clipboard write, any other ESC)
@@ -320,16 +342,21 @@ function oneLine(text, max = 220) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 // The command a human types next, as this install spells it. `target` is the
-// conflict a resolve names (a placeholder when there are several).
+// conflict a resolve names (a placeholder when there are several), or the role
+// or stage a retry-role reworks.
 function commandFor(action, id, cli = process.env.AI_AGENTIC_CLI === '1', target = '<conflict-id>') {
   const engine = `node ai/workflow/engine.js resume ${id}`;
   switch (action) {
     case 'retry': return cli ? `agentic retry ${id}` : `node ai/tasks/feature/runs.js retry ${id} && ${engine}`;
+    case 'retry-role': return cli ? `agentic retry ${id} ${target}` : `node ai/tasks/feature/runs.js retry ${id} ${target} && ${engine}`;
     case 'resume': return cli ? `agentic resume ${id}` : engine;
     case 'approve': return cli ? `agentic approve ${id}` : `node ai/tasks/feature/runs.js approve ${id} && ${engine}`;
     case 'architecture': return cli ? `agentic architecture ${id} <option-id>` : `npm run refactor:architecture -- ${id} <option-id>`;
     case 'conflicts': return cli ? `agentic conflicts ${id}` : `node ai/workflow/conflicts.js list ${id}`;
     case 'resolve': return `${cli ? 'agentic resolve' : 'node ai/workflow/conflicts.js resolve'} ${id} ${target} --decision "..." --rationale "..."`;
+    case 'status': return cli ? `agentic status ${id}` : `node ai/workflow/progress.js --run ${id}`;
+    case 'doctor': return cli ? 'agentic doctor' : 'node ai/workflow/doctor.js';
+    case 'pr': return cli ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
     default: throw new Error(`unknown action ${action}`);
   }
 }
@@ -343,14 +370,14 @@ function needsYou(id, state, options = {}) {
   const reasonMax = options.reasonMax || 220;
   const order = stageOrder();
   const status = phase => effectiveStatus(state, phase);
-  const artifact = file => (cli ? relativeStatePath(id, file) : `ai/runs/${id}/${file}`);
+  const artifact = file => runFile(id, file, cli);
 
   const stuck = [];
   for (const phase of new Set([...order, ...PHASES, ...Object.keys(state.phases || {})])) {
     const value = status(phase);
     if (value !== 'fail' && value !== 'blocked') continue;
     const entry = state.phases?.[phase] || {};
-    const roles = roleEntries(state, phase).filter(([, role]) => role.status === 'fail' || role.status === 'blocked');
+    const roles = stoppedEntries(state, phase);
     stuck.push({
       phase,
       status: value,
@@ -448,7 +475,7 @@ function planDigest(id, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1') {
     summary.push(line);
     used += line.length;
   }
-  return { path: cli ? relativeStatePath(id, '06-plan.md') : `ai/runs/${id}/06-plan.md`, file, summary, steps: count(plan?.steps), acceptanceCriteria: count(plan?.acceptanceCriteria), risks: count(plan?.risks), amendments: /REVIEW AMENDMENTS/i.test(text) };
+  return { path: runFile(id, '06-plan.md', cli), file, summary, steps: count(plan?.steps), acceptanceCriteria: count(plan?.acceptanceCriteria), risks: count(plan?.risks), amendments: /REVIEW AMENDMENTS/i.test(text) };
 }
 function planDigestLines(plan) {
   if (!plan) return [];
@@ -466,32 +493,105 @@ function completedAt(state) {
 function completeKey(id, at) { return `${id}|run|complete${at ? `|${at}` : ''}`; }
 
 // The needs-you block: headline, reason, the plan digest at the approval gate,
-// and the command.
-function needsYouLines(attention) {
+// the command, and the recovery commands when the caller has them.
+function needsYouLines(attention, recovery = null) {
   if (!attention) return [];
-  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, ...planDigestLines(attention.plan).map(line => `  ${line}`), `  → run: ${attention.command}`];
+  return [`⚠ Needs you: ${attention.headline}`, `  ${attention.reason}`, ...planDigestLines(attention.plan).map(line => `  ${line}`), `  → run: ${attention.command}`, ...(recovery ? recovery.lines.map(line => `  ${line}`) : [])];
+}
+
+// ---------------------------------------------------------------- recovery
+// The "Commands:" block under a needs-you: every command that moves the run on
+// from this stop, spelled as this install does (commandFor), with the engine
+// log and the stopped stage's artifact when those files exist. One function
+// feeds the dashboard banner, `agentic status`/`agentic runs`, the engine's
+// stop message and the desktop notification, so they cannot disagree.
+function recoveryCommands(id, attention, options = {}) {
+  if (!attention) return null;
+  const cli = options.cli !== undefined ? options.cli : process.env.AI_AGENTIC_CLI === '1';
+  const root = options.root || RUNS, state = options.state || null;
+  const exists = options.exists || (file => fs.existsSync(path.join(root, id, file)));
+  const items = []; // [{ label, text }], in display order
+  const add = (label, text) => { if (text && !items.some(item => item.text === text)) items.push({ label, text }); };
+  const file = (label, rel) => { if (exists(rel)) add(label, runFile(id, rel, cli)); };
+  const pr = attention.stage === 'pull-request';
+  switch (attention.kind) {
+    case 'fail': case 'blocked': case 'error': case 'stalled':
+      add(pr ? 'resume' : 'retry', commandFor(pr ? 'resume' : 'retry', id, cli));
+      for (const role of stoppedRoles(state, attention.stage, attention.role)) add(`retry ${role}`, commandFor('retry-role', id, cli, role));
+      if (pr) add('pr', commandFor('pr', id, cli));
+      break;
+    case 'waiting':
+      if (attention.conflicts) { add('conflicts', commandFor('conflicts', id, cli)); add('resolve', commandFor('resolve', id, cli, attention.conflicts.length === 1 ? attention.conflicts[0] : '<conflict-id>')); add('resume', commandFor('resume', id, cli)); }
+      else if (attention.stage === 'architecture-selection') add('select', commandFor('architecture', id, cli));
+      else { add('approve', commandFor('approve', id, cli)); add('rework plan', commandFor('retry-role', id, cli, 'plan')); }
+      break;
+    default: break;
+  }
+  add('status', commandFor('status', id, cli));
+  add('doctor', commandFor('doctor', id, cli));
+  file('log', 'engine/background.log');
+  if (attention.kind === 'stalled') file('owner', 'engine/engine.pid');
+  // The gates' own files, then what the stopped stage left behind.
+  const gateFiles = attention.conflicts ? ['05-analysis/conflicts.json', '05-analysis/arbitration.md'] : attention.stage === 'approval' ? ['06-plan.md'] : attention.stage === 'architecture-selection' ? ['05-architecture-assessment.md', '05-architecture-options.md'] : [];
+  for (const rel of [...gateFiles, ...stageFiles(attention.stage, attention.role, state)]) file(rel.endsWith('.rejected') ? 'rejected' : 'artifact', rel);
+  const primary = attention.command;
+  const width = Math.max(...items.map(item => item.label.length));
+  const lines = ['Commands:', ...items.map(item => `  ${item.label.padEnd(width)}  ${item.text}`)];
+  // The notification's short form: everything but the primary command (which it already carries), status first.
+  const short = items.filter(item => item.text !== primary).map(item => `${item.label}: ${item.text}`);
+  return { items, lines, short };
+}
+
+// A stage left in_progress by an engine that is gone: its engine.pid record is
+// still there (a normal exit removes it, engine-owner.js) but nothing alive
+// holds it. Not a needs-you kind (needsYou stays as it is); shaped like one so
+// the same views and block serve it. A run driven by hand never writes the
+// record, so it is never called stalled. No time heuristic.
+function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1') {
+  if (!state || state.status === 'done') return null;
+  const stage = [...new Set([...stageOrder(), ...PHASES])].reverse().find(phase => effectiveStatus(state, phase) === 'in_progress');
+  if (!stage) return null;
+  const dir = path.join(root, id);
+  const owner = readOwner(dir);
+  if (!owner || liveEngine(dir)) return null;
+  const label = labelOf(stage), at = oneLine(owner.startedAt, 40);
+  return {
+    kind: 'stalled',
+    stage,
+    role: null,
+    label,
+    headline: `${label} is in progress but its engine (pid ${owner.pid}) is gone`,
+    reason: `no engine has claimed ${id} since ${at || 'its last start'}; retry resets the stage`,
+    command: commandFor(stage === 'pull-request' ? 'resume' : 'retry', id, cli),
+    repeated: 0,
+    key: `${id}|${stage}|stalled|${at}`,
+  };
 }
 
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
-  const attention = needsYou(id, state, { root: options.root || RUNS });
+  const root = options.root || RUNS;
+  const attention = needsYou(id, state, { root });
+  const stalled = options.demo ? null : stalledAttention(id, state, root);
   return {
     id,
     status: state.status || 'active',
     percent,
     // Open conflicts hold the plan back: say so rather than "Waiting for Implementation Plan".
     current: attention?.conflicts ? 'Waiting for conflict decisions' : currentWork(state),
-    planApproved: options.demo ? false : planApproved(id, options.root || RUNS),
+    planApproved: options.demo ? false : planApproved(id, root),
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
     warnings: consistencyIssues(state),
     pullRequest: pullRequestSummary(state),
     pullRequestHint: pullRequestHint(id, state),
     needsYou: attention,
+    stalled,
+    recovery: recoveryCommands(id, attention || stalled, { root, state }),
     completedAt: completedAt(state),
     // The engine driving the run right now (engine-owner.js): while it works,
     // a block in the state is what it is re-running, not something to act on.
-    engine: options.demo ? null : liveEngine(path.join(options.root || RUNS, id)),
+    engine: options.demo ? null : liveEngine(path.join(root, id)),
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);
@@ -524,9 +624,9 @@ function renderTerminal(summary) {
   if (summary.engine) {
     lines.push('');
     lines.push(` ● engine running: ${describeEngine(summary.engine)}`);
-  } else if (summary.needsYou) {
+  } else if (summary.needsYou || summary.stalled) {
     lines.push('');
-    for (const line of needsYouLines(summary.needsYou)) lines.push(` ${line}`);
+    for (const line of needsYouLines(summary.needsYou || summary.stalled, summary.recovery)) lines.push(` ${line}`);
   }
   lines.push('');
 
@@ -571,12 +671,15 @@ function renderMarkdown(summary, options = {}) {
     })
     .join('\n');
 
-  // A published comment never names the engine's host or command.
+  // A published comment never names the engine's host or command, and never
+  // carries the plan text, the recovery block or its paths.
+  const needs = summary.needsYou || summary.stalled || null;
+  const recovery = !options.published && summary.recovery ? `  \n> Commands:  \n${summary.recovery.items.map(item => `> ${item.label}: \`${item.text}\`  `).join('\n')}` : '';
   const attention = summary.engine
     ? `\n> ● **Engine running**${options.published ? '' : `: ${describeEngine(summary.engine)}`}`
-    : summary.needsYou
+    : needs
       // The plan digest's counts line, never its text, and never in the published comment.
-      ? `\n> ⚠ **Needs you:** ${summary.needsYou.headline}  \n${options.published ? '' : `> ${summary.needsYou.reason}  \n${summary.needsYou.plan ? `> ${planDigestLines(summary.needsYou.plan)[0]}  \n` : ''}`}> Run: \`${summary.needsYou.command}\``
+      ? `\n> ⚠ **Needs you:** ${needs.headline}  \n${options.published ? '' : `> ${needs.reason}  \n${needs.plan ? `> ${planDigestLines(needs.plan)[0]}  \n` : ''}`}> Run: \`${needs.command}\`${recovery}`
       : '';
 
   const warnings = summary.warnings.length
@@ -681,6 +784,8 @@ module.exports = {
   buildSummary,
   needsYou,
   needsYouLines,
+  recoveryCommands,
+  stalledAttention,
   planDigest,
   planDigestLines,
   commandFor,

@@ -17,7 +17,7 @@ const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../.
 const { withStateLock } = require('../../workflow/state-lock');
 const { recordFailure, clearFailure, carried } = require('../../workflow/repeated-failure');
 const { liveEngine, describe: describeEngine, ownerFile } = require('../../workflow/engine-owner');
-const { needsYou, needsYouLines, planDigest, planDigestLines, commandFor, printable } = require('../../workflow/progress');
+const { needsYou, needsYouLines, recoveryCommands, stalledAttention, planDigest, planDigestLines, commandFor, printable } = require('../../workflow/progress');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -432,10 +432,13 @@ function render(id, state) {
   else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
   const next = state.status === 'done' ? null : PHASES.find(phase => (!state.phases?.[phase] && !legacyUnrecorded(state, phase)) || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases?.[phase]?.status));
   console.log(`\n→ resume at: ${next || 'done'}`);
-  // The same needs-you line as the progress views and the engine's notification.
+  // The same needs-you block as the progress views and the engine's notification.
   const engine = liveEngine(path.join(RUNS, id));
   if (engine) console.log(`● engine running: ${describeEngine(engine)}`);
-  else for (const line of needsYouLines(needsYou(id, state, { root: RUNS }))) console.log(line);
+  else {
+    const attention = needsYou(id, state, { root: RUNS }) || stalledAttention(id, state, RUNS);
+    for (const line of needsYouLines(attention, recoveryCommands(id, attention, { root: RUNS, state }))) console.log(line);
+  }
 }
 
 function requireAdmin() {
@@ -658,6 +661,7 @@ function selftest() {
     const shown = cli(['status', id]);
     assert.match(shown.stdout, /⚠ Needs you: Same failure as last time — this needs a fix outside Final Verification/);
     assert.match(shown.stdout, /→ run: node ai\/tasks\/feature\/runs\.js retry COND-TEST && node ai\/workflow\/engine\.js resume COND-TEST/);
+    assert.match(shown.stdout, /\n {2}Commands:\n {4}retry\s+node .*\n {4}retry mobile-evidence\s+node ai\/tasks\/feature\/runs\.js retry COND-TEST mobile-evidence && node ai\/workflow\/engine\.js resume COND-TEST\n {4}status\s+/, shown.stdout);
     const all = cli(['retry', id]);
     assert.strictEqual(all.status, 0, all.stderr);
     assert.match(all.stdout, /retried verification\/mobile-evidence \(conditional\)/);
