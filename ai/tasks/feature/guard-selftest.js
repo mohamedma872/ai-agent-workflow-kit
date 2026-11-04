@@ -50,4 +50,26 @@ for (const cmd of allowed) {
 assert.strictEqual(_test.isRunScopedWrite('echo x > ai/runs/HM-1/a.md'), true);
 assert.strictEqual(_test.isRunScopedWrite('cp src/a ai/runs/HM-1/a'), false);
 
+// The gate follows the agent's own run, not whichever run is active: two runs
+// at once, the active one unapproved, must not block the approved run's roles.
+{
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const runs = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-runs-'));
+  try {
+    fs.mkdirSync(path.join(runs, 'RUN-APPROVED'));
+    fs.writeFileSync(path.join(runs, 'RUN-APPROVED', 'plan.approved'), 'ok\n');
+    fs.mkdirSync(path.join(runs, 'RUN-OTHER'));
+    fs.writeFileSync(path.join(runs, '_active'), 'RUN-OTHER\n');
+    assert.strictEqual(_test.gatedRun({ FEATURE_RUN_ID: 'RUN-APPROVED' }, runs), 'RUN-APPROVED', 'an engine role is gated by its own run');
+    assert.strictEqual(_test.gateOpen(_test.gatedRun({ FEATURE_RUN_ID: 'RUN-APPROVED' }, runs), runs), true, 'whose approved plan opens the gate');
+    assert.strictEqual(_test.gatedRun({}, runs), 'RUN-OTHER', 'an interactive session is gated by the active run');
+    assert.strictEqual(_test.gateOpen('RUN-OTHER', runs), false);
+    assert.strictEqual(_test.gatedRun({ FEATURE_RUN_ID: 'RUN-OTHER' }, runs), 'RUN-OTHER', 'an unapproved own run stays gated even when another is approved');
+    assert.strictEqual(_test.gatedRun({ FEATURE_RUN_ID: 'NO-SUCH-RUN' }, runs), 'RUN-OTHER', 'an unknown run id falls back to the active run');
+    assert.strictEqual(_test.gatedRun({ FEATURE_RUN_ID: '../RUN-APPROVED' }, runs), 'RUN-OTHER', 'a path is not a run id');
+  } finally { fs.rmSync(runs, { recursive: true, force: true }); }
+}
+
 console.log(`feature guard shell-write selftest OK (${denied.length} denied bypass patterns, ${allowed.length} allowed read/run-scoped patterns)`);
