@@ -4,6 +4,12 @@
 
 - No unreleased runtime changes.
 
+## 1.9.32 — 2026-11-04
+
+- **Unresolved specialist conflicts now show as "needs you".** The plan stage waits like the approval gate instead of failing: the engine prints and notifies `N conflicts need your decision` with each conflict's id and topic and the exact `agentic resolve` and `agentic resume` commands, and the run list's CURRENT reads `Waiting for conflict decisions`. `agentic resume` now exits 0 while it waits there (before, it exited 1).
+- **Your conflict decisions reach the plan.** The plan and every later role that reads it get the resolved decisions as binding. The plan must cite each conflict id under "Conflict decisions applied" in `06-plan.md`; a plan that leaves one out is rejected and `agentic retry` tells the next attempt which ids it missed.
+- **Build + Tests runs again after fixes.** A new `post-fix-build-test` stage re-runs the tests before verification when the fixes stage changed the code Build + Tests passed on (`10-post-fix-build-test.md`), and is skipped when nothing changed. `agentic retry` resets only that stage; reworking fixes resets it too.
+
 ## 1.9.31 — 2026-11-04
 
 - **The kit can open the pull request after final verification.** A new last stage, `pull-request`, runs after `verification` passes. It is opt-in: nothing writes to a remote until `pull_request.enabled: true` is set in the project's `.agentic/config.yaml`.
