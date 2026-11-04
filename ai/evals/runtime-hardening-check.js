@@ -20,6 +20,7 @@ const CHECKS = [
   ['analyzer baseline against the run base, worktree untouched', ['ai/workflow/analyzer-baseline.js', '--selftest']],
   ['repeated-failure detection', ['ai/workflow/repeated-failure.js', '--selftest']],
   ['one live engine per run', ['ai/workflow/engine-owner.js', '--selftest']],
+  ['engine launcher: resume/retry/approve in the background', ['ai/workflow/engine-launch.js', '--selftest']],
   ['Appium session/build/stale-evidence attestation', ['ai/tasks/feature/evidence-attestation-selftest.js']],
   ['mobile evidence runner contract', ['ai/tasks/feature/mobile-evidence.js', 'selftest']],
   ['shell-write/plan-gate adversarial guard', ['ai/tasks/feature/guard-selftest.js']],

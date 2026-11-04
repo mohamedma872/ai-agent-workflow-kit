@@ -359,10 +359,10 @@ agentic switch FEAT-002       # make a feature the active run
 │                    │    🔄 security             in_progress      │
 │                    │ Current: Specialist Analysis → security     │
 ╰────────────────────┴─────────────────────────────────────────────╯
- ↑↓ select · enter set active · R resume · T retry · A approve · P plan · c close · a all runs · r refresh · q quit
+ ↑↓ select · enter set active · d details · R resume · T retry · A approve · P plan · c close · a all runs · r refresh · q quit
 ```
 
-`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `P` opens its plan, `A` approves the plan after a confirmation and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `d` switches the pane to what each running agent is doing (`esc` goes back), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `P` opens its plan, `A` approves the plan after a confirmation and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
 
 A run that needs you is marked `⚠` in the list, and one whose engine is running `●`. The highlighted run gets a banner with the reason and the exact command:
 

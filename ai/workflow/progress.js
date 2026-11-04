@@ -503,7 +503,8 @@ function needsYou(id, state, options = {}) {
     const top = stuck.sort((a, b) => order.indexOf(b.phase) - order.indexOf(a.phase))[0];
     const label = labelOf(top.phase);
     const repeated = top.repeated >= 2 ? top.repeated : 0;
-    const stuckRoles = stoppedEntries(state, top.phase).map(([name]) => name);
+    // Filtered like the retry targets: a role key is a path segment of the report probe.
+    const stuckRoles = stoppedRoles(state, top.phase, null);
     const report = top.role ? null : rejectedReport(root, id, top.phase, stuckRoles.length ? stuckRoles : [stageRole(top.phase)].filter(Boolean));
     const details = report ? reportDetails(report, root, id, top.phase) : null;
     const attention = {
@@ -689,22 +690,28 @@ function recoveryCommands(id, attention, options = {}) {
 function stalledAttention(id, state, root = RUNS, cli = process.env.AI_AGENTIC_CLI === '1', options = {}) {
   if (!state || state.status === 'done') return null;
   const stage = [...new Set([...stageOrder(), ...PHASES])].reverse().find(phase => effectiveStatus(state, phase) === 'in_progress');
-  if (!stage) return null;
+  // A conditional role (verification's mobile-evidence) is in progress before
+  // its stage begins (engine.js executeConditional), so the stage still reads
+  // pending while the device run lasts: an engine killed there leaves no stage
+  // in progress, only the role. Mirrors the conditional loop in needsYou.
+  const conditional = stage ? null : Object.entries(state.conditionals || {}).flatMap(([phase, group]) => DONE.has(effectiveStatus(state, phase)) ? [] : Object.entries(group || {}).filter(([, entry]) => entry?.status === 'in_progress').map(([role]) => ({ phase, role }))).pop() || null;
+  if (!stage && !conditional) return null;
   const dir = path.join(root, id);
   const owner = readOwner(dir);
   if (!owner || (owner.host && owner.host !== os.hostname())) return null;
   if (options.engine !== undefined ? options.engine : liveEngine(dir)) return null;
-  const label = labelOf(stage), at = oneLine(owner.startedAt, 40);
+  const phase = stage || conditional.phase, role = conditional ? conditional.role : null;
+  const label = labelOf(phase), at = oneLine(owner.startedAt, 40);
   return {
     kind: 'stalled',
-    stage,
-    role: null,
+    stage: phase,
+    role,
     label,
-    headline: `${label} is in progress but its engine (pid ${owner.pid}) is gone`,
-    reason: `no engine has claimed ${id} since ${at || 'its last start'}; retry resets the stage`,
-    command: commandFor(stage === 'pull-request' ? 'resume' : 'retry', id, cli),
+    headline: `${label}${role ? ` (${oneLine(role, 60)})` : ''} is in progress but its engine (pid ${owner.pid}) is gone`,
+    reason: `no engine has claimed ${id} since ${at || 'its last start'}; retry resets the ${role ? 'role' : 'stage'}`,
+    command: commandFor(phase === 'pull-request' ? 'resume' : 'retry', id, cli),
     repeated: 0,
-    key: `${id}|${stage}|stalled|${at}`,
+    key: `${id}|${phase}${role ? `/${role}` : ''}|stalled|${at}`,
   };
 }
 

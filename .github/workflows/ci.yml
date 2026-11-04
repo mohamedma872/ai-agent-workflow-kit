@@ -64,6 +64,7 @@ jobs:
           node --check ai/workflow/analyzer-baseline.js
           node --check ai/workflow/repeated-failure.js
           node --check ai/workflow/engine-owner.js
+          node --check ai/workflow/engine-launch.js
           node --check ai/workflow/worktree.js
           node --check ai/workflow/progress.js
           node --check ai/workflow/dashboard.js

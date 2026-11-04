@@ -596,14 +596,20 @@ function staleApprovedState() {
     // `retry <role>` names what runs.js would refuse, and no existence probe
     // leaves the run directory. The valid role beside it keeps its retry.
     const evilRole = 'x\x1b]52;c;ZXZpbA==\x07\x1b[2K/../../../../tmp/esc';
-    const hostileReviews = { status: 'active', phases: { ...passed('reviews'), reviews: { status: 'fail', updatedAt: 't' } }, roles: { reviews: { [evilRole]: { status: 'fail', note: 'bad', updatedAt: 't' }, 'security-review': { status: 'fail', note: 'leak', updatedAt: 't' } } } };
+    // A second key that resolves to a readable file above the run directory:
+    // the rejected-report lookup (needsYou → rejectedReport) must not read it.
+    const outsideRole = 'x/../../../outside';
+    fs.writeFileSync(path.join(root, 'outside.rejected'), 'CONTENT FROM OUTSIDE THE RUN DIR');
+    const hostileReviews = { status: 'active', phases: { ...passed('reviews'), reviews: { status: 'fail', updatedAt: 't' } }, roles: { reviews: { [evilRole]: { status: 'fail', note: 'bad', updatedAt: 't' }, [outsideRole]: { status: 'fail', note: 'bad', updatedAt: 't' }, 'security-review': { status: 'fail', note: 'leak', updatedAt: 't' } } } };
     const hostileCond = { status: 'active', roles: {}, phases: passed('verification'), conditionals: { verification: { [evilRole]: { status: 'blocked', reason: 'no device', updatedAt: 't' } } } };
     for (const [state, expectRetry] of [[hostileReviews, 'agentic retry FEAT-9 security-review'], [hostileCond, null]]) {
       const probes = [];
       const attention = needsYou('FEAT-9', state, { root, cli: true });
       assert.ok(attention, 'the stop is reported');
+      assert.strictEqual(attention.details, null, 'no rejected report is read for a role key that leaves the run directory');
       const rec = recoveryCommands('FEAT-9', attention, { root, cli: true, state, exists: rel => { probes.push(rel); return true; } });
       const printed = [...needsYouLines(attention, rec), ...rec.items.map(i => `${i.label} ${i.text}`)].join(' ');
+      assert.ok(!printed.includes('OUTSIDE THE RUN DIR'), printed);
       assert.ok(!/[\x00-\x1f\x7f-\x9f]/.test(printed), JSON.stringify(printed));
       assert.ok(rec.items.every(i => !/\.\.|tmp|esc/.test(i.text)), JSON.stringify(rec.items));
       assert.ok(probes.length && probes.every(rel => !rel.split(/[\\/]/).includes('..') && !/[\x00-\x1f]/.test(rel)), JSON.stringify(probes));
@@ -628,6 +634,22 @@ function staleApprovedState() {
     assert.strictEqual(stalledAttention('FEAT-10', { ...half, phases: passed('implementation') }, root), null, 'nothing in progress');
     assert.strictEqual(buildSummary('FEAT-10', failed, { root }).stalled, null, 'a stopped stage is a needs-you, not a stall');
     assert.strictEqual(stalledAttention('FEAT-10', half, root, true).command, 'agentic retry FEAT-10');
+    // Killed during the device run: the conditional role is in_progress while
+    // its stage still reads pending (engine.js executeConditional), so no stage
+    // is in progress. The role is named with its stage, and retry resets it.
+    const device = { status: 'active', roles: {}, phases: passed('verification'), conditionals: { verification: { 'mobile-evidence': { status: 'in_progress', reason: 'running on device', updatedAt: 't' } } } };
+    const deviceSummary = buildSummary('FEAT-10', device, { root });
+    assert.deepStrictEqual([deviceSummary.needsYou, deviceSummary.engine, deviceSummary.stalled?.stage, deviceSummary.stalled?.role, deviceSummary.stalled?.headline], [null, null, 'verification', 'mobile-evidence', 'Final Verification (mobile-evidence) is in progress but its engine (pid 999999) is gone']);
+    assert.strictEqual(deviceSummary.stalled.command, stalledSummary.stalled.command, 'the same retry as a stalled stage');
+    assert.match(deviceSummary.stalled.key, /^FEAT-10\|verification\/mobile-evidence\|stalled\|/);
+    assert.deepStrictEqual(deviceSummary.recovery.items.map(i => i.label), ['retry', 'retry mobile-evidence', 'status', 'doctor', 'owner']);
+    assert.match(renderTerminal(deviceSummary), /⚠ Needs you: Final Verification \(mobile-evidence\) is in progress but its engine \(pid 999999\) is gone\n.*\n {3}→ run: .*\n {3}Commands:\n/);
+    assert.strictEqual(stalledAttention('FEAT-10', { ...device, phases: { ...passed('verification'), verification: { status: 'pass' } } }, root), null, 'a conditional left in_progress under a finished stage is not a stall');
+    assert.strictEqual(stalledAttention('FEAT-10', { ...device, conditionals: { verification: { 'mobile-evidence': { status: 'pass', updatedAt: 't' } } } }, root), null, 'a conditional that ran is not a stall');
+    assert.strictEqual(stalledAttention('FEAT-10', { ...half, ...device, phases: half.phases }, root).stage, 'implementation', 'a stage in progress is named before a conditional');
+    const evilDevice = { ...device, conditionals: { verification: { [evilRole]: { status: 'in_progress', updatedAt: 't' } } } };
+    const evilStalled = buildSummary('FEAT-10', evilDevice, { root });
+    assert.ok(!/[\x00-\x1f\x7f-\x9f]/.test(evilStalled.stalled.headline) && evilStalled.recovery.items.every(i => !/\.\.|tmp|esc/.test(i.text)), 'a hostile conditional key is printed clean and never becomes a retry target');
     // A record from another host cannot be checked from here: never called gone
     // (a long implementation on a second machine is not a stall), even past
     // engine-owner's other-host age limit.

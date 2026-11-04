@@ -678,6 +678,14 @@ function selftest() {
     assert.strictEqual(named.status, 0, named.stderr);
     assert.match(named.stdout, /verification\/mobile-evidence \(conditional\)/);
     assert.notStrictEqual(cli(['retry', id, 'mobile-evidence']).status, 0, 'nothing left to retry by that name');
+    // The engine marks the conditional in_progress for the device run; killed
+    // there, it is reset like an in_progress stage (a live engine is refused above).
+    assert.strictEqual(cli(['conditional', 'verification', 'mobile-evidence', 'in_progress', 'running on device']).status, 0);
+    const abandoned = cli(['retry', id]);
+    assert.strictEqual(abandoned.status, 0, abandoned.stderr);
+    assert.match(abandoned.stdout, /retried verification\/mobile-evidence \(conditional\)/);
+    assert.strictEqual(stateOf().conditionals.verification['mobile-evidence'].status, 'pending', 'a device run its engine abandoned is reset');
+    assert.ok(stateOf().history.some(h => h.kind === 'conditional-role' && h.action === 'retry' && h.from === 'in_progress'));
     // A phase failing twice for the same reason is recorded on the phase.
     for (const p of ['request', 'requirements']) cli(['skip', p, 'claude', 'test']);
     for (let i = 0; i < 2; i++) {
@@ -994,13 +1002,15 @@ try {
             retried.push(`${group}/${role}`);
           }
         }
-        // A conditional role (verification's mobile-evidence) blocks before its
-        // stage begins, so the stage reads pending and the loops above and below
-        // never see it. Reset it with the rest, or by its own name.
+        // A conditional role (verification's mobile-evidence) blocks, or runs,
+        // before its stage begins, so the stage reads pending and the loops
+        // above and below never see it. Reset it with the rest, or by its own
+        // name; in_progress is an engine killed during the device run (a live
+        // engine was refused above).
         for (const [phaseId, group] of Object.entries(state.conditionals || {})) {
           for (const [role, entry] of Object.entries(group || {})) {
             if (roles.length && !roles.includes(role)) continue;
-            if (!['fail', 'blocked'].includes(entry?.status)) continue;
+            if (!RETRYABLE.includes(entry?.status)) continue;
             state.conditionals[phaseId][role] = { ...carried(entry), status: 'pending', updatedAt: now(), ...(entry.reason ? { reason: entry.reason } : {}) };
             clearAttempts(phaseId, role);
             record(state, { kind: 'conditional-role', phase: phaseId, role, action: 'retry', from: entry.status, to: 'pending', reason: 'retry requested' });
