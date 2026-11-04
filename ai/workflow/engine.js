@@ -27,7 +27,7 @@ const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
 const pullRequest = require('./pull-request');
 const notify = require('./notify');
 const engineOwner = require('./engine-owner');
-const { needsYou, needsYouLines, recoveryCommands, commandFor, labelOf, oneLine } = require('./progress');
+const { needsYou, needsYouLines, recoveryCommands, commandFor, labelOf, oneLine, pullRequestSkipNote } = require('./progress');
 const { workspaceFingerprint, gitSha } = require('../tasks/feature/evidence-attestation');
 
 const RUNTIME_ROOT = runtimeRoot();
@@ -768,7 +768,8 @@ function executePullRequest(id, wf, stage) {
   // run closed before 1.9.31 a human may well have opened one by hand); only
   // `agentic pr <id> --reopen` does that.
   if (state?.status === 'done' && !options.manual) return skip(`the run is closed — open its pull request on request with: ${prHint(id)} --reopen`);
-  if (!options.enabled) return skip(`pull_request.enabled is not true in .agentic/config.yaml${options.problems.length ? ` (${options.problems.join('; ')})` : ''} — open it by hand with: ${prHint(id)}`);
+  // The same wording the views derive for a run that never reached the stage.
+  if (!options.enabled) return skip(`${pullRequestSkipNote(id)}${options.problems.length ? `; .agentic/config.yaml: ${options.problems.join('; ')}` : ''}`);
   const executor = (wf.roles[PR_ROLE] || {}).executor || '-';
   // in_progress means an engine stopped mid-stage (killed, crashed). Every step
   // of the stage can be repeated, so it carries on instead of failing to begin.
@@ -1437,6 +1438,19 @@ function notificationSelftest() {
     const done = events().filter(e => e.key.startsWith('N-DONE|'));
     assert.deepStrictEqual(done.map(e => [e.key, e.kind, e.title]), [['N-DONE|run|complete', 'complete', 'agentic · N-DONE complete']]);
     assert.match(done[0].body, /Open the pull request with: node ai\/workflow\/engine\.js pr N-DONE$/);
+    // 7b. A run verified before 1.9.31 (no pull-request phase at all) with the
+    // stage disabled: a resume records the skip once, no agent runs, the run
+    // completes, and completion is told once.
+    prepare('N-OLD', stages.filter(st => st !== 'pull-request'));
+    assert.strictEqual(stateOf('N-OLD').phases['pull-request'], undefined);
+    for (let i = 0; i < 2; i++) assert.strictEqual(resume('N-OLD').result, 'complete');
+    const oldStage = stateOf('N-OLD').phases['pull-request'];
+    assert.deepStrictEqual([oldStage.status, oldStage.note], ['skipped', 'pull_request disabled (open one with: node ai/workflow/engine.js pr N-OLD)']);
+    assert.strictEqual(stateOf('N-OLD').executionAttempts?.['pull-request'], undefined, 'no agent ran for a disabled stage');
+    const oldDone = events().filter(e => e.key.startsWith('N-OLD|'));
+    assert.strictEqual(oldDone.length, 1, JSON.stringify(oldDone));
+    assert.strictEqual(oldDone[0].key, `N-OLD|run|complete|${oldStage.updatedAt}`);
+    assert.match(oldDone[0].body, /Open the pull request with: node ai\/workflow\/engine\.js pr N-OLD$/);
 
     // 8. The case that hurt: verification's conditional mobile-evidence blocks
     // for a reason outside verification (here: no Android/iOS target). The

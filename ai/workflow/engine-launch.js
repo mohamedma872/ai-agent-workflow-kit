@@ -41,6 +41,9 @@ function startEngine(run, mode, deps = {}) {
   const verb = MODES.has(mode) ? mode : 'resume';
   if (!run || !run.dir) return { ok: false, message: `✗ nothing to ${verb}` };
   if (!run.inProgress) return { ok: false, message: `✗ ${run.id} is closed; nothing to ${verb}` };
+  // A verified run whose pull-request stage is skipped has nothing left for a
+  // resume to do: say so instead of starting an engine that only prints "complete".
+  if (verb === 'resume' && run.current === 'Done' && !run.needsYou) return { ok: false, message: `✗ ${run.id} is complete — press c to close it${run.pullRequestHint ? `, or open its pull request: ${run.pullRequestHint}` : ''}` };
   // A on a run that is not at the gate never touches state.
   if (verb === 'approve' && run.needsYou?.stage !== 'approval') return { ok: false, message: `✗ ${run.id}: nothing waits for approval` };
   const owner = live(run.dir);

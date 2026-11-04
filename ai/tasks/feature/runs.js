@@ -17,7 +17,7 @@ const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('../.
 const { withStateLock } = require('../../workflow/state-lock');
 const { recordFailure, clearFailure, carried } = require('../../workflow/repeated-failure');
 const { liveEngine, describe: describeEngine, ownerFile } = require('../../workflow/engine-owner');
-const { needsYou, needsYouLines, recoveryCommands, stalledAttention, planDigest, planDigestLines, commandFor, printable } = require('../../workflow/progress');
+const { needsYou, needsYouLines, recoveryCommands, stalledAttention, planDigest, planDigestLines, commandFor, disabledPullRequest, pullRequestSkipNote, printable } = require('../../workflow/progress');
 
 const ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -408,7 +408,7 @@ function nothingToRetry(id, state) {
   if (state.status === 'done') return `nothing to retry — ${id} is closed`;
   const attention = needsYou(id, state, { root: RUNS });
   if (attention?.kind === 'waiting') return `nothing to retry; ${attention.headline.charAt(0).toLowerCase()}${attention.headline.slice(1)} — run: ${attention.command}`;
-  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)) || legacyUnrecorded(state, phase))) return `nothing to retry — ${id} is complete`;
+  if (PHASES.every(phase => TERMINAL_OK.has(phaseStatus(state, phase)) || legacyUnrecorded(state, phase) || (phase === 'pull-request' && disabledPullRequest(state)))) return `nothing to retry — ${id} is complete`;
   return `nothing to retry; run ${cli ? 'agentic resume' : 'node ai/workflow/engine.js resume'} ${id}`;
 }
 
@@ -420,8 +420,11 @@ function render(id, state) {
   // closed after verification but before 1.9.31 has no pull-request phase, and
   // is finished, not waiting on one.
   const legacyClosed = state.status === 'done' && !state.phases?.['pull-request'] && !state.abandoned && phaseStatus(state, 'verification') === 'pass';
+  // An active, verified run with pull_request disabled: the stage reads as
+  // skipped (with the command that opens one), whether or not it is recorded.
+  const prDisabled = disabledPullRequest(state);
   for (const phase of PHASES) {
-    const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : legacyUnrecorded(state, phase) ? { status: 'skipped', note: 'the run was verified before this stage existed' } : { status: 'pending' });
+    const entry = phase === 'pull-request' && prDisabled ? { status: 'skipped', note: pullRequestSkipNote(id) } : state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : legacyUnrecorded(state, phase) ? { status: 'skipped', note: 'the run was verified before this stage existed' } : { status: 'pending' });
     // Notes quote agent and tool output: printable text only on the terminal.
     console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${printable(entry.status).padEnd(12)}${entry.note ? ` — ${printable(entry.note)}` : ''}`);
     for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${printable(role).padEnd(18)} ${printable(roleState.status).padEnd(12)}${roleState.executor ? ` · ${printable(roleState.executor)}` : ''}${roleState.note ? ` — ${printable(roleState.note)}` : ''}`);
@@ -429,8 +432,8 @@ function render(id, state) {
   const evidence = mobileEvidenceSummary(id, state);
   console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · execution ${evidence.execution?.status || 'missing'} · attestation ${evidence.attestation ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
   if (state.pullRequest?.url) console.log(`  🔗 pull request         #${state.pullRequest.number ?? '?'} ${state.pullRequest.url} (${state.pullRequest.status || 'open'}, ${state.pullRequest.branch} → ${state.pullRequest.base})`);
-  else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
-  const next = state.status === 'done' ? null : PHASES.find(phase => (!state.phases?.[phase] && !legacyUnrecorded(state, phase)) || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases?.[phase]?.status));
+  else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request')) || prDisabled) console.log(`  🔗 pull request         not opened — run: ${commandFor('pr', id)}${state.status === 'done' ? ' --reopen' : ''}`);
+  const next = state.status === 'done' ? null : PHASES.find(phase => !(phase === 'pull-request' && prDisabled) && ((!state.phases?.[phase] && !legacyUnrecorded(state, phase)) || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases?.[phase]?.status)));
   console.log(`\n→ resume at: ${next || 'done'}`);
   // The same needs-you block as the progress views and the engine's notification.
   const engine = liveEngine(path.join(RUNS, id));
@@ -742,6 +745,32 @@ function selftest() {
     fs.writeFileSync(file, JSON.stringify(st));
     const nothing = cli(['retry', id]);
     assert.match(nothing.stderr, /nothing to retry — LEG-1 is complete/, nothing.stderr);
+  }
+
+  // A run verified with pull_request disabled and no pull-request phase (an
+  // active run from before 1.9.31): the stage reads as skipped with the
+  // command that opens one, nothing is left to resume or retry, and an
+  // `agentic pr` request puts the stage back to work.
+  {
+    const id = 'LEG-2';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const p of PHASES) if (p !== 'pull-request') st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' };
+    st.evidence = { mobileScreenshots: { requirement: 'not-required', reason: 'selftest' } };
+    fs.writeFileSync(file, JSON.stringify(st));
+    const shown = cli(['status', id]).stdout;
+    assert.match(shown, /~ pull-request\s+skipped\s+— pull_request disabled \(open one with: node ai\/workflow\/engine\.js pr LEG-2\)/, shown);
+    assert.match(shown, /🔗 pull request\s+not opened — run: node ai\/workflow\/engine\.js pr LEG-2\n/, shown);
+    assert.match(shown, /→ resume at: done/, shown);
+    assert.ok(!/stored: pending|Needs you/.test(shown), shown);
+    const nothing = cli(['retry', id]);
+    assert.match(nothing.stderr, /nothing to retry — LEG-2 is complete/, nothing.stderr);
+    assert.strictEqual(cli(['pull-request-options', id]).status, 0);
+    const requested = cli(['status', id]).stdout;
+    assert.match(requested, /· pull-request\s+pending/, requested);
+    assert.match(requested, /→ resume at: pull-request/, requested);
   }
 
   // The approval gate: `status` shows the plan digest, `approve` prints it

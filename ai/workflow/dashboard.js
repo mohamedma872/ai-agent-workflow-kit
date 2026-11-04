@@ -947,6 +947,11 @@ function selftest() {
     assert.match(refused.message, /^✗ FEAT-R is already running \(engine pid 777 \(resume\)\); not starting a second engine$/);
     assert.strictEqual(calls.length, 0, 'nothing started while an engine is alive');
     assert.match(startEngine({ ...target, inProgress: false }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, /is closed/);
+    // R on a complete run (verified, pull request skipped) starts nothing; T still asks runs.js.
+    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null, pullRequestHint: 'agentic pr FEAT-R' }, 'resume', { spawnFn: fakeSpawn, live: () => null }), { ok: false, message: '✗ FEAT-R is complete — press c to close it, or open its pull request: agentic pr FEAT-R' });
+    assert.strictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'resume', { spawnFn: fakeSpawn, live: () => null }).message, '✗ FEAT-R is complete — press c to close it');
+    assert.strictEqual(calls.length, 0);
+    assert.deepStrictEqual(startEngine({ ...target, current: 'Done', needsYou: null }, 'retry', { spawnFn: fakeSpawn, live: () => null, spawnSyncFn: () => ({ status: 1, stdout: '', stderr: '✗ nothing to retry — FEAT-R is complete\n' }) }), { ok: false, message: '✗ FEAT-R: nothing to retry — FEAT-R is complete' });
     // R on a stopped stage or a waiting gate starts nothing and says what to do.
     const stuck = { ...target, needsYou: { kind: 'fail', stage: 'build-test', label: 'Build + Tests', command: 'agentic retry FEAT-R' } };
     assert.deepStrictEqual(startEngine(stuck, 'resume', { spawnFn: fakeSpawn, live: () => null, cwd: startRoot }), { ok: false, message: '✗ FEAT-R: Build + Tests needs a retry first — press T (or run: agentic retry FEAT-R)' });

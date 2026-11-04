@@ -125,14 +125,65 @@ function staleApprovedState() {
 {
   const verified = () => ({ status: 'active', phases: Object.fromEntries(PHASES.filter(p => p !== 'pull-request').map(p => [p, { status: 'pass' }])), roles: {} });
   assert.strictEqual(PHASES[PHASES.length - 1], 'pull-request');
+
+  // The stage is opt-in. With pull_request disabled (no config at all, or
+  // enabled: false) a verified run that never reached it, or holds it as
+  // pending, is complete: the stage reads as skipped, with the note and the
+  // command that opens a PR by hand, and nothing says "stored: pending".
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'progress-project-'));
+  const previousProject = process.env.AI_WORKFLOW_PROJECT_ROOT;
+  const previous = process.env.AI_AGENTIC_CLI;
+  process.env.AI_WORKFLOW_PROJECT_ROOT = project;
+  process.env.AI_AGENTIC_CLI = '1';
+  const { disabledPullRequest, pullRequestSkipNote } = require('./progress');
+  const config = text => { fs.mkdirSync(path.join(project, '.agentic'), { recursive: true }); fs.writeFileSync(path.join(project, '.agentic', 'config.yaml'), text); fs.utimesSync(path.join(project, '.agentic', 'config.yaml'), Date.now() / 1000, Date.now() / 1000 + Math.random()); };
+  const stored = verified();
+  stored.phases['pull-request'] = { status: 'pending' };
+  for (const [state, what] of [[verified(), 'disabled, no phase'], [stored, 'disabled, stored pending']]) {
+    assert.strictEqual(disabledPullRequest(state), true, what);
+    assert.strictEqual(effectiveStatus(state, 'pull-request'), 'skipped', what);
+    assert.strictEqual(percentComplete(state), 100, what);
+    assert.strictEqual(currentWork(state), 'Done', what);
+    assert.strictEqual(needsYou('FEAT-1', state, { root: os.tmpdir() }), null, what);
+    const derived = buildSummary('FEAT-1', state);
+    assert.strictEqual(derived.pullRequestHint, 'agentic pr FEAT-1', what);
+    const stage = derived.phases.find(p => p.id === 'pull-request');
+    assert.strictEqual(stage.rawStatus, undefined, `${what}: a status the view derived has no stored marker`);
+    assert.strictEqual(stage.note, 'pull_request disabled (open one with: agentic pr FEAT-1)', what);
+    assert.ok(!/stored: pending/.test(renderTerminal(derived)), what);
+    assert.match(renderTerminal(derived), /Pull request: not opened — run: agentic pr FEAT-1/, what);
+  }
+  assert.strictEqual(pullRequestSkipNote('FEAT-1', false), 'pull_request disabled (open one with: node ai/workflow/engine.js pr FEAT-1)');
+  // Verification not passed yet: the stage is still to come, percent unchanged.
+  const unverified = verified();
+  unverified.phases.verification = { status: 'in_progress' };
+  assert.strictEqual(disabledPullRequest(unverified), false);
+  assert.strictEqual(effectiveStatus(unverified, 'pull-request'), 'pending');
+  assert.strictEqual(currentWork(unverified), 'Final Verification');
+  // Enabled in the project config: the stage has work to do and waits.
+  config('pull_request:\n  enabled: true\n');
   const waiting = verified();
+  assert.strictEqual(disabledPullRequest(waiting), false, 'enabled: the stage runs');
   assert.strictEqual(currentWork(waiting), 'Waiting for Pull Request');
   assert.strictEqual(percentComplete(waiting), Math.round(((PHASES.length - 1) / PHASES.length) * 100));
   assert.strictEqual(buildSummary('FEAT-1', waiting).pullRequestHint, null, 'no hint while the stage is still to run');
+  assert.strictEqual(buildSummary('FEAT-1', waiting).phases.find(p => p.id === 'pull-request').note, null);
+  // `agentic pr` (a manual request) keeps the stage runnable while disabled.
+  fs.rmSync(path.join(project, '.agentic'), { recursive: true, force: true });
+  const requested = verified();
+  requested.pullRequestOptions = { manual: true };
+  assert.strictEqual(disabledPullRequest(requested), false, 'a requested PR is pending, not skipped');
+  assert.strictEqual(currentWork(requested), 'Waiting for Pull Request');
+  requested.pullRequestOptions = {};
+  config('pull_request:\n  enabled: false\n');
+  assert.strictEqual(currentWork(requested), 'Done', 'the config is read again when the file changes');
+  config('pull_request:\n  enabled: true\n');
+  assert.strictEqual(currentWork(requested), 'Waiting for Pull Request');
+  fs.rmSync(project, { recursive: true, force: true });
+  assert.strictEqual(currentWork(requested), 'Done', 'no config: disabled');
+  if (previousProject === undefined) delete process.env.AI_WORKFLOW_PROJECT_ROOT; else process.env.AI_WORKFLOW_PROJECT_ROOT = previousProject;
 
-  // Skipped (opt-in disabled): complete, with the command that opens it.
-  const previous = process.env.AI_AGENTIC_CLI;
-  process.env.AI_AGENTIC_CLI = '1';
+  // Skipped (opt-in disabled, recorded by the engine): complete, with the command that opens it.
   const skipped = verified();
   skipped.phases['pull-request'] = { status: 'skipped', note: 'pull_request.enabled is not true' };
   assert.strictEqual(percentComplete(skipped), 100);

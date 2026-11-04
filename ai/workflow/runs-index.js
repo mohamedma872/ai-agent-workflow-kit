@@ -202,6 +202,16 @@ function selftest() {
 
   write('FEAT-PR', { id: 'FEAT-PR', status: 'active', updatedAt: '2026-09-06T10:00:00.000Z', phases: { verification: { status: 'pass' }, 'pull-request': { status: 'pass' } }, pullRequest: { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', commit: 'abc' } });
   assert.deepStrictEqual(runEntry('FEAT-PR', temp).pullRequest, { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', draft: false }, 'the opened PR reaches the dashboard');
+  // A verified run with no pull-request phase and the stage disabled (no
+  // project config here) is complete, not waiting for a pull request.
+  const { PHASES } = require('./progress');
+  write('FEAT-VERIFIED', { id: 'FEAT-VERIFIED', status: 'active', updatedAt: '2026-09-06T11:00:00.000Z', phases: Object.fromEntries(PHASES.filter(p => p !== 'pull-request').map(p => [p, at('2026-09-06T11:00:00.000Z')])) }, { approved: true });
+  const verifiedEntry = runEntry('FEAT-VERIFIED', temp);
+  assert.deepStrictEqual([verifiedEntry.percent, verifiedEntry.current, verifiedEntry.needsYou, verifiedEntry.stalled], [100, 'Done', null, null]);
+  const verifiedTable = renderList([verifiedEntry], {});
+  assert.match(verifiedTable, /FEAT-VERIFIED .*100% .*Done/, verifiedTable);
+  assert.ok(!/⚠/.test(verifiedTable), verifiedTable);
+  fs.rmSync(path.join(temp, 'FEAT-VERIFIED'), { recursive: true });
 
   // A run that needs the human says so in the list, with its command; one
   // whose engine is running says that instead.

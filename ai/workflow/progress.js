@@ -4,9 +4,10 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
-const { stateRoot, relativeStatePath } = require('./paths');
+const { stateRoot, projectRoot, relativeStatePath } = require('./paths');
 const { openConflicts } = require('./conflict-tracker');
 const { liveEngine, readOwner, describe: describeEngine } = require('./engine-owner');
+const pullRequest = require('./pull-request');
 
 const RUNS = stateRoot();
 const ACTIVE = path.join(RUNS, '_active');
@@ -162,6 +163,28 @@ function legacyPullRequest(state) {
   return !state.abandoned && rawStatusOf(state, 'verification') === 'pass' ? 'skipped' : 'excluded';
 }
 
+// The project's pull_request block, read once per root and config.yaml
+// mtime: the dashboard asks every second, and a selftest rewrites the file
+// between asserts.
+let prConfig = null;
+function pullRequestConfig(root = projectRoot()) {
+  let mtime = 0;
+  try { mtime = fs.statSync(path.join(root, '.agentic', 'config.yaml')).mtimeMs; } catch { /* no file: disabled */ }
+  if (!prConfig || prConfig.root !== root || prConfig.mtime !== mtime) prConfig = { root, mtime, config: pullRequest.loadConfig(root) };
+  return prConfig.config;
+}
+// The pull-request stage is opt-in (pull-request.js). With pull_request.enabled
+// not true and no `agentic pr` request, a verified run has nothing left to do,
+// whether the engine recorded the skip or the run was verified before 1.9.31
+// and has no phase at all: derived here, never written. Only a raw pending
+// (missing or stored) qualifies; in_progress, blocked and fail keep their
+// meaning, and a closed run is legacyPullRequest's.
+function disabledPullRequest(state) {
+  return state?.status !== 'done' && rawStatusOf(state, 'pull-request') === 'pending' && rawStatusOf(state, 'verification') === 'pass' && !pullRequest.effectiveOptions(pullRequestConfig(), state.pullRequestOptions).enabled;
+}
+// The one wording for a recorded and a derived skip.
+function pullRequestSkipNote(id, cli = process.env.AI_AGENTIC_CLI === '1') { return `pull_request disabled (open one with: ${commandFor('pr', id, cli)})`; }
+
 function effectiveStatus(state, phase) {
   if (phase === 'analysis' || phase === 'reviews') {
     const derived = deriveRoleGroupStatus(state, phase);
@@ -169,9 +192,9 @@ function effectiveStatus(state, phase) {
   }
 
   const raw = rawStatusOf(state, phase);
-  // A run closed before 1.9.31 never had a pull-request stage; it is finished,
-  // not waiting on one.
-  if (phase === 'pull-request' && legacyPullRequest(state) === 'skipped') return 'skipped';
+  // A run closed before 1.9.31 never had a pull-request stage, and an active
+  // run with the stage disabled has nothing to do there: finished, not waiting.
+  if (phase === 'pull-request' && (legacyPullRequest(state) === 'skipped' || disabledPullRequest(state))) return 'skipped';
   // A run verified before the post-fix re-run existed never needs it.
   if (phase === 'post-fix-build-test' && !state?.phases?.[phase] && DONE.has(rawStatusOf(state, 'verification'))) return 'skipped';
   if (phase === 'plan' && rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(raw)) {
@@ -278,10 +301,11 @@ function pullRequestSummary(state) {
 function pullRequestHint(id, state) {
   if (pullRequestSummary(state)) return null;
   // A run closed before the stage existed gets no hint: its PR may well have
-  // been opened by hand, and following the hint could open a second one.
-  if (!state?.phases?.['pull-request']) return null;
+  // been opened by hand, and following the hint could open a second one. An
+  // active run whose stage is disabled gets it (the stage reads as skipped).
+  if (!state?.phases?.['pull-request'] && !disabledPullRequest(state)) return null;
   if (!['skipped', 'blocked', 'fail'].includes(effectiveStatus(state, 'pull-request'))) return null;
-  const command = process.env.AI_AGENTIC_CLI === '1' ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
+  const command = commandFor('pr', id);
   // A closed run opens one only when asked for explicitly.
   return state.status === 'done' ? `${command} --reopen` : command;
 }
@@ -599,8 +623,8 @@ function buildSummary(id, state, options = {}) {
         id: phase,
         label: LABELS[phase],
         status,
-        ...(status !== rawStatus && !(phase === 'pull-request' && legacyPullRequest(state)) && !(phase === 'post-fix-build-test' && !state?.phases?.[phase]) ? { rawStatus } : {}),
-        note: state?.phases?.[phase]?.note || null,
+        ...(status !== rawStatus && !(phase === 'pull-request' && (legacyPullRequest(state) || disabledPullRequest(state))) && !(phase === 'post-fix-build-test' && !state?.phases?.[phase]) ? { rawStatus } : {}),
+        note: state?.phases?.[phase]?.note || (phase === 'pull-request' && disabledPullRequest(state) ? pullRequestSkipNote(id) : null),
         roles: roleEntries(state, phase).map(([role, entry]) => ({
           role,
           status: entry.status || 'pending',
@@ -795,6 +819,8 @@ module.exports = {
   printable,
   labelOf,
   pullRequestLine,
+  disabledPullRequest,
+  pullRequestSkipNote,
   renderTerminal,
   renderMarkdown,
   parseArgs,
