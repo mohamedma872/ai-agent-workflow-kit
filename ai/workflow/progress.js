@@ -551,14 +551,27 @@ function buildSummary(id, state, options = {}) {
         role,
         description: role ? describeRole(role) : null,
         startedAt: status === 'in_progress' ? state?.phases?.[phase]?.updatedAt || null : null,
-        roles: roleEntries(state, phase).map(([role, entry]) => ({
-          role,
-          status: entry.status || 'pending',
-          executor: entry.executor || null,
-          note: entry.note || null,
-          description: describeRole(role),
-          startedAt: entry.status === 'in_progress' ? entry.updatedAt || null : null,
-        })),
+        roles: [
+          ...roleEntries(state, phase).map(([role, entry]) => ({
+            role,
+            status: entry.status || 'pending',
+            executor: entry.executor || null,
+            note: entry.note || null,
+            description: describeRole(role),
+            startedAt: entry.status === 'in_progress' ? entry.updatedAt || null : null,
+          })),
+          // A conditional role (verification's mobile-evidence) runs before its
+          // stage begins; shown under the stage while it runs or once it ran.
+          ...Object.entries(state?.conditionals?.[phase] || {}).filter(([, entry]) => entry && entry.status && entry.status !== 'pending').map(([role, entry]) => ({
+            role,
+            status: entry.status,
+            executor: entry.executor || null,
+            note: entry.reason || null,
+            description: describeRole(role),
+            startedAt: entry.status === 'in_progress' ? entry.updatedAt || entry.startedAt || null : null,
+            conditional: true,
+          })),
+        ],
       };
     }),
   };

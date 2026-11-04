@@ -4,6 +4,21 @@
 
 - No unreleased runtime changes.
 
+## 1.9.34 — 2026-11-04
+
+- **Clicking a notification brings your terminal forward.** On macOS the engine sent notifications with `osascript`. macOS treats those as Script Editor's, so clicking one opened Script Editor. When `terminal-notifier` is installed (`brew install terminal-notifier`), the engine now uses it with `-activate`, so a click brings forward the app the engine was started from: `__CFBundleIdentifier`, which macOS sets for every process an app launches (Terminal, iTerm, VS Code, Ghostty…). A known `TERM_PROGRAM` is mapped to its app, and `AGENTIC_NOTIFY_ACTIVATE=<bundle id>` overrides both. Only a well-formed bundle id is used. Without `terminal-notifier`, `osascript` stays the fallback, and `agentic doctor` reports `notifications:click` with the install command. Notifications are grouped as `agentic`.
+- **The device check runs like every other role.** `mobile-evidence.js` started its agent outside `engine.executeRole`, so it missed what 1.9.32 and 1.9.33 added. On a real run, the Flutter tool's `project.pbxproj` (deployment target 14→15) and `Runner.xcscheme` (customLLDBInitFile) rewrites survived into Final Verification and failed it.
+  - The agent now has an activity feed (`engine/verification-mobile-evidence.activity.jsonl`), so `agentic activity` and the `d` pane show what it is doing.
+  - It runs on the pinned Flutter SDK when one is installed.
+  - Tracked files its tools rewrite are restored before the evidence is attested; what was restored is logged and kept in `engine/verification-mobile-evidence.restored.json`.
+  - The engine now marks the conditional `in_progress` while the device run lasts. `runs.js conditional` accepts `in_progress` and keeps the failure streak through it. The progress views list a conditional role under its stage, with its description and current action.
+- **A run's base that is not in its history is repaired.** Runs created before 1.9.31 on a branch made beforehand recorded the main checkout's HEAD as their base, a commit outside the run's history. The pull-request stage then guessed the wrong base, and the 1.9.33 analyzer comparison diffed against another branch (one real run reported 40,184 "new" issues in 2,647 files). On resume, `worktree.js` now checks that the recorded base is an ancestor of the worktree's HEAD. If it is not, the base becomes the fork point from the run branch's upstream, or HEAD when there is none, and the old value is kept in `baseRepaired`. The analyzer comparison also refuses a base outside the worktree's history and says why, instead of comparing.
+- Selftests:
+  - notify: the terminal-notifier argv and activate rules, the osascript fallback, and pinned `find` in the macOS cases.
+  - worktree: a legacy base repaired to the upstream fork point, then left alone.
+  - analyzer-baseline: a foreign base is refused.
+  - runs, engine, progress and dashboard: unchanged behaviour with the in-progress conditional.
+
 ## 1.9.33 — 2026-11-04
 
 - **Roles run on the Flutter version the project pins.** A local SDK newer than `.fvmrc` (3.47.6 against 3.44.7 in a real run) re-resolved `pubspec.lock` on the first implicit `pub get`, migrated `analysis_options.yaml` and rewrote the iOS deployment target in `project.pbxproj`, which failed Build + Tests and Final Verification.
