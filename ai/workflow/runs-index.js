@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { stateRoot } = require('./paths');
-const { buildSummary } = require('./progress');
+const { buildSummary, withActivity } = require('./progress');
 const { liveEngine } = require('./engine-owner');
 
 const ACTIVE_FILE = '_active';
@@ -66,7 +66,8 @@ function runIds(root) {
 function runEntry(id, root, active = activeId(root)) {
   const state = loadState(id, root);
   if (!state) return null;
-  const summary = buildSummary(id, state, { root: runsRoot(root) });
+  // Local views: what each running role is doing now (never published).
+  const summary = withActivity(buildSummary(id, state, { root: runsRoot(root) }), runDir(id, root));
   return {
     ...summary,
     title: runTitle(id, root),

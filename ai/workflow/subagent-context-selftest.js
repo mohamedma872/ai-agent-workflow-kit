@@ -53,4 +53,15 @@ assert.match(failureFeedback(run,'implementation','implementation'),/tests hang/
 const reworkContext=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['request']},excludeArtifact:null,roleName:'implementation',stageId:'implementation'});
 assert(reworkContext.startsWith('## Previous failures to address'),'failures lead the prompt');
 
+// A retried role sees its own rejected report, and the notes a human left for the stage.
+fs.mkdirSync(path.join(run,'engine'),{recursive:true});
+fs.writeFileSync(path.join(run,'engine','build-test-qa-execute.rejected'),'{"status":"fail","summary":"pub get rewrote pubspec.lock"}');
+assert.match(failureFeedback(run,'build-test','qa-execute'),/your previous output for this stage was rejected[\s\S]*pub get rewrote pubspec\.lock/,'the role sees its own rejected report');
+assert.doesNotMatch(failureFeedback(run,'build-test','code-review'),/pub get rewrote/,'another role of the stage does not get it as its own');
+fs.mkdirSync(path.join(run,'notes'),{recursive:true});
+fs.writeFileSync(path.join(run,'notes','build-test.md'),'The 12 analyzer lints are pre-existing at HEAD.');
+const noted=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'qa-execute',stageId:'build-test'});
+assert.match(noted,/## Human notes for this stage \(notes\/build-test\.md\)[\s\S]*pre-existing at HEAD/,'human notes reach the role');
+assert.doesNotMatch(buildRoleContext({runDir:run,productRoot:product,contract:{inputs:[]},excludeArtifact:null,roleName:'code-review',stageId:'reviews'}),/Human notes/,'notes stay with their stage');
+
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');

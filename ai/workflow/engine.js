@@ -34,6 +34,8 @@ const PROJECT_ROOT = projectRoot();
 const RUNS = stateRoot();
 const RUNS_TOOL = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const ROUTER = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'router.js');
+const { activityFile, createWriter: activityWriter } = require('./role-activity');
+const trackedFiles = require('./tracked-files');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const MOBILE_EVIDENCE = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'mobile-evidence.js');
 const PARALLEL_ROLES = path.join(__dirname, 'parallel-roles.js');
@@ -372,6 +374,16 @@ function executorScript(env = process.env) {
 function promptFile(id, stageId, roleName) { const dir = engineDir(id); fs.mkdirSync(dir, { recursive: true }); return path.join(dir, `${stageId}-${roleName}.md`); }
 function structuredSchema(wf, stage, roleName) { return stage.artifact_schema || wf.roles?.[roleName]?.artifact_schema || null; }
 
+function restoreToolChanges(id, stageId, roleName, before) {
+  let restored = [];
+  try { restored = trackedFiles.restore(before); } catch (error) { console.warn(`${id}: ${stageId}/${roleName}: could not restore tracked files: ${error.message}`); return; }
+  if (!restored.length) return;
+  const files = restored.map(entry => entry.path);
+  console.log(`${id}: ${stageId}/${roleName} is read-only; restored ${files.length} tracked file(s) its tools changed: ${files.join(', ')}`);
+  try { activityWriter(activityFile(runDir(id), stageId, roleName)).note('restore', `runtime restored ${files.join(', ')} (changed by the role's tools)`); } catch { /* display only */ }
+  try { fs.writeFileSync(path.join(engineDir(id), `${stageId}-${roleName}.restored.json`), `${JSON.stringify({ at: new Date().toISOString(), restored }, null, 2)}\n`); } catch { /* display only */ }
+}
+
 function executeRole(id, wf, stage, roleName, output) {
   assertRequiredMcps(roleName);
   const prompt = promptFile(id, stage.id, roleName);
@@ -395,10 +407,17 @@ function executeRole(id, wf, stage, roleName, output) {
     if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* clean prior temp */ } }
     const args = [executorScript(), 'exec', 'feature', roleName, '--agent', executor, '--prompt-file', prompt, '--cwd', worktree, '--timeout-min', String(Math.max(1, Math.ceil(timeoutMs / 60000)))];
     if (rawOutput) args.push('--output-file', rawOutput);
+    // What the role is doing, one line per action, for the progress views.
+    args.push('--activity-file', activityFile(runDir(id), stage.id, roleName));
+    // A read-only role leaves tracked files as it found them, even when its
+    // tools do not (tracked-files.js): an implicit pub get, an Xcode rewrite.
+    const readOnly = !!(wf.roles[roleName] || {}).read_only;
+    const before = readOnly ? trackedFiles.snapshot(worktree) : null;
     const child = spawnRaw(process.execPath, args, {
       env: { FEATURE_RUN_ID: id, AI_WORKFLOW_ENGINE: '1', AI_WORKFLOW_SCOPE: readScope(id), AI_WORKFLOW_ATTEMPT_ID: attemptId, AI_WORKFLOW_PRODUCT_ROOT: worktree, AI_WORKFLOW_RUNTIME_ROOT: RUNTIME_ROOT, AI_WORKFLOW_PROJECT_ROOT: PROJECT_ROOT, AI_WORKFLOW_STATE_ROOT: RUNS },
       timeout: timeoutMs + 15000,
     });
+    restoreToolChanges(id, stage.id, roleName, before);
     if (child.error || child.status !== 0) {
       const exitType = classifyFailure(child);
       if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* no output */ } }

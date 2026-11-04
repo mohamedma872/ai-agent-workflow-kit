@@ -14,6 +14,7 @@ const RUNS = path.join(RUNTIME_ROOT, 'ai', 'tasks', 'feature', 'runs.js');
 const DOCTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'doctor.js');
 const PROGRESS = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'progress.js');
 const DASHBOARD = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'dashboard.js');
+const ROLE_ACTIVITY = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'role-activity.js');
 const RUNS_INDEX = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'runs-index.js');
 const REFACTOR = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-cli.js');
 const REPORT = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'refactor-report.js');
@@ -413,8 +414,14 @@ Usage:
                                    Commit, push and open the run's pull request after verification
                                    (works while pull_request is disabled; --dry-run changes nothing;
                                    a closed run needs --reopen; an unknown option is refused)
-  agentic progress                 Terminal dashboard for in-progress features
-                                   (⚠ = needs you, ● = engine running; R resume, T retry)
+  agentic progress [--details]     Terminal dashboard for in-progress features
+                                   (⚠ = needs you, ● = engine running; R resume, T retry;
+                                   d = what each running agent is doing)
+  agentic why <run-id>             Why the run stopped: the agent's own report (summary, tests,
+                                   failed checks, files its tools changed) and what you can do
+  agentic activity <run-id> [role] [--follow] [--lines N] [--json]
+                                   The actions an agent took (tools, commands, what it said);
+                                   no role = every running agent; --follow keeps printing
   agentic progress <run-id> [--watch|--json|--markdown]
   agentic dashboard [--all] [--run <id>]
   agentic runs [--all] [--json]    List features and which one is active
@@ -592,6 +599,14 @@ function main() {
     return runNode(PROGRESS, ['--run', runId, ...rest.filter(arg => arg !== runId)], project);
   }
   if (command === 'dashboard' || command === 'ui') return runNode(DASHBOARD, args.slice(1), project);
+  if (command === 'why') {
+    if (!args[1] || args[1].startsWith('-')) throw new Error('why requires a run id (see: agentic runs)');
+    return runNode(PROGRESS, ['--run', args[1], '--why'], project);
+  }
+  if (command === 'activity') {
+    if (!args[1] || args[1].startsWith('-')) throw new Error('activity requires a run id (see: agentic runs)');
+    return runNode(ROLE_ACTIVITY, args.slice(1), project);
+  }
   if (command === 'runs' || command === 'features') return runNode(RUNS_INDEX, args.slice(1), project);
   if (command === 'switch' || command === 'use') {
     if (!args[1]) throw new Error('switch requires a run id (see: agentic runs)');
