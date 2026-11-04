@@ -187,6 +187,9 @@ function selftest() {
   assert.strictEqual(withAbandoned.find(r => r.id === 'FEAT-DONE').abandoned, false);
   assert.match(renderList(withAbandoned, { all: true }), /abandoned/, 'an abandoned run does not read as done');
 
+  write('FEAT-PR', { id: 'FEAT-PR', status: 'active', updatedAt: '2026-09-06T10:00:00.000Z', phases: { verification: { status: 'pass' }, 'pull-request': { status: 'pass' } }, pullRequest: { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', commit: 'abc' } });
+  assert.deepStrictEqual(runEntry('FEAT-PR', temp).pullRequest, { provider: 'github', number: 12, url: 'https://github.com/o/r/pull/12', status: 'open', branch: 'ai/FEAT-PR', base: 'main', draft: false }, 'the opened PR reaches the dashboard');
+
   assert.match(renderList([], {}), /No features in progress/);
   const table = renderList(listRuns({ root: temp }), {});
   assert.match(table, /FEAT-2/);

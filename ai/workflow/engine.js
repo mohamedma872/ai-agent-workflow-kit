@@ -9,7 +9,7 @@ const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
 const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
 const { roleContract, assertRequiredMcps } = require('./subagent-contracts');
-const { buildRoleContext } = require('./subagent-context');
+const { buildRoleContext, prTemplate, changedFiles } = require('./subagent-context');
 const { detectRefactorMode } = require('./refactor-mode');
 const { canImplement, loadWaivers } = require('./refactor-coverage');
 const { problems: refactorCheckpointProblems } = require('./refactor-checkpoints');
@@ -17,13 +17,14 @@ const { verificationMatrix } = require('./refactor-verification-matrix');
 const { contractDiff, invariantProblems } = require('./refactor-contract-diff');
 const { refactorTelemetry } = require('./refactor-telemetry');
 const yaml = require('js-yaml');
-const { materialize, sidecarForMarkdown, schemaContract } = require('./artifacts');
+const { materialize, sidecarForMarkdown, schemaContract, validateArtifactFile } = require('./artifacts');
 const { resolveExecutionPolicy, classifyFailure, executeWithPolicy } = require('./execution-policy');
 const { attemptsFor, recordAttempt } = require('./attempts');
-const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree } = require('./worktree');
+const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree, metadataFile: worktreeMetadataFile } = require('./worktree');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('./paths');
 const { withStateLock, writeJsonAtomic } = require('./state-lock');
 const { stopGroupsSync, RUNNER_ENV } = require('./parallel-roles');
+const pullRequest = require('./pull-request');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -38,6 +39,8 @@ const WORKFLOW_FILE = path.join(RUNTIME_ROOT, 'ai', 'workflows', 'feature.yaml')
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
 const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
+const PR_STAGE = 'pull-request';
+const PR_ROLE = 'pr-description';
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -181,17 +184,22 @@ function preflight(id, scope, persist = true) {
 }
 
 function requestText(id) { try { return fs.readFileSync(path.join(runDir(id), '00-request.md'), 'utf8'); } catch { return ''; } }
-function changedFileList(root) {
-  const tracked = spawnSync('git', ['diff', '--name-only', 'HEAD'], { cwd: root, encoding: 'utf8' });
-  const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
-  return [...new Set([...(tracked.status === 0 ? String(tracked.stdout || '').split('\n') : []), ...(untracked.status === 0 ? String(untracked.stdout || '').split('\n') : [])].map(x => x.trim()).filter(Boolean))];
+// The commit the run's worktree was created from, read from its metadata (no
+// git call). Changed-file lists diff against it, not HEAD: once the
+// pull-request stage has committed, `git diff HEAD` is empty, and a rework
+// after it would select too few reviewers or find "no changes".
+function runBaseSha(id) {
+  if (!id) return null;
+  const meta = readJson(worktreeMetadataFile(RUNTIME_ROOT, id));
+  return meta && !meta.removed && meta.baseSha ? meta.baseSha : null;
 }
+function changedFileList(root, baseSha = null) { return changedFiles(root, baseSha); }
 
 // A role declared `requires_changes` has not done its job if the worktree is
 // untouched, however the agent exited. Returns the reason, or null when fine.
-function noopFailure(wf, roleName, worktree) {
+function noopFailure(wf, roleName, worktree, baseSha = null) {
   if (!wf || !wf.roles || !wf.roles[roleName] || !wf.roles[roleName].requires_changes) return null;
-  return changedFileList(worktree).length ? null : `${roleName} reported success but changed no files in the worktree`;
+  return changedFileList(worktree, baseSha).length ? null : `${roleName} reported success but changed no files in the worktree`;
 }
 
 function promoteArchitectureAsCode(id) {
@@ -255,7 +263,7 @@ function reviewRoles(wf, state, root = PROJECT_ROOT, id = null) {
   if (Array.isArray(existing) && existing.length) return existing;
   const stage = wf.stages.find(x => x.id === 'reviews') || {};
   const candidates = [...new Set([...(stage.roles || []), ...(stage.selectable_roles || [])])].filter(r => wf.roles?.[r]);
-  const selected = selectReviews({ allowedRoles: candidates, changedFiles: changedFileList(root), root });
+  const selected = selectReviews({ allowedRoles: candidates, changedFiles: changedFileList(root, runBaseSha(id)), root });
   if (id && readMode(id)==='behavior_preserving_refactor' && candidates.includes('behavior-regression-review') && !selected.roles.includes('behavior-regression-review')) {
     selected.roles.push('behavior-regression-review');
     selected.reasons['behavior-regression-review']='behavior-preserving refactor requires independent before/after regression review';
@@ -370,7 +378,7 @@ function executeRole(id, wf, stage, roleName, output) {
   const refactorInstruction = readMode(id)==='behavior_preserving_refactor' && roleName==='implementation'
     ? `\nRefactor mode is active. Execute the approved refactorIncrements strictly in order. After each logical increment, run its required verification and record evidence with:\nnode ${path.join(RUNTIME_ROOT,'ai','workflow','refactor-checkpoints.js')} record ${id} <increment-id> --diff "<git diff reference or summary>" --test "<verification command/result>"\nDo not combine business/UI redesign with mechanical restructuring and do not continue to the next increment until the current checkpoint is recorded.\n`
     : '';
-  const body = `# Deterministic workflow assignment\n\nRun: ${id}\nStage: ${stage.id}\nRole: ${roleName}\nScope: ${readScope(id)}\nProduct worktree: ${productRoot(id)}\n\nThe workflow engine owns state. Perform only this stage responsibility. Do not advance stages or approve gates.\n${output ? schemaName ? `Return the structured artifact for ${output}.` : `Write your final stage artifact as the response; the engine stores it at ${output}.` : ''}${structuredInstruction}${refactorInstruction}\n${buildRoleContext({ runDir: runDir(id), productRoot: productRoot(id), contract: roleContract(roleName), excludeArtifact: output, roleName, stageId: stage.id })}\n`;
+  const body = `# Deterministic workflow assignment\n\nRun: ${id}\nStage: ${stage.id}\nRole: ${roleName}\nScope: ${readScope(id)}\nProduct worktree: ${productRoot(id)}\n\nThe workflow engine owns state. Perform only this stage responsibility. Do not advance stages or approve gates.\n${output ? schemaName ? `Return the structured artifact for ${output}.` : `Write your final stage artifact as the response; the engine stores it at ${output}.` : ''}${structuredInstruction}${refactorInstruction}\n${buildRoleContext({ runDir: runDir(id), productRoot: productRoot(id), contract: roleContract(roleName), excludeArtifact: output, roleName, stageId: stage.id, baseSha: runBaseSha(id) })}\n`;
   fs.writeFileSync(prompt, body);
 
   const policy = resolveExecutionPolicy(wf, stage, roleName);
@@ -410,7 +418,7 @@ function executeRole(id, wf, stage, roleName, output) {
       // and correctly refused to edit code — while the role still recorded a pass.
       // Classified unavailable, which is retryable, so the next candidate executor
       // gets the work.
-      const noop = noopFailure(wf, roleName, worktree);
+      const noop = noopFailure(wf, roleName, worktree, runBaseSha(id));
       if (noop) return { ok: false, exitType: 'unavailable', reason: noop, attemptId };
       refreshWorktree(RUNTIME_ROOT, id);
       return { ok: true, value: { executor, attemptId, artifactStatus }, attemptId };
@@ -625,6 +633,168 @@ function executeConditional(id, wf, stage) {
   } catch (e) { conditionalState(id, stage.id, roleName, 'blocked', e.message.slice(0, 180)); throw e; }
 }
 
+// ---------------------------------------------------------------- pull request
+// The last stage. pr-description (an agent, read-only) writes the title and
+// body; everything that leaves the machine is pull-request.js. It is opt-in:
+// with pull_request.enabled not true in the project's .agentic/config.yaml the
+// stage is skipped and says how to open the PR by hand. `when:` cannot express
+// that, because a false `when` skips before anything else runs and `agentic pr`
+// could then never override it.
+function prHint(id) { return process.env.AI_AGENTIC_CLI === '1' ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`; }
+function prOptionsFor(state, extra) {
+  return pullRequest.effectiveOptions(pullRequest.loadConfig(PROJECT_ROOT), { ...(state?.pullRequestOptions || {}), ...(extra || {}) });
+}
+// The existing worktree, or null. Unlike ensureRunWorktree this never creates
+// one: a cleaned-up run has nothing left to commit.
+function prWorktree(id) {
+  const wt = inspectWorktree(RUNTIME_ROOT, id);
+  return wt && wt.exists && !wt.removed ? wt : null;
+}
+function recordPullRequest(id, patch, entry) {
+  withStateLock(stateFile(id), () => {
+    const state = loadState(id); if (!state) return;
+    const at = new Date().toISOString();
+    if (patch) {
+      const previous = state.pullRequest && state.pullRequest.branch === patch.branch ? state.pullRequest : null;
+      state.pullRequest = { ...(previous || {}), ...patch, createdAt: previous?.createdAt || at, updatedAt: at };
+    }
+    state.history ||= [];
+    state.history.push({ at, actor: 'workflow-engine', kind: 'pull-request', ...entry });
+    state.updatedAt = at;
+    writeJsonAtomic(stateFile(id), state);
+  });
+}
+function clearRoleAttempts(id, stageId, roleName) {
+  withStateLock(stateFile(id), () => {
+    const state = loadState(id);
+    if (!state?.executionAttempts?.[stageId]?.[roleName]) return;
+    delete state.executionAttempts[stageId][roleName];
+    if (!Object.keys(state.executionAttempts[stageId]).length) delete state.executionAttempts[stageId];
+    writeJsonAtomic(stateFile(id), state);
+  });
+}
+function prDescriptionFile(id, wf) { return sidecarForMarkdown(path.join(runDir(id), wf.roles[PR_ROLE].artifact)); }
+function validPrDescription(id, wf) {
+  const file = prDescriptionFile(id, wf);
+  return validateArtifactFile('pull-request', file, id).length ? null : readJson(file);
+}
+// A description that is already written and valid is reused, so a resume after
+// a failed push or API call does not pay for, or change, the text again. To
+// have it rewritten, delete 12-pull-request.json and run `agentic pr <id>`.
+function prDescription(id, wf, stage, worktree) {
+  const template = prTemplate(worktree);
+  const fits = data => data && (!template || data.template);
+  let data = validPrDescription(id, wf);
+  if (fits(data)) return data;
+  // A passing attempt on record would make the execution policy skip the role.
+  clearRoleAttempts(id, stage.id, PR_ROLE);
+  executeRole(id, wf, stage, PR_ROLE, wf.roles[PR_ROLE].artifact);
+  data = validPrDescription(id, wf);
+  if (!data) throw new Error(`pr-description wrote no valid ${path.basename(prDescriptionFile(id, wf))}`);
+  if (!fits(data)) throw new Error(`the description does not fill the repository's PR template ${template.path}; resume to have it written again`);
+  return data;
+}
+function executePullRequest(id, wf, stage) {
+  const state = loadState(id);
+  const status = phaseStatus(state, stage.id);
+  const skip = reason => {
+    if (['blocked', 'fail'].includes(status)) phase(id, 'begin', stage.id, 'workflow-engine', 'reconsidering the pull request');
+    phase(id, 'skip', stage.id, 'workflow-engine', reason);
+    console.log(`${id}: pull request skipped — ${reason}`);
+    return 'skipped';
+  };
+  if (pullRequest.evalMode()) return skip('eval mode (AI_EVAL=1): the runtime never commits, pushes or opens a pull request');
+  const options = prOptionsFor(state);
+  // A closed run is finished. Resuming it must not open a PR on its own (for a
+  // run closed before 1.9.31 a human may well have opened one by hand); only
+  // `agentic pr <id> --reopen` does that.
+  if (state?.status === 'done' && !options.manual) return skip(`the run is closed — open its pull request on request with: ${prHint(id)} --reopen`);
+  if (!options.enabled) return skip(`pull_request.enabled is not true in .agentic/config.yaml${options.problems.length ? ` (${options.problems.join('; ')})` : ''} — open it by hand with: ${prHint(id)}`);
+  const executor = (wf.roles[PR_ROLE] || {}).executor || '-';
+  // in_progress means an engine stopped mid-stage (killed, crashed). Every step
+  // of the stage can be repeated, so it carries on instead of failing to begin.
+  if (status === 'in_progress') console.log(`${id}: carrying on with an interrupted pull-request stage`);
+  else phase(id, 'begin', stage.id, executor, options.manual ? 'opening the pull request (requested with agentic pr)' : 'opening the pull request');
+  try {
+    if (phaseStatus(state, 'verification') !== 'pass') throw new Error(`verification is ${phaseStatus(state, 'verification')}; a pull request opens only after it passes`);
+    if (options.problems.length) throw new Error(`.agentic/config.yaml: ${options.problems.join('; ')}`);
+    const wt = prWorktree(id);
+    if (!wt) throw new Error('the run worktree no longer exists (cleaned up?), so there is nothing to commit; nothing was pushed');
+    const ctx = { id, worktree: wt.path, meta: wt, options, runtimeRoot: RUNTIME_ROOT, bodyFile: path.join(engineDir(id), 'pull-request-body.md'), record: (patch, entry) => recordPullRequest(id, patch, entry), log: message => console.log(message) };
+    // Cheap checks first: no agent is paid for when the remote, the base or the
+    // credentials would stop the PR anyway.
+    const ready = pullRequest.preflight(ctx);
+    if (!ready.ok) throw new Error(ready.reason);
+    ctx.description = prDescription(id, wf, stage, wt.path);
+    const result = pullRequest.deliver(ctx);
+    if (result.status !== 'pass') throw new Error(result.reason);
+    refreshWorktree(RUNTIME_ROOT, id);
+    const pr = result.pullRequest;
+    const line = `pull request ${pr.number ? `#${pr.number} ` : ''}${pr.url}${pr.reused ? ' (already open)' : ''}${(pr.warnings || []).length ? ` — warning: ${pr.warnings.join('; ')}` : ''}`;
+    phase(id, 'complete', stage.id, executor, line);
+    console.log(`${id}: ${line}`);
+    return 'pass';
+  } catch (e) {
+    const reason = pullRequest.redact(e.message);
+    try { recordPullRequest(id, null, { action: 'block', reason: reason.slice(0, 300) }); } catch { /* keep the original error */ }
+    try { phase(id, 'block', stage.id, 'workflow-engine', reason.slice(0, 300)); } catch { /* keep the original error */ }
+    throw new Error(`${stage.id}: ${reason}`);
+  }
+}
+// `agentic pr <id> [--base B] [--branch N] [--draft] [--dry-run]`: the stage on
+// a human's request. It works while the config block is disabled, and stores
+// the overrides in the run state (runs.js pull-request-options) so a later
+// resume opens the same PR. Stacked PRs pass another PR's branch as --base.
+const PR_FLAGS = ['base', 'branch', 'draft', 'dry-run', 'reopen'];
+const PR_USAGE = 'usage: agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]';
+// A mistyped flag must not fall through to the real thing: `--dryrun` meant
+// as a preview would otherwise commit, push and open the PR.
+function prArgsProblem(args) {
+  const extra = (args._ || []).slice(2);
+  if (extra.length) return `unexpected argument ${JSON.stringify(extra[0])}${extra[0].startsWith('-') ? ' (options start with --)' : ' (the base is passed as --base <branch>)'}`;
+  for (const key of Object.keys(args)) {
+    if (key === '_' || PR_FLAGS.includes(key)) continue;
+    const plain = key.split('=')[0].toLowerCase().replace(/[_\s]/g, '-');
+    const near = PR_FLAGS.find(f => f === plain || f.replace(/-/g, '') === plain.replace(/-/g, ''));
+    return `unknown option --${key}${near ? ` (did you mean --${near}${key.includes('=') ? ' without "="' : ''}?)` : ''}`;
+  }
+  if (args.reopen !== undefined && args.reopen !== true) return '--reopen takes no value';
+  if (args['dry-run'] !== undefined && args['dry-run'] !== true) return '--dry-run takes no value';
+  return null;
+}
+function pullRequestCommand(id, args = {}) {
+  const problem = prArgsProblem(args);
+  if (problem) throw new Error(`${problem}\n${PR_USAGE}`);
+  const state = loadState(id);
+  if (!state) throw new Error(`run ${id} does not exist`);
+  if (state.status === 'done' && !args.reopen && !args['dry-run']) throw new Error(`run ${id} is closed${state.abandoned ? ' (abandoned)' : ''}; a pull request may already exist for it (opened by hand). Check first, then open one anyway with: ${prHint(id)} --reopen`);
+  const wf = workflow();
+  const stage = (wf.stages || []).find(s => s.id === PR_STAGE);
+  if (!stage) throw new Error(`the workflow has no ${PR_STAGE} stage`);
+  const overrides = {};
+  if (args.base !== undefined) { if (typeof args.base !== 'string' || !pullRequest.validRef(args.base)) throw new Error('--base needs a branch name'); overrides.base = args.base; }
+  if (args.branch !== undefined) { if (typeof args.branch !== 'string' || !pullRequest.validRef(pullRequest.branchFor(args.branch, id))) throw new Error('--branch needs a branch name (it may use {id})'); overrides.branch = args.branch; }
+  if (args.draft !== undefined) {
+    if (args.draft === true || args.draft === 'true') overrides.draft = true;
+    else if (args.draft === 'false') overrides.draft = false;
+    else throw new Error('--draft takes no value (or true/false)');
+  }
+  if (args['dry-run']) {
+    const wt = prWorktree(id);
+    if (!wt) throw new Error(`run ${id} has no worktree, so there is nothing to commit`);
+    const out = pullRequest.plan({ id, worktree: wt.path, meta: wt, options: prOptionsFor(state, { ...overrides, manual: true }), description: validPrDescription(id, wf), runtimeRoot: RUNTIME_ROOT });
+    if (phaseStatus(state, 'verification') !== 'pass') out.lines.splice(1, 0, `  ! verification is ${phaseStatus(state, 'verification')}: the pull request opens only after it passes`);
+    if (pullRequest.evalMode()) out.lines.splice(1, 0, '  ! eval mode (AI_EVAL=1): the stage would be skipped');
+    console.log(out.lines.join('\n'));
+    return 'dry-run';
+  }
+  if (pullRequest.evalMode()) throw new Error('eval mode (AI_EVAL=1) never opens a pull request');
+  if (phaseStatus(state, 'verification') !== 'pass') throw new Error(`verification is ${phaseStatus(state, 'verification')}; a pull request opens only after it passes — finish the run first: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic resume' : 'node ai/workflow/engine.js resume'} ${id}`);
+  const flags = [...(overrides.base ? ['--base', overrides.base] : []), ...(overrides.branch ? ['--branch', overrides.branch] : []), ...(overrides.draft !== undefined ? ['--draft', String(overrides.draft)] : [])];
+  runs(id, ['pull-request-options', id, ...flags], { print: false, env: { AI_WORKFLOW_ACTOR: 'human-or-cli' } });
+  return executeStage(id, wf, stage, {});
+}
+
 function executeStage(id, wf, stage, args = {}) {
   const state = loadState(id);
   if (!depsSatisfied(stage, state)) throw new Error(`${stage.id}: dependencies are not complete: ${(stage.needs || []).map(d => `${d}=${phaseStatus(state, d)}`).join(', ')}`);
@@ -637,6 +807,7 @@ function executeStage(id, wf, stage, args = {}) {
       return 'skipped';
     }
   }
+  if (stage.id === PR_STAGE) return executePullRequest(id, wf, stage);
   if (stage.id === 'refactor-coverage') {
     phase(id, 'begin', stage.id, 'workflow-engine', 'checking characterization coverage');
     try {
@@ -679,7 +850,7 @@ function executeStage(id, wf, stage, args = {}) {
   if (stage.strategy === 'parallel') { executeParallel(id, wf, stage); return 'pass'; }
   if (stage.id === 'build-test' && readMode(id)==='behavior_preserving_refactor') {
     const baseline=readJson(path.join(runDir(id),'04-behavior-baseline.json'))||{};
-    const matrix=verificationMatrix({files:changedFileList(productRoot(id)),baseline});
+    const matrix=verificationMatrix({files:changedFileList(productRoot(id),runBaseSha(id)),baseline});
     fs.mkdirSync(engineDir(id),{recursive:true});
     fs.writeFileSync(path.join(engineDir(id),'refactor-verification-matrix.json'),JSON.stringify(matrix,null,2)+'\n');
   }
@@ -971,6 +1142,15 @@ function selftest() {
     assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/);
     fs.writeFileSync(path.join(tmp, 'new.dart'), 'class A {}\n');
     assert.strictEqual(noopFailure(wf, 'implementation', tmp), null);
+    // Once the pull-request stage has committed, the run's changes are in HEAD.
+    // Against the run's base they still count; against HEAD they vanish.
+    const runBase = String(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout).trim();
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'runtime commit'], { cwd: tmp });
+    assert.match(noopFailure(wf, 'implementation', tmp) || '', /changed no files/, 'HEAD sees nothing after the commit');
+    assert.strictEqual(noopFailure(wf, 'implementation', tmp, runBase), null, 'the run base still sees the committed change');
+    assert.deepStrictEqual(changedFileList(tmp, runBase), ['new.dart']);
+    assert.deepStrictEqual(require('./subagent-context').changedFiles(tmp, runBase), ['new.dart'], 'the role context lists it too');
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   const wf = { stages: [{ id: 'a' }, { id: 'b', needs: ['a'] }, { id: 'c', needs: ['b'] }] };
@@ -1039,8 +1219,9 @@ if (require.main === module) {
     else if (cmd === 'worktree') { const wt = inspectWorktree(RUNTIME_ROOT, idArg); if (!wt) throw new Error(`run ${idArg} has no worktree metadata`); console.log(JSON.stringify(wt, null, 2)); }
     else if (cmd === 'cleanup') console.log(JSON.stringify(cleanupWorktree(RUNTIME_ROOT, idArg, { force: !!args.force }), null, 2));
     else if (cmd === 'run-role') runRoleCommand(idArg, args._[2], args._[3]);
-    else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | worktree <id> | cleanup <id> [--force] | selftest (internal: run-role <id> <stage> <role>)');
+    else if (cmd === 'pr') pullRequestCommand(idArg, args);
+    else throw new Error('usage: engine.js start <id> --request TEXT [--scope ...] [--mode feature|refactor] [--refactor-scope local|app] | next <id> | run-next <id> | resume <id> | run <id> | pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen] | worktree <id> | cleanup <id> [--force] | selftest (internal: run-role <id> <stage> <role>)');
   } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 }
 
-module.exports = { workflow, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { workflow, executeStage, pullRequestCommand, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

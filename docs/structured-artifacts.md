@@ -9,6 +9,7 @@ The runtime keeps human-readable Markdown while using versioned JSON sidecars as
 | Build/test | `08-build-test.json` | `08-build-test.md` |
 | Reviews | `09-reviews/*.json` | `09-reviews/*.md` |
 | Final verification | `11-verification.json` | `11-verification.md` |
+| Pull request description | `12-pull-request.json` | `12-pull-request.md` |
 | Mobile device evidence | `device/evidence.json` | `device/mobile-device-qc.md` |
 
 For structured stages the executor returns JSON only. The runtime validates the JSON against `ai/workflow/schemas/*.schema.json`, checks the run id and semantic pass conditions, writes a canonical JSON sidecar, and renders the Markdown view from the validated data.
@@ -20,7 +21,8 @@ Key semantic gates are deterministic:
 - build/test requires `status: pass`;
 - review requires `status: pass` and no unresolved `critical`/`high` finding;
 - verification requires `status: pass`, every AC to be `pass` or `not-applicable`, passing ACs to reference evidence, and every DoD item to be `pass` or `not-applicable`;
-- plan approval revalidates `06-plan.json` before creating `plan.approved`.
+- plan approval revalidates `06-plan.json` before creating `plan.approved`;
+- pull request description requires a one-line title of at most 120 characters, a reason for every Definition of Done item that is not `done`, and no attribution to a tool, model or agent (no `Co-Authored-By`, no "Generated with", no robot emoji, no tool names) in the title, summary or body.
 
 Schemas are validated in CI with:
 

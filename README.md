@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.21-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.31-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -231,7 +231,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.21
+1.9.31
 ```
 
 ### 2. Initialize a project
@@ -374,7 +374,29 @@ agentic progress FEAT-001 --watch
 agentic progress FEAT-001 --json
 ```
 
+Once the run's pull request is open, the single-run view, `agentic status <id>` and the dashboard show it right under the progress bar:
+
+```text
+   ████████████████████████████  100%
+ 🔗 Pull request: #7762 https://bitbucket.org/<workspace>/<repo>/pull-requests/7762
+```
+
+When the stage was skipped (the default) or is blocked, the same line says how to open it: `Pull request: not opened — run: agentic pr <id>`.
+
 Details: [docs/progress-dashboard.md](docs/progress-dashboard.md).
+
+### Pull request
+
+After final verification passes, the last stage, `pull-request`, can commit the run worktree, push it and open the pull request. It is **off** until the project's `.agentic/config.yaml` sets `pull_request.enabled: true` (see [Pull request stage](#pull-request-stage)). Opening one by hand works either way:
+
+```bash
+agentic pr FEAT-001 --dry-run                 # what it would commit, push and call; changes nothing
+agentic pr FEAT-001                           # commit, push to ai/FEAT-001, open the PR
+agentic pr FEAT-002 --base ai/FEAT-001        # stacked: based on another PR's branch
+agentic pr FEAT-003 --branch feature/login-fix --draft
+```
+
+The options are kept in the run state, so a later `agentic resume` uses them. Running it again does not open a second PR: it finds the open one for the branch, and only commits and pushes what is new.
 
 ### Resume
 
@@ -416,6 +438,8 @@ agentic --project ~/projects/payment-backend \
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
 | `agentic approve <id>` | human approval of the implementation plan |
+| `agentic retry <id> [role...]` | reset failed/blocked roles or stages to pending and resume |
+| `agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]` | commit, push and open the run's pull request after verification (works while `pull_request` is disabled; a closed run needs `--reopen`) |
 | `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
 | `agentic runs [--all] [--json]` | list features and which one is active |
 | `agentic switch <id>` | make a feature the active run |
@@ -459,6 +483,9 @@ flowchart TD
     REV --> FIX[Validated fixes]
     FIX --> EV[Evidence / final checks]
     EV --> VER[Final verification]
+    VER --> PR{pull_request.enabled?}
+    PR -->|yes, or agentic pr| OPEN[Commit, push, open the pull request]
+    PR -->|no| SKIP[Skipped: hint agentic pr]
     VER --> GH[Commit-bound GitHub verification]
 ```
 
@@ -1588,6 +1615,28 @@ Each extra role at once is one more agent session at the same moment, so a highe
 
 Run state (`state.json`) is written by several processes. Every write takes a short lock, `state.json.lock`, next to the file. A lock left by a crashed process is taken over when its pid is dead. A lock whose holder is still running on this machine is never taken over, however old; a lock from another host is taken over after 60 s. A writer gives up with an error naming the holder after 90 s. `AI_WORKFLOW_STATE_LOCK_STALE_MS` and `AI_WORKFLOW_STATE_LOCK_TIMEOUT_MS` change those bounds.
 
+### Pull request stage
+
+`pull-request` runs after `verification`. The read-only `pr-description` role writes the title and body to `12-pull-request.json` / `.md`. It fills the repository's PR template (`.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `.bitbucket/pull_request_template.md` or `docs/pull_request_template.md`) from the run artifacts. Its Definition of Done is honest: what was not done stays unchecked with the reason. It lists what a human still has to run, and carries no attribution to any tool or agent. Everything else is deterministic code in `ai/workflow/pull-request.js`:
+
+1. **Preconditions.** Verification passed; the run worktree still exists; not eval mode (`AI_EVAL=1` skips); the remote, base branch and credentials are usable. The agent is only called once these hold.
+2. **Commit.** It refuses unmerged paths and conflict markers, then runs `git add -A` (respecting `.gitignore`). The staged diff is scanned with the guard's Rule 5 (`leak_patterns` in `ai/guard.yaml`), the credential-file globs and task-pack secrets; a hit blocks the stage, naming `file:line` and the kind of secret, never its value. The commit message is `<id>: <title>`. It uses the repository's own git identity (never set by the runtime), and hooks run.
+3. **Push.** `git push -u <remote> HEAD:refs/heads/<branch>`, never forced. If the remote branch has commits the run does not have, the stage blocks.
+4. **Open.** GitHub: `gh pr create --base --head --title --body-file`. Bitbucket Cloud: `POST https://api.bitbucket.org/2.0/repositories/<workspace>/<repo>/pullrequests`, with basic auth from `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` (or `BITBUCKET_USERNAME` + `BITBUCKET_APP_PASSWORD`). An open PR from the same branch is reused, never duplicated.
+
+Each step can be repeated. A resume after any partial failure, such as committed but not pushed, or pushed but no PR, continues from where it stopped. The result is in `state.pullRequest` (`provider`, `url`, `number`, `branch`, `base`, `commit`, `draft`, `status`, `createdAt`, `updatedAt`), with a `pull-request` history entry for each step. Credentials are read by environment variable name only and never reach argv, logs, state, artifacts or error messages. Agent roles cannot push or open a PR themselves (`git push`, `gh pr create`, `agentic pr` and the PR APIs are denied inside every engine-launched role).
+
+| `.agentic/config.yaml` | Default | Effect |
+|---|---|---|
+| `pull_request.enabled` | `false` | `true` opens the PR automatically after verification; anything else skips the stage (with the `agentic pr <id>` hint) |
+| `pull_request.provider` | `auto` | `github`, `bitbucket`, or `auto` to tell from the remote URL (`github.com`, `bitbucket.org`) |
+| `pull_request.remote` | `origin` | the git remote to push to |
+| `pull_request.base` | `auto` | the PR's base branch; `auto` is the branch the run's worktree was created from (older runs: `<remote>/HEAD`) |
+| `pull_request.branch` | `ai/{id}` | the pushed branch; `{id}` is the run id |
+| `pull_request.draft` | `false` | open as a draft |
+
+The block is read from the main checkout, never from the run worktree that agents edit, and `.agentic/config.yaml` is a guarded file: an agent editing it asks first.
+
 ### Agent/executor configuration
 
 ```text
@@ -1622,6 +1671,8 @@ table is a summary of the same thing:
 | `config.yaml` | `rag.mode` | **Yes** | `hybrid` (default) or `off` — any other value behaves like `off` |
 | `config.yaml` | `rag.top_k` | **Yes** | Max retrieved chunks per query; overrides the `ai/subagents/contracts.yaml` default |
 | `config.yaml` | `rag.context_budget` | **Yes** | Max characters of retrieved context per role |
+| `config.yaml` | `executors.*` | **Yes** | Per-project executor for every role or per role; the workflow's own choice stays as the fallback |
+| `config.yaml` | `pull_request.*` | **Yes** | Opt-in pull request after verification: `enabled`, `provider`, `remote`, `base`, `branch`, `draft` (see [Pull request stage](#pull-request-stage)); shipped commented out, so off |
 | `knowledge.yaml` | `include` | **Yes**, except `security`/`security-review` | If non-empty, only files matching one of these globs are retrieval candidates (narrows scope; doesn't add file types) |
 | `knowledge.yaml` | `exclude` | **Yes**, except `security`/`security-review` | Extra exclusions on top of `ai/rag/hybrid-rag.js`'s built-in ignore list |
 | `knowledge.yaml` | `prioritize` | **Yes** (all roles) | Matched chunks get a small relevance boost (ADRs, schemas, etc.) — a boost can't hide anything, so it applies uniformly |
@@ -1710,7 +1761,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.21
+runtimeVersion         1.9.31
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable

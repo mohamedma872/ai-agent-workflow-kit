@@ -67,6 +67,9 @@ function evaluateRun(id, state, options = {}) {
   for (const stage of stages) {
     const status = state?.phases?.[stage]?.status || 'pending';
     phases[stage] = status;
+    // Opening the pull request is delivery, not verification: a commit is
+    // verified whether or not its PR is open yet.
+    if (stage === 'pull-request') continue;
     if (!TERMINAL_OK.has(status)) problems.push(`${stage}=${status}`);
   }
   if (phases.verification !== 'pass') problems.push(`final verification must be pass (got ${phases.verification || 'pending'})`);
@@ -92,7 +95,11 @@ function evaluateRun(id, state, options = {}) {
     else {
       if (att.runId !== id) problems.push('device/evidence.json runId mismatch');
       if (att.status !== 'pass') problems.push(`device/evidence.json status=${att.status || 'missing'}`);
-      if (att.gitSha !== identity.sha) problems.push(`device/evidence.json gitSha mismatch: ${att.gitSha || 'missing'}`);
+      // Device evidence is recorded against the uncommitted worktree, before the
+      // pull-request stage commits it; that commit is the same tree.
+      const pr = state?.pullRequest;
+      const committedByRuntime = pr && pr.preCommitSha && att.gitSha === pr.preCommitSha && pr.commit === identity.sha;
+      if (att.gitSha !== identity.sha && !committedByRuntime) problems.push(`device/evidence.json gitSha mismatch: ${att.gitSha || 'missing'}`);
       if (evidence.attemptId && att.attemptId !== evidence.attemptId) problems.push('device/evidence.json attemptId mismatch');
       for (const platform of evidence.requiredPlatforms) {
         if (!(att.platforms || []).some(p => p?.platform === platform)) problems.push(`device/evidence.json missing ${platform} platform attestation`);
@@ -201,6 +208,17 @@ function selftest() {
   assert.strictEqual(partial.success,true);assert.strictEqual(partial.summary.refactor.verificationLevel,'partial');
   const bad=evaluateRun('TEST',refactorState,{workflow:wf,identity:{sha:'abc123',productRoot:ROOT},equivalence:{status:'pass',fullyVerified:true,unverifiedScenarios:['cold start'],unexpectedChanges:[]}});
   assert.strictEqual(bad.success,false);
+  // The pull-request stage neither blocks verification nor breaks the evidence SHA.
+  const delivered = JSON.parse(JSON.stringify(mobile));
+  delivered.evidence.mobileScreenshots.execution.platforms = ['android'];
+  delivered.phases['pull-request'] = { status: 'blocked' };
+  delivered.pullRequest = { preCommitSha: 'abc123', commit: 'def456' };
+  const prWf = { version: 1, stages: [...wf.stages, { id: 'pull-request' }] };
+  const att = { runId: 'TEST', attemptId: 'ATT', status: 'pass', gitSha: 'abc123', platforms: [{ platform: 'android' }] };
+  const committed = evaluateRun('TEST', delivered, { workflow: prWf, identity: { sha: 'def456', productRoot: ROOT }, attestation: att });
+  assert.strictEqual(committed.success, true, committed.problems.join('; '));
+  const elsewhere = evaluateRun('TEST', delivered, { workflow: prWf, identity: { sha: 'fff000', productRoot: ROOT }, attestation: att });
+  assert.ok(elsewhere.problems.some(p => p.includes('gitSha mismatch')), 'another commit still needs its own evidence');
   assert.strictEqual(parseRepoSlug('git@github.com:owner/repo.git'), 'owner/repo');
   assert.strictEqual(parseRepoSlug('https://github.com/owner/repo.git'), 'owner/repo');
   console.log('github verification selftest OK');

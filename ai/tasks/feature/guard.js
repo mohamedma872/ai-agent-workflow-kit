@@ -85,6 +85,10 @@ module.exports = {
       deny('human gate: agentic approve/architecture selection must be run directly by a human outside the agent');
       return;
     }
+    if (shell && /\bagentic\s+pr\b/.test(cmd)) {
+      deny('human request: agentic pr pushes and opens a pull request; a human runs it directly, outside the agent');
+      return;
+    }
 
     const isMarker = /(^|\/)(?:ai\/runs|\.agentic-runs)\/[^/]+\/plan\.approved$/.test(target);
     const isApproveCmd = shell && /ai\/tasks\/feature\/runs\.js\s+approve\b/.test(cmd);

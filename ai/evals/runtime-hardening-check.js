@@ -13,6 +13,7 @@ const CHECKS = [
   ['cross-process state lock', ['ai/workflow/state-lock.js', '--selftest']],
   ['concurrent parallel-stage roles', ['ai/workflow/parallel-roles.js', '--selftest']],
   ['parallel worktree isolation', ['ai/workflow/worktree.js', 'selftest']],
+  ['pull request stage: opt-in, idempotent, never forced, no leaked secrets', ['ai/workflow/pull-request.js', '--selftest']],
   ['Appium session/build/stale-evidence attestation', ['ai/tasks/feature/evidence-attestation-selftest.js']],
   ['mobile evidence runner contract', ['ai/tasks/feature/mobile-evidence.js', 'selftest']],
   ['shell-write/plan-gate adversarial guard', ['ai/tasks/feature/guard-selftest.js']],

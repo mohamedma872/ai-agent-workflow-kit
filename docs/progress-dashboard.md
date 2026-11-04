@@ -29,6 +29,8 @@ The left pane lists features, the right pane shows the highlighted run's stages 
 ╰────────────────────┴─────────────────────────────────────────────╯
 ```
 
+When the run's pull request is open (the `pull-request` stage, after final verification), the detail head shows `Pull request: #<number> <url>` under the plan gate line; the number comes first, so a narrow pane cuts the URL, not the number. When the stage was skipped or is blocked it shows `Pull request: not opened — run: agentic pr <id>` instead. `agentic progress <id>` and `agentic status <id>` print the same line right under the progress bar, and the Markdown view (`--markdown`, the GitHub progress comment) adds a **Pull request** line.
+
 | Marker | Meaning |
 |---|---|
 | `▸` | highlighted (what the right pane shows) |
@@ -83,7 +85,7 @@ In-progress features sort first, most recently updated first. A run counts as in
 
 ## Detail compaction
 
-The right pane fits whatever the terminal gives it, dropping the least useful information first: all stages with all roles → roles only for running or stuck stages → those stages alone → stages that have started. A terminal narrower than 78 columns stacks the list above the detail instead of splitting.
+The PR line, when there is one, takes one row of the head, so it costs one row of stages. The right pane fits whatever the terminal gives it, dropping the least useful information first: all stages with all roles → roles only for running or stuck stages → those stages alone → stages that have started. A terminal narrower than 78 columns stacks the list above the detail instead of splitting.
 
 ## Non-interactive use
 
@@ -98,4 +100,4 @@ agentic progress <id> --json  # one run in detail
 
 ## Where state comes from
 
-Runs live in the state root: `.agentic-runs/` in a target project, `ai/runs/` inside the runtime repository. Each run directory holds `state.json` (stages, roles, evidence), optional `00-request.md` (the title shown next to the id) and `plan.approved` (the plan gate). The dashboard only reads these; the workflow engine owns them.
+Runs live in the state root: `.agentic-runs/` in a target project, `ai/runs/` inside the runtime repository. Each run directory holds `state.json` (stages, roles, evidence, and `pullRequest` once the PR is open: only its provider, number, URL, status, branch, base and draft flag are shown), optional `00-request.md` (the title shown next to the id) and `plan.approved` (the plan gate). The dashboard only reads these; the workflow engine owns them.

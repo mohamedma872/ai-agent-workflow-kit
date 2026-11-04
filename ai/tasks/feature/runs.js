@@ -35,7 +35,7 @@ const ICONS = { pass: '✓', fail: '✗', blocked: '⛔', skipped: '~', in_progr
 
 const [cmd, ...rest] = process.argv.slice(2);
 const usage = () => {
-  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | retry <id> [role...] | architecture-select <id> <option-id> [note] | approve [id] | close [id] | set/set-role (admin only) | selftest');
+  console.error('usage: runs.js start <id> | status [id] | begin|complete|fail|block|skip <phase> [executor] [reason] | select-roles <analysis|reviews> <role...> | role-begin|role-complete|role-fail|role-block|role-skip <group> <role> [executor] [reason] | evidence <required|not-required> [reason] | conditional <phase> <role> <pass|fail|blocked|skipped> [reason] | reconcile [id] | retry <id> [role...] | pull-request-options <id> [--base <branch>] [--branch <name>] [--draft true|false] | architecture-select <id> <option-id> [note] | approve [id] | close [id] | set/set-role (admin only) | selftest');
   process.exit(1);
 };
 
@@ -394,14 +394,20 @@ function render(id, state) {
   reconcileState(id, state);
   console.log(`${id} — /feature run (${state.status})${fs.existsSync(path.join(RUNS, id, 'plan.approved')) ? ' · plan approved' : ' · plan NOT approved (edits outside ai/runs are denied)'}`);
   if (state.runtime?.runtimeVersion) console.log(`  runtime ${state.runtime.runtimeVersion} · workflow format ${state.runtime.workflowFormatVersion ?? '–'} · artifact schema ${state.runtime.artifactSchemaVersion ?? '–'}`);
+  // Same derived status as the progress views (ai/workflow/progress.js): a run
+  // closed after verification but before 1.9.31 has no pull-request phase, and
+  // is finished, not waiting on one.
+  const legacyClosed = state.status === 'done' && !state.phases?.['pull-request'] && !state.abandoned && phaseStatus(state, 'verification') === 'pass';
   for (const phase of PHASES) {
-    const entry = state.phases?.[phase] || { status: 'pending' };
+    const entry = state.phases?.[phase] || (phase === 'pull-request' && legacyClosed ? { status: 'skipped', note: 'the run was closed before this stage existed' } : { status: 'pending' });
     console.log(`  ${ICONS[entry.status] || '·'} ${phase.padEnd(19)} ${entry.status.padEnd(12)}${entry.note ? ` — ${entry.note}` : ''}`);
     for (const [role, roleState] of Object.entries(state.roles?.[phase] || {})) console.log(`      ${ICONS[roleState.status] || '·'} ${role.padEnd(18)} ${String(roleState.status).padEnd(12)}${roleState.executor ? ` · ${roleState.executor}` : ''}${roleState.note ? ` — ${roleState.note}` : ''}`);
   }
   const evidence = mobileEvidenceSummary(id, state);
   console.log(`\n  📸 mobile screenshots   ${evidence.requirement.padEnd(14)}${evidence.requirement === 'required' ? ` · ${evidence.screenshotCount} file(s) · execution ${evidence.execution?.status || 'missing'} · attestation ${evidence.attestation ? 'yes' : 'no'}` : evidence.reason ? ` · ${evidence.reason}` : ''}`);
-  const next = PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
+  if (state.pullRequest?.url) console.log(`  🔗 pull request         #${state.pullRequest.number ?? '?'} ${state.pullRequest.url} (${state.pullRequest.status || 'open'}, ${state.pullRequest.branch} → ${state.pullRequest.base})`);
+  else if (['skipped', 'blocked', 'fail'].includes(phaseStatus(state, 'pull-request'))) console.log(`  🔗 pull request         not opened — run: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}${state.status === 'done' ? ' --reopen' : ''}`);
+  const next = state.status === 'done' ? null : PHASES.find(phase => !state.phases?.[phase] || ['pending', 'in_progress', 'fail', 'blocked'].includes(state.phases[phase].status));
   console.log(`\n→ resume at: ${next || 'done'}`);
 }
 
@@ -413,6 +419,10 @@ function selftest() {
   const base = ensureShape({ phases: { request: { status: 'pass' } }, roles: {}, selectedRoles: {} }, 'TEST');
   assert.deepStrictEqual(dependencyProblems('requirements', base), []);
   assert.deepStrictEqual(dependencyProblems('implementation', base), ['approval=pending']);
+  // The pull-request stage is the last one and waits for final verification.
+  assert.strictEqual(PHASES[PHASES.length - 1], 'pull-request');
+  assert.deepStrictEqual(dependencyProblems('pull-request', base), ['verification=pending']);
+  assert.deepStrictEqual(structuredArtifactSpecForPhase('pull-request'), { schema: 'pull-request', artifact: '12-pull-request.md' });
   assert.throws(() => transitionPhase('TEST', base, 'implementation', 'begin', 'codex', ''), /dependencies/);
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'begin', 'claude', 'test'), 'in_progress');
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'complete', 'claude', 'done'), 'pass');
@@ -483,6 +493,44 @@ function selftest() {
   const afterRetry = JSON.parse(fs.readFileSync(path.join(retryRoot, 'RETRY-TEST', 'state.json'), 'utf8'));
   assert.strictEqual(afterRetry.roles.analysis.architect.status, 'pending');
   assert.strictEqual(afterRetry.phases.analysis.status, 'in_progress');
+
+  // `agentic pr` stores its overrides and puts a skipped pull-request stage
+  // back to pending; a passing description attempt survives, a failed one goes.
+  {
+    const file = path.join(retryRoot, 'RETRY-TEST', 'state.json');
+    const seeded = JSON.parse(fs.readFileSync(file, 'utf8'));
+    seeded.phases['pull-request'] = { status: 'skipped', note: 'disabled' };
+    seeded.executionAttempts = { 'pull-request': { 'pr-description': [{ attemptId: 'x', status: 'pass', exitType: 'success' }] } };
+    fs.writeFileSync(file, JSON.stringify(seeded));
+    const requested = runCli(['pull-request-options', 'RETRY-TEST', '--base', 'feature/parent', '--draft', 'true']);
+    assert.strictEqual(requested.status, 0, requested.stderr);
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.strictEqual(after.phases['pull-request'].status, 'pending');
+    assert.deepStrictEqual([after.pullRequestOptions.manual, after.pullRequestOptions.base, after.pullRequestOptions.draft], [true, 'feature/parent', true]);
+    assert.strictEqual(after.executionAttempts['pull-request']['pr-description'].length, 1, 'a written description is reused');
+    assert.ok(after.history.some(h => h.kind === 'pull-request' && h.action === 'request'));
+    const branchOnly = runCli(['pull-request-options', 'RETRY-TEST', '--branch', 'feature/child']);
+    assert.strictEqual(branchOnly.status, 0, branchOnly.stderr);
+    const merged = JSON.parse(fs.readFileSync(file, 'utf8')).pullRequestOptions;
+    assert.deepStrictEqual([merged.base, merged.branch, merged.draft], ['feature/parent', 'feature/child', true], 'earlier overrides are kept');
+    assert.notStrictEqual(runCli(['pull-request-options', 'RETRY-TEST', '--base', '--force']).status, 0, 'an option is not a branch name');
+    assert.notStrictEqual(runCli(['pull-request-options', 'RETRY-TEST', '--remote', 'x']).status, 0);
+    const restore = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete restore.phases['pull-request']; delete restore.pullRequestOptions; delete restore.executionAttempts;
+    fs.writeFileSync(file, JSON.stringify(restore));
+    // `status` of a run closed before 1.9.31 agrees with the progress views:
+    // the stage it never had is skipped, and there is nothing to resume.
+    const legacyDir = path.join(retryRoot, 'LEGACY-CLOSED');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const legacy = { ...restore, id: 'LEGACY-CLOSED', status: 'done', closedAt: now(), phases: Object.fromEntries(PHASES.filter(p => p !== 'pull-request').map(p => [p, { status: 'pass' }])) };
+    fs.writeFileSync(path.join(legacyDir, 'state.json'), JSON.stringify(legacy));
+    const shown = runCli(['status', 'LEGACY-CLOSED']);
+    assert.strictEqual(shown.status, 0, shown.stderr);
+    assert.match(shown.stdout, /pull-request\s+skipped/);
+    assert.match(shown.stdout, /→ resume at: done/);
+    assert.ok(!/not opened — run/.test(shown.stdout), 'no pr hint for a run that never had the stage');
+    fs.rmSync(legacyDir, { recursive: true, force: true });
+  }
 
   // A role or phase interrupted mid-run (stuck at in_progress, never reaching
   // fail/blocked) must also be recoverable, or `begin` rejects it forever.
@@ -791,6 +839,45 @@ try {
       });
       break;
     }
+    // What `agentic pr <id>` asks for: the PR stage on a human's request, with
+    // overrides (base, branch, draft) kept for a later resume, and the stage
+    // reset so the engine runs it again. Delivery is idempotent, so re-running a
+    // passed stage only commits and pushes what is new and reuses the open PR.
+    // A passing pr-description attempt is kept so the text is not rewritten.
+    case 'pull-request-options': {
+      const id = rest[0];
+      if (!id || !safeId(id) || !fs.existsSync(stateFile(id))) throw new Error('pull-request-options requires a valid run id');
+      const options = {};
+      for (let i = 1; i < rest.length; i++) {
+        const flag = rest[i];
+        const value = rest[i + 1];
+        if (!['--base', '--branch', '--draft'].includes(flag) || value === undefined) throw new Error(`pull-request-options: unexpected argument ${flag}`);
+        if (flag === '--draft') { if (!['true', 'false'].includes(value)) throw new Error('--draft takes true or false'); options.draft = value === 'true'; }
+        else if (!/^[A-Za-z0-9._/{}-]{1,200}$/.test(value) || value.startsWith('-') || value.includes('..')) throw new Error(`${flag} needs a branch name`);
+        else options[flag.slice(2)] = value;
+        i++;
+      }
+      locked(id, () => {
+        const state = ensureShape(load(id), id);
+        reconcileState(id, state);
+        state.pullRequestOptions = { ...(state.pullRequestOptions || {}), ...options, manual: true, requestedAt: now() };
+        record(state, { kind: 'pull-request', action: 'request', executor: actor(), reason: Object.keys(options).length ? `requested with ${Object.entries(options).map(([k, v]) => `${k}=${v}`).join(', ')}` : 'requested' });
+        const from = phaseStatus(state, 'pull-request');
+        if (from !== 'pending') {
+          state.phases['pull-request'] = { ...(state.phases['pull-request'] || {}), status: 'pending', updatedAt: now() };
+          record(state, { kind: 'phase', phase: 'pull-request', action: 'pull-request-request', from, to: 'pending', reason: 'pull request requested' });
+        }
+        const attempts = state.executionAttempts?.['pull-request'];
+        for (const [role, list] of Object.entries(attempts || {})) {
+          if ((list || []).some(a => a && (a.status === 'pass' || a.exitType === 'success'))) continue;
+          delete attempts[role];
+        }
+        if (attempts && !Object.keys(attempts).length) delete state.executionAttempts['pull-request'];
+        atomicSave(id, state);
+        console.log(`${id}: pull request requested${Object.keys(options).length ? ` (${Object.entries(options).map(([k, v]) => `${k}=${v}`).join(', ')})` : ''}; pull-request ${from} → pending`);
+      });
+      break;
+    }
     case 'architecture-select': {
       const id = resolveId(rest[0]);
       const optionId = rest[1];
@@ -877,6 +964,8 @@ try {
         atomicSave(id, state);
         if (activeId() === id && fs.existsSync(ACTIVE)) fs.unlinkSync(ACTIVE);
         console.log(`${id}: ${verified ? 'closed' : 'abandoned before verification'}`);
+        if (state.pullRequest?.url) console.log(`${id}: pull request #${state.pullRequest.number ?? '?'} ${state.pullRequest.url}`);
+        else if (verified) console.log(`${id}: no pull request was opened — open one with: ${process.env.AI_AGENTIC_CLI === '1' ? 'agentic pr' : 'node ai/workflow/engine.js pr'} ${id}`);
       });
       break;
     }

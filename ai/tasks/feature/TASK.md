@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **What it does** | Delivers a feature or ticket end-to-end: requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analyses → plan for approval → implementation → build and tests → independent reviews → fixes → mobile evidence when required → verification. Every step leaves an artifact in `ai/runs/<id>/`. |
+| **What it does** | Delivers a feature or ticket end-to-end: requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analyses → plan for approval → implementation → build and tests → independent reviews → fixes → mobile evidence when required → verification → pull request (opt-in, runtime-owned). Every step leaves an artifact in `ai/runs/<id>/`. |
 | **Entry point** | `/feature <request or PROJ-123> [plan-only]` (skill `.claude/skills/feature/SKILL.md`), headless: `claude -p "/feature …"` |
 | **Specialists** | `.claude/agents/`: mobile-architect · android-expert · ios-expert · flutter-expert · security-reviewer · qa-engineer · performance-reviewer · code-reviewer · backend-expert · frontend-expert — read-only specialists |
 | **Provider** | Claude orchestrates specialist roles; implementation/fixes route through the provider-independent workflow (Codex by default) |
-| **Artifacts a run leaves** | `ai/runs/<id>/00-request.md … 11-verification.md`, `05-analysis/*.md`, `09-reviews/*.md`, `device/mobile-device-qc.md`, `device/screenshots/*` when mobile/UI evidence is required, `plan.approved`, `state.json`; plus the diff |
+| **Artifacts a run leaves** | `ai/runs/<id>/00-request.md … 11-verification.md`, `12-pull-request.md` when the pull-request stage runs, `05-analysis/*.md`, `09-reviews/*.md`, `device/mobile-device-qc.md`, `device/screenshots/*` when mobile/UI evidence is required, `plan.approved`, `state.json`; plus the diff |
 | **Mobile stacks** | Native Android/iOS, React Native, and Flutter. Flutter uses `flutter-expert`; native Android/iOS changes can additionally select the platform specialists. |
-| **Irreversible actions** | commits (normal runs only, after approval), Jira writes (ask), external deployment/publishing (ask/deny according to guardrails) |
+| **Irreversible actions** | commits (normal runs only, after approval), the pull-request stage's commit, push and PR (runtime-owned, only when `pull_request.enabled: true` or a human runs `agentic pr`; agents cannot push), Jira writes (ask), external deployment/publishing (ask/deny according to guardrails) |
 | **Owner** | Mohamed |
 
 ## Guardrails

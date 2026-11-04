@@ -22,6 +22,7 @@ const PHASES = [
   'reviews',
   'fixes',
   'verification',
+  'pull-request',
 ];
 
 const LABELS = {
@@ -38,6 +39,7 @@ const LABELS = {
   reviews: 'Independent Reviews',
   fixes: 'Validated Fixes',
   verification: 'Final Verification',
+  'pull-request': 'Pull Request',
 };
 
 const ICONS = {
@@ -146,6 +148,15 @@ function deriveRoleGroupStatus(state, group) {
   return 'in_progress';
 }
 
+// A run closed (or abandoned) before 1.9.31 has no pull-request phase. A
+// verified, closed run is finished, so the stage shows as skipped. An abandoned
+// run, or one closed unverified, never reached the stage: it is left out of the
+// percent instead of counting as done.
+function legacyPullRequest(state) {
+  if (state?.phases?.['pull-request'] || state?.status !== 'done') return null;
+  return !state.abandoned && rawStatusOf(state, 'verification') === 'pass' ? 'skipped' : 'excluded';
+}
+
 function effectiveStatus(state, phase) {
   if (phase === 'analysis' || phase === 'reviews') {
     const derived = deriveRoleGroupStatus(state, phase);
@@ -153,6 +164,9 @@ function effectiveStatus(state, phase) {
   }
 
   const raw = rawStatusOf(state, phase);
+  // A run closed before 1.9.31 never had a pull-request stage; it is finished,
+  // not waiting on one.
+  if (phase === 'pull-request' && legacyPullRequest(state) === 'skipped') return 'skipped';
   if (phase === 'plan' && rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(raw)) {
     return 'pass';
   }
@@ -177,8 +191,9 @@ function phaseProgress(state, phase) {
 }
 
 function percentComplete(state) {
-  const total = PHASES.reduce((sum, phase) => sum + phaseProgress(state, phase), 0);
-  return Math.round((total / PHASES.length) * 100);
+  const counted = legacyPullRequest(state) === 'excluded' ? PHASES.filter(phase => phase !== 'pull-request') : PHASES;
+  const total = counted.reduce((sum, phase) => sum + phaseProgress(state, phase), 0);
+  return Math.round((total / counted.length) * 100);
 }
 
 function lastUpdated(state) {
@@ -246,6 +261,29 @@ function planApproved(id, root = RUNS) {
   return id !== 'DEMO-123' && fs.existsSync(path.join(root, id, 'plan.approved'));
 }
 
+// The PR line: whitelisted fields of state.pullRequest (never the whole
+// object), or, when the stage was skipped or is stuck, the command that opens it.
+function pullRequestSummary(state) {
+  const pr = state?.pullRequest;
+  if (!pr || !pr.url) return null;
+  return { provider: pr.provider || null, number: pr.number ?? null, url: pr.url, status: pr.status || null, branch: pr.branch || null, base: pr.base || null, draft: !!pr.draft };
+}
+function pullRequestHint(id, state) {
+  if (pullRequestSummary(state)) return null;
+  // A run closed before the stage existed gets no hint: its PR may well have
+  // been opened by hand, and following the hint could open a second one.
+  if (!state?.phases?.['pull-request']) return null;
+  if (!['skipped', 'blocked', 'fail'].includes(effectiveStatus(state, 'pull-request'))) return null;
+  const command = process.env.AI_AGENTIC_CLI === '1' ? `agentic pr ${id}` : `node ai/workflow/engine.js pr ${id}`;
+  // A closed run opens one only when asked for explicitly.
+  return state.status === 'done' ? `${command} --reopen` : command;
+}
+function pullRequestLine(summary) {
+  if (summary.pullRequest) return `Pull request: ${summary.pullRequest.number != null ? `#${summary.pullRequest.number} ` : ''}${summary.pullRequest.url}${summary.pullRequest.draft ? ' (draft)' : ''}`;
+  if (summary.pullRequestHint) return `Pull request: not opened — run: ${summary.pullRequestHint}`;
+  return null;
+}
+
 function buildSummary(id, state, options = {}) {
   const percent = percentComplete(state);
   return {
@@ -257,6 +295,8 @@ function buildSummary(id, state, options = {}) {
     startedAt: state.startedAt || null,
     updatedAt: lastUpdated(state),
     warnings: consistencyIssues(state),
+    pullRequest: pullRequestSummary(state),
+    pullRequestHint: pullRequestHint(id, state),
     phases: PHASES.map(phase => {
       const rawStatus = rawStatusOf(state, phase);
       const status = effectiveStatus(state, phase);
@@ -264,7 +304,7 @@ function buildSummary(id, state, options = {}) {
         id: phase,
         label: LABELS[phase],
         status,
-        ...(status !== rawStatus ? { rawStatus } : {}),
+        ...(status !== rawStatus && !(phase === 'pull-request' && legacyPullRequest(state)) ? { rawStatus } : {}),
         note: state?.phases?.[phase]?.note || null,
         roles: roleEntries(state, phase).map(([role, entry]) => ({
           role,
@@ -284,6 +324,8 @@ function renderTerminal(summary) {
   lines.push(`│  FEATURE: ${String(summary.id).padEnd(35)} ${String(summary.percent).padStart(3)}%  │`);
   lines.push('╰────────────────────────────────────────────────────────────╯');
   lines.push(`   ${progressBar(summary.percent)}  ${summary.percent}%`);
+  const prLine = pullRequestLine(summary);
+  if (prLine) lines.push(` 🔗 ${prLine}`);
   lines.push('');
 
   for (const phase of summary.phases) {
@@ -335,6 +377,8 @@ function renderMarkdown(summary) {
     `**Run:** \`${summary.id}\`  `,
     `**Progress:** \`${progressBar(summary.percent, 20)}\` **${summary.percent}%**  `,
     `**Current:** ${summary.current}  `,
+    summary.pullRequest ? `**Pull request:** [${summary.pullRequest.number != null ? `#${summary.pullRequest.number}` : 'open'}](${summary.pullRequest.url})${summary.pullRequest.draft ? ' (draft)' : ''}  ` : '',
+    !summary.pullRequest && summary.pullRequestHint ? `**Pull request:** not opened — run \`${summary.pullRequestHint}\`  ` : '',
     `**Plan gate:** ${summary.planApproved ? '✅ Approved' : '🔒 Waiting for human approval'}`,
     warnings,
     '',
@@ -414,6 +458,7 @@ module.exports = {
   percentComplete,
   currentWork,
   buildSummary,
+  pullRequestLine,
   renderTerminal,
   renderMarkdown,
   parseArgs,

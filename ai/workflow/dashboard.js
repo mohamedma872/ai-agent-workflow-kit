@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
-const { PHASES, ICONS, buildSummary, demoState } = require('./progress');
+const { PHASES, ICONS, buildSummary, demoState, pullRequestLine } = require('./progress');
 const { listRuns, focusIndex, setActive, ago, runsRoot } = require('./runs-index');
 
 // Every dashboard icon must be an unambiguous two-column emoji: ⏭ and similar
@@ -122,6 +122,8 @@ function detailLines(run, rows, color) {
     paint(run.id, COLORS.bold, color) + (run.title ? paint(` · ${run.title}`, COLORS.dim, color) : ''),
     `${bar(run.percent, 24)} ${String(run.percent).padStart(3)}%`,
     `${run.planApproved ? '✅ plan approved' : '🔒 plan gate: waiting for human approval'}${run.inProgress ? '' : run.abandoned ? '  · abandoned' : '  · closed'}`,
+    // The number comes before the URL, so a narrow pane clips the URL, not the number.
+    ...(pullRequestLine(run) ? [paint(pullRequestLine(run), run.pullRequest ? COLORS.cyan : COLORS.dim, color)] : []),
     '',
   ];
   const foot = [
@@ -449,6 +451,15 @@ function selftest() {
   const normal = renderFrame({ runs, index: 0, width: 96, height: 26, color: false });
   assert(normal.includes('security'), 'roles of the running stage survive compaction');
   assert(renderFrame({ runs, index: 0, width: 96, height: 40, color: false }).includes('Final Verification'), 'a tall terminal shows every stage');
+
+  // An opened pull request shows in the detail head, inside the frame width.
+  const withPr = [{ ...runs[0], pullRequest: { provider: 'bitbucket', number: 7762, url: 'https://bitbucket.org/extra-workspace/flutter_project/pull-requests/7762', status: 'open', branch: 'ai/FEAT-002', base: 'master', draft: false } }];
+  const prFrame = renderFrame({ runs: withPr, index: 0, width: 100, height: 40, color: false });
+  assert(prFrame.includes('Pull request: #7762 https://bitbucket.org/'), 'the PR number and URL are shown');
+  assert(prFrame.includes('Pull Request'), 'the stage is listed');
+  for (const line of prFrame.split('\n').filter(l => l.startsWith('│'))) assert.strictEqual(width(line), 100, `box line keeps the frame width: ${JSON.stringify(line)}`);
+  const hinted = renderFrame({ runs: [{ ...runs[0], pullRequestHint: 'agentic pr FEAT-002' }], index: 0, width: 100, height: 30, color: false });
+  assert(hinted.includes('not opened — run: agentic pr FEAT-002'), 'a skipped PR says how to open it');
 
   // Short terminals still render inside their row budget.
   for (const height of [12, 16, 24, 40]) {
