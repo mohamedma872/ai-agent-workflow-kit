@@ -24,6 +24,7 @@ const PHASES = [
   'build-test',
   'reviews',
   'fixes',
+  'post-fix-build-test',
   'verification',
   'pull-request',
 ];
@@ -41,6 +42,7 @@ const LABELS = {
   'build-test': 'Build + Tests',
   reviews: 'Independent Reviews',
   fixes: 'Validated Fixes',
+  'post-fix-build-test': 'Build + Tests (after fixes)',
   verification: 'Final Verification',
   'pull-request': 'Pull Request',
 };
@@ -170,6 +172,8 @@ function effectiveStatus(state, phase) {
   // A run closed before 1.9.31 never had a pull-request stage; it is finished,
   // not waiting on one.
   if (phase === 'pull-request' && legacyPullRequest(state) === 'skipped') return 'skipped';
+  // A run verified before the post-fix re-run existed never needs it.
+  if (phase === 'post-fix-build-test' && !state?.phases?.[phase] && DONE.has(rawStatusOf(state, 'verification'))) return 'skipped';
   if (phase === 'plan' && rawStatusOf(state, 'approval') === 'pass' && ['pending', 'in_progress'].includes(raw)) {
     return 'pass';
   }
@@ -450,7 +454,7 @@ function buildSummary(id, state, options = {}) {
         id: phase,
         label: LABELS[phase],
         status,
-        ...(status !== rawStatus && !(phase === 'pull-request' && legacyPullRequest(state)) ? { rawStatus } : {}),
+        ...(status !== rawStatus && !(phase === 'pull-request' && legacyPullRequest(state)) && !(phase === 'post-fix-build-test' && !state?.phases?.[phase]) ? { rawStatus } : {}),
         note: state?.phases?.[phase]?.note || null,
         roles: roleEntries(state, phase).map(([role, entry]) => ({
           role,

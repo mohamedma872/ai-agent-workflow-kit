@@ -75,4 +75,15 @@ assert.strictEqual(conflictDecisions(run,'plan'),'','a run with no conflicts get
 const {roleContract}=require('./subagent-contracts');
 for(const name of ['orchestration','implementation']) assert(roleContract(name).inputs.includes('conflict_decisions'),name);
 
+// The post-fix re-run's result reaches every role that reads build_test, and
+// its rejected output never shows up as build-test's own.
+fs.writeFileSync(path.join(run,'08-build-test.md'),'FIRST BUILD GREEN');fs.writeFileSync(path.join(run,'10-post-fix-build-test.md'),'POST FIX BUILD RED');
+const bt=buildRoleContext({runDir:run,productRoot:product,contract:{inputs:['build_test']},excludeArtifact:null,roleName:'code-review',stageId:'verification'});
+assert(bt.includes('FIRST BUILD GREEN')&&bt.includes('POST FIX BUILD RED'));
+fs.writeFileSync(path.join(run,'state.json'),JSON.stringify({id:'TEST',phases:{'build-test':{status:'pass'},'post-fix-build-test':{status:'fail',note:'red'}},roles:{}}));
+fs.writeFileSync(path.join(run,'engine','post-fix-build-test-qa-execute.rejected'),'POST FIX REJECTED');
+const fb=failureFeedback(run,'verification','orchestration').split('\n').filter(l=>l.includes('.rejected'));
+assert(fb.every(l=>!l.startsWith('- build-test-qa-execute.rejected')||!l.includes('post-fix')),'build-test does not claim the re-run output');
+assert.strictEqual(fb.filter(l=>l.startsWith('- post-fix-build-test-qa-execute.rejected')).length,1,'listed once, under its own stage');
+
 fs.rmSync(root,{recursive:true,force:true}); console.log('subagent-context selftest OK');

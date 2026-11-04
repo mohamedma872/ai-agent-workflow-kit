@@ -183,6 +183,26 @@ function staleApprovedState() {
   assert.match(buildSummary('FEAT-2', closedSkipped).pullRequestHint, / pr FEAT-2 --reopen$/);
 }
 
+// Build + Tests again after fixes, before verification.
+{
+  const { labelOf } = require('./progress');
+  assert.strictEqual(PHASES.indexOf('post-fix-build-test'), PHASES.indexOf('fixes') + 1);
+  assert.ok(PHASES.indexOf('post-fix-build-test') < PHASES.indexOf('verification'));
+  assert.strictEqual(labelOf('post-fix-build-test'), 'Build + Tests (after fixes)');
+  const upToFixes = Object.fromEntries(PHASES.slice(0, PHASES.indexOf('post-fix-build-test')).map(p => [p, { status: 'pass' }]));
+  const red = { status: 'active', roles: {}, phases: { ...upToFixes, 'post-fix-build-test': { status: 'fail', note: 'flutter test: 1 failing', updatedAt: 't' } } };
+  const attention = needsYou('FEAT-1', red, { root: os.tmpdir(), cli: true });
+  assert.deepStrictEqual([attention.stage, attention.headline, attention.command], ['post-fix-build-test', 'Build + Tests (after fixes) failed', 'agentic retry FEAT-1']);
+  assert.strictEqual(currentWork(red), 'Build + Tests (after fixes) (fail)');
+  red.phases['post-fix-build-test'] = { status: 'in_progress' };
+  assert.strictEqual(currentWork(red), 'Build + Tests (after fixes)');
+  // A run verified and closed before the stage existed is still 100%, with no stored-status note.
+  const legacy = { status: 'done', roles: {}, phases: Object.fromEntries(PHASES.filter(p => p !== 'post-fix-build-test').map(p => [p, { status: 'pass' }])) };
+  assert.strictEqual(effectiveStatus(legacy, 'post-fix-build-test'), 'skipped');
+  assert.strictEqual(percentComplete(legacy), 100);
+  assert.strictEqual(buildSummary('FEAT-OLD', legacy).phases.find(p => p.id === 'post-fix-build-test').rawStatus, undefined);
+}
+
 // Needs you: what the run waits on a human for, with the reason and the command.
 {
   const passed = upTo => Object.fromEntries(PHASES.slice(0, PHASES.indexOf(upTo)).map(p => [p, { status: 'pass' }]));

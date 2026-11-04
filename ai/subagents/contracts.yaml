@@ -136,7 +136,7 @@ roles:
     mcps_optional: [context7]
   qa-execute:
     mode: read_only
-    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix]
+    inputs: [acceptance_criteria, definition_of_done, implementation, changed_files, refactor_verification_matrix, fixes]
     outputs: [build_test]
     tools: [repository_read, test_execute]
     mcps_optional: [playwright, appium]

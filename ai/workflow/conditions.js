@@ -7,7 +7,7 @@ const yaml = require('js-yaml');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS = path.join(ROOT, 'ai', 'workflows');
-const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
+const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor', 'changed_since_build_test']);
 
 function validateWorkflowConditions(name, workflow) {
   const problems = [];

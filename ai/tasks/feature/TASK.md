@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **What it does** | Delivers a feature or ticket end-to-end: requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analyses → plan for approval → implementation → build and tests → independent reviews → fixes → mobile evidence when required → verification → pull request (opt-in, runtime-owned). Every step leaves an artifact in `ai/runs/<id>/`. |
+| **What it does** | Delivers a feature or ticket end-to-end: requirements → acceptance criteria → definition of done → repo inspection → parallel specialist analyses → plan for approval → implementation → build and tests → independent reviews → fixes → build and tests again when fixes changed code → mobile evidence when required → verification → pull request (opt-in, runtime-owned). Every step leaves an artifact in `ai/runs/<id>/`. |
 | **Entry point** | `/feature <request or PROJ-123> [plan-only]` (skill `.claude/skills/feature/SKILL.md`), headless: `claude -p "/feature …"` |
 | **Specialists** | `.claude/agents/`: mobile-architect · android-expert · ios-expert · flutter-expert · security-reviewer · qa-engineer · performance-reviewer · code-reviewer · backend-expert · frontend-expert — read-only specialists |
 | **Provider** | Claude orchestrates specialist roles; implementation/fixes route through the provider-independent workflow (Codex by default) |

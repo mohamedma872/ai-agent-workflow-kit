@@ -684,6 +684,9 @@ the orchestrator saves their reports verbatim.
 `04-inspection.md` (incl. which specialists and why), `05-analysis/<agent>.md`,
 `06-plan.md`, `plan.approved`, `07-implementation.md`, `08-build-test.md`,
 `09-reviews/<agent>.md`, `10-fixes.md` (each finding valid/rejected + reason),
+`10-post-fix-build-test.md` (engine runs: the `post-fix-build-test` stage runs
+qa-execute again when fixes changed the tree Build + Tests passed on, and is
+skipped otherwise; `state.testedWorkspace` records that tree),
 `11-verification.md` (every AC and D with evidence), `12-pull-request.md`
 (the pull request title and body, from the engine's `pull-request` stage),
 `state.json` (resume; `pullRequest` holds the opened PR, `notifications.sent`

@@ -446,6 +446,9 @@ function selftest() {
   assert.strictEqual(PHASES[PHASES.length - 1], 'pull-request');
   assert.deepStrictEqual(dependencyProblems('pull-request', base), ['verification=pending']);
   assert.deepStrictEqual(structuredArtifactSpecForPhase('pull-request'), { schema: 'pull-request', artifact: '12-pull-request.md' });
+  // Build + Tests again after fixes: qa-execute's schema, its own artifact, before the refactor checks.
+  assert.deepStrictEqual(structuredArtifactSpecForPhase('post-fix-build-test'), { schema: 'build-test', artifact: '10-post-fix-build-test.md' });
+  assert.deepStrictEqual(dependencyProblems('architecture-compliance', base), ['post-fix-build-test=pending']);
   assert.throws(() => transitionPhase('TEST', base, 'implementation', 'begin', 'codex', ''), /dependencies/);
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'begin', 'claude', 'test'), 'in_progress');
   assert.strictEqual(transitionPhase('TEST', base, 'requirements', 'complete', 'claude', 'done'), 'pass');
@@ -689,6 +692,29 @@ function selftest() {
     assert.strictEqual(stateOf().phases['acceptance-criteria'].repeatedFailure, undefined, 'a new reason is not a repeat');
   }
 
+  // A rework of fixes also resets the post-fix re-run that passed (the reworked
+  // code is untested); a plain retry of a failed re-run resets it alone.
+  {
+    const id = 'POSTFIX-TEST';
+    const file = path.join(retryRoot, id, 'state.json');
+    const cli = argv => spawnSync(process.execPath, [__filename, ...argv], { env: { ...runEnv, FEATURE_RUN_ID: id }, encoding: 'utf8' });
+    cli(['start', id]);
+    const seed = (status, attempts) => { const st = JSON.parse(fs.readFileSync(file, 'utf8')); for (const p of PHASES.slice(0, PHASES.indexOf('post-fix-build-test'))) st.phases[p] = { status: STAGE_BY_ID.get(p).when ? 'skipped' : 'pass' }; st.phases['post-fix-build-test'] = { status }; st.executionAttempts = { fixes: { fixes: [{ attempt: 1, ok: true }] }, 'post-fix-build-test': { 'qa-execute': attempts } }; fs.writeFileSync(file, JSON.stringify(st)); };
+    const stateOf = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+    seed('pass', [{ attempt: 1, ok: true }]);
+    const rework = cli(['retry', id, 'fixes']);
+    assert.strictEqual(rework.status, 0, rework.stderr);
+    assert.deepStrictEqual([stateOf().phases.fixes.status, stateOf().phases['post-fix-build-test'].status], ['pending', 'pending']);
+    assert.ok(stateOf().history.some(h => h.action === 'rework-downstream' && h.phase === 'post-fix-build-test' && h.from === 'pass'));
+    seed('fail', [{ attempt: 1, ok: false, reason: 'flutter test: 1 failing' }]);
+    const plain = cli(['retry', id]);
+    assert.strictEqual(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /post-fix-build-test/);
+    assert.deepStrictEqual([stateOf().phases.fixes.status, stateOf().executionAttempts.fixes], ['pass', { fixes: [{ attempt: 1, ok: true }] }], 'fixes and its attempts are untouched');
+    assert.strictEqual(stateOf().phases['post-fix-build-test'].status, 'pending');
+    assert.strictEqual(stateOf().lastFailures['post-fix-build-test']['qa-execute'].reason, 'flutter test: 1 failing');
+  }
+
   fs.rmSync(retryRoot, { recursive: true, force: true });
 
   console.log('runs.js selftest OK');
@@ -917,7 +943,10 @@ try {
             for (const later of PHASES.slice(PHASES.indexOf(name) + 1)) {
               if (gates.has(later)) continue;
               const status = phaseStatus(state, later);
-              if (!['fail', 'blocked', 'in_progress'].includes(status)) continue;
+              // A stage that repeats an earlier check (post-fix-build-test) runs again
+              // after any rework before it, even if it passed: the reworked code is untested.
+              const recheck = STAGE_BY_ID.get(later)?.repeats && TERMINAL_OK.has(status);
+              if (!['fail', 'blocked', 'in_progress'].includes(status) && !recheck) continue;
               state.phases[later] = { ...(state.phases[later] || {}), status: 'pending', updatedAt: now() };
               clearAttempts(later);
               for (const [role, roleState] of Object.entries(state.roles?.[later] || {})) {

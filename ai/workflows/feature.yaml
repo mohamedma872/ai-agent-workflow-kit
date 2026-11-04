@@ -506,9 +506,19 @@ stages:
     role: fixes
     needs: [reviews]
 
+  # Fixes edit code after Build + Tests passed. Re-run qa-execute when the
+  # worktree differs from the tree Build + Tests passed on; otherwise skipped.
+  # `repeats` makes a rework of an earlier stage reset it (runs.js retry).
+  - id: post-fix-build-test
+    role: qa-execute
+    needs: [fixes]
+    when: changed_since_build_test
+    repeats: build-test
+    artifact: 10-post-fix-build-test.md
+
   - id: architecture-compliance
     role: architecture-compliance-review
-    needs: [fixes]
+    needs: [post-fix-build-test]
     when: whole_app_refactor
 
   - id: behavior-equivalence

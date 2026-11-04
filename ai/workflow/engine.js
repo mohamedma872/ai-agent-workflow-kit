@@ -28,6 +28,7 @@ const pullRequest = require('./pull-request');
 const notify = require('./notify');
 const engineOwner = require('./engine-owner');
 const { needsYou, needsYouLines, commandFor } = require('./progress');
+const { workspaceFingerprint, gitSha } = require('../tasks/feature/evidence-attestation');
 
 const RUNTIME_ROOT = runtimeRoot();
 const PROJECT_ROOT = projectRoot();
@@ -41,7 +42,7 @@ const DEFAULT_MAX_PARALLEL = 4;
 const WORKFLOW_FILE = path.join(RUNTIME_ROOT, 'ai', 'workflows', 'feature.yaml');
 const TERMINAL_OK = new Set(['pass', 'skipped']);
 const VALID_SCOPES = new Set(['auto', 'mobile', 'frontend', 'backend', 'all']);
-const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor']);
+const SUPPORTED_CONDITIONS = new Set(['mobile_or_ui_feature', 'behavior_preserving_refactor', 'whole_app_refactor', 'changed_since_build_test']);
 const PR_STAGE = 'pull-request';
 const PR_ROLE = 'pr-description';
 
@@ -205,6 +206,12 @@ function noopFailure(wf, roleName, worktree, baseSha = null) {
   return changedFileList(worktree, baseSha).length ? null : `${roleName} reported success but changed no files in the worktree`;
 }
 
+// The tree a build/test run saw: HEAD plus the uncommitted diff and untracked files. null when git cannot say.
+function treeFingerprint(root) { try { return `${gitSha(root)}:${workspaceFingerprint(root)}`; } catch { return null; } }
+function testsTree(stage) { return stage.id === 'build-test' || stage.repeats === 'build-test'; }
+// Build + Tests passed on this tree; a later change to it is tested again before verification.
+function recordTestedTree(id, stageId, fingerprint, dirtied) { withStateLock(stateFile(id), () => { const state = loadState(id); if (!state) return; const at = new Date().toISOString(); state.testedWorkspace = { stage: stageId, fingerprint, at, ...(dirtied ? { dirtied: true } : {}) }; (state.history ||= []).push({ at, actor: 'workflow-engine', kind: 'tested-workspace', phase: stageId, fingerprint, dirtied: !!dirtied }); state.updatedAt = at; writeJsonAtomic(stateFile(id), state); }); }
+
 function promoteArchitectureAsCode(id) {
   const source = runDir(id);
   const root = productRoot(id);
@@ -338,6 +345,12 @@ function evaluateCondition(name, id, state) {
   if (name === 'whole_app_refactor') {
     const value = readMode(id) === 'behavior_preserving_refactor' && readRefactorScope(id) === 'whole_app';
     return { known: true, value, reason: value ? 'whole-app behavior-preserving refactor' : 'not a whole-app refactor' };
+  }
+  if (name === 'changed_since_build_test') {
+    if (TERMINAL_OK.has(phaseStatus(state, 'verification'))) return { known: true, value: false, reason: 'verification passed before the post-fix re-run existed' };
+    const tested = state?.testedWorkspace?.fingerprint, current = treeFingerprint(productRoot(id));
+    if (!tested || !current) return { known: true, value: true, reason: tested ? 'the worktree fingerprint cannot be read' : 'no record of the tree Build + Tests passed on' };
+    return current === tested ? { known: true, value: false, reason: `fixes changed no files since ${state.testedWorkspace.stage} passed` } : { known: true, value: true, reason: `the worktree changed after ${state.testedWorkspace.stage} passed` };
   }
   if (name === 'mobile_or_ui_feature') {
     const requirement = state?.evidence?.mobileScreenshots?.requirement || 'unclassified';
@@ -850,6 +863,8 @@ function executeStage(id, wf, stage, args = {}) {
     const condition = evaluateCondition(stage.when, id, state);
     if (!condition.known) throw new Error(`${stage.id}: unknown condition ${stage.when}`);
     if (!condition.value) {
+      // A stopped stage can only be skipped once begun again (runs.js skips from pending or in_progress).
+      if (['fail', 'blocked'].includes(phaseStatus(state, stage.id))) phase(id, 'begin', stage.id, 'workflow-engine', `reconsidering: ${condition.reason}`);
       phase(id, 'skip', stage.id, 'workflow-engine', condition.reason);
       return 'skipped';
     }
@@ -895,7 +910,7 @@ function executeStage(id, wf, stage, args = {}) {
     if (unresolved.length) { console.log([`${id}: the plan waits on ${unresolved.length} unresolved conflict(s): ${unresolved.map(x => x.id).join(', ')}`, ...needsYouLines(needsYou(id, loadState(id), { root: RUNS, cli: process.env.AI_AGENTIC_CLI === '1', reasonMax: 2000 }))].join('\n')); return 'waiting'; }
   }
   if (stage.strategy === 'parallel') { executeParallel(id, wf, stage); return 'pass'; }
-  if (stage.id === 'build-test' && readMode(id)==='behavior_preserving_refactor') {
+  if (testsTree(stage) && readMode(id)==='behavior_preserving_refactor') {
     const baseline=readJson(path.join(runDir(id),'04-behavior-baseline.json'))||{};
     const matrix=verificationMatrix({files:changedFileList(productRoot(id),runBaseSha(id)),baseline});
     fs.mkdirSync(engineDir(id),{recursive:true});
@@ -913,6 +928,7 @@ function executeStage(id, wf, stage, args = {}) {
     return stopped;
   }
   phase(id, 'begin', stage.id, preferredExecutor, `engine executing ${roleName}`);
+  const treeBefore = testsTree(stage) ? treeFingerprint(productRoot(id)) : null;
   try {
     const artifact = stage.artifact || (wf.roles[roleName] || {}).artifact;
     const execution = executeRole(id, wf, stage, roleName, artifact);
@@ -942,6 +958,12 @@ function executeStage(id, wf, stage, args = {}) {
       fs.writeFileSync(path.join(engineDir(id),'refactor-telemetry.json'),JSON.stringify(telemetry,null,2)+'\n');
     }
     phase(id, 'complete', stage.id, execution.executor || preferredExecutor, `engine completed ${roleName}`);
+    // The tree it passed on, taken after the run, so its own pod install, pub get or codegen never re-trigger it.
+    if (testsTree(stage)) {
+      const after = treeFingerprint(productRoot(id)), dirtied = !!(treeBefore && after && treeBefore !== after);
+      try { recordTestedTree(id, stage.id, after, dirtied); } catch (err) { console.warn(`⚠ ${id}: the tree ${stage.id} passed on was not recorded (${err.message}); the post-fix re-run will run`); }
+      if (dirtied) console.warn(`⚠ ${id}: ${stage.id} changed the worktree (qa-execute is read-only); the tree it passed on is recorded`);
+    }
   } catch (e) {
     try { phase(id, 'fail', stage.id, preferredExecutor, e.message.slice(0, 180)); } catch { /* preserve original */ }
     throw e;
@@ -1535,6 +1557,120 @@ function conflictDecisionSelftest() {
   } finally { h.cleanup(); }
 }
 
+// Fixes edit code after Build + Tests passed: the post-fix re-run tests the
+// tree again only when it differs from the one a build/test pass saw.
+function postFixBuildTestSelftest() {
+  const h = engineHarness('engine-post-fix-');
+  try {
+    const calls = path.join(h.tmp, 'calls.log');
+    const stub = path.join(h.tmp, 'qa-executor.js');
+    fs.writeFileSync(stub, `
+      const fs = require('fs'), path = require('path');
+      const args = process.argv.slice(2), role = args[2], out = args[args.indexOf('--output-file') + 1];
+      fs.appendFileSync(${JSON.stringify(calls)}, role + '\\n');
+      const product = process.env.AI_WORKFLOW_PRODUCT_ROOT;
+      if (process.env.STUB_DIRTY === '1') fs.writeFileSync(path.join(product, 'generated.lock'), 'codegen\\n');
+      if (role === 'fixes') { fs.writeFileSync(out, '# Fixes\\n\\nNothing to change.\\n'); return; }
+      const status = process.env.STUB_BUILD || 'pass';
+      fs.writeFileSync(out, JSON.stringify({ schemaVersion: 1, runId: process.env.FEATURE_RUN_ID, status, commands: [{ command: 'flutter test', status, exitCode: status === 'pass' ? 0 : 1 }] }));
+    `);
+    const calledTimes = () => { try { return fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+    const stubEnv = extra => ({ AI_WORKFLOW_TEST_EXECUTOR: stub, ...extra });
+    const STAGE = 'post-fix-build-test';
+    const upTo = h.stages.slice(0, h.stages.indexOf(STAGE));
+    const fixesAttempts = [{ attempt: 1, ok: true, executor: 'codex', exitType: 'ok' }];
+    const seed = (id, done = upTo, extra = {}) => { h.prepare(id, done); const st = h.stateOf(id); st.executionAttempts = { fixes: { fixes: fixesAttempts } }; Object.assign(st, extra); h.writeState(id, st); fs.writeFileSync(path.join(h.states, id, '10-fixes.md'), '# Fixes\n\nRenamed a helper.\n'); };
+    const edit = text => fs.writeFileSync(path.join(h.product, 'a.txt'), text);
+    const once = (id, extra = {}) => h.resume(id, stubEnv(extra), { once: true });
+
+    // P1. Fixes changed nothing since Build + Tests passed: skipped, no agent.
+    seed('P-SAME', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    assert.strictEqual(once('P-SAME').result, 'skipped');
+    let st = h.stateOf('P-SAME');
+    assert.strictEqual(st.phases[STAGE].status, 'skipped');
+    assert.match(st.phases[STAGE].note, /fixes changed no files since build-test passed/);
+    assert.strictEqual(st.executionAttempts[STAGE], undefined);
+    assert.strictEqual(calledTimes(), 0, 'no agent for an unchanged tree');
+
+    // P2. Fixes edited a file: qa-execute runs again, into its own artifact and attempts.
+    seed('P-RUN', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    edit('two\n');
+    assert.strictEqual(once('P-RUN', { STUB_BUILD: 'pass' }).result, 'pass');
+    st = h.stateOf('P-RUN');
+    assert.strictEqual(st.phases[STAGE].status, 'pass');
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(h.states, 'P-RUN', '10-post-fix-build-test.json'), 'utf8')).status, 'pass');
+    assert.ok(!fs.existsSync(path.join(h.states, 'P-RUN', '08-build-test.json')), 'Build + Tests keeps its own artifact');
+    assert.strictEqual(st.executionAttempts[STAGE]['qa-execute'].length, 1);
+    assert.deepStrictEqual(st.executionAttempts.fixes, { fixes: fixesAttempts }, 'fixes keeps its attempts');
+    assert.deepStrictEqual([st.testedWorkspace.stage, st.testedWorkspace.fingerprint], [STAGE, treeFingerprint(h.product)]);
+    assert.ok(st.history.some(e => e.kind === 'phase' && e.phase === STAGE && e.action === 'complete'));
+    assert.ok(st.history.some(e => e.kind === 'tested-workspace' && e.phase === STAGE));
+    assert.ok(fs.readFileSync(path.join(h.states, 'P-RUN', 'engine', `${STAGE}-qa-execute.md`), 'utf8').includes('## 10-fixes.md'), 'the re-run sees what fixes did');
+    assert.strictEqual(nextEligibleStage(workflow(), st).id, 'architecture-compliance');
+
+    // P4. A rework of fixes resets the re-run that passed; unchanged fixes then skip it.
+    const reworked = h.retry('P-RUN', 'fixes');
+    assert.match(reworked, /post-fix-build-test \(downstream of fixes\)/);
+    st = h.stateOf('P-RUN');
+    assert.deepStrictEqual([st.phases.fixes.status, st.phases[STAGE].status], ['pending', 'pending']);
+    assert.ok(st.history.some(e => e.action === 'rework-downstream' && e.phase === STAGE));
+    assert.strictEqual(once('P-RUN').result, 'pass', 'fixes runs again');
+    assert.strictEqual(once('P-RUN').result, 'skipped');
+    assert.strictEqual(h.stateOf('P-RUN').phases[STAGE].status, 'skipped');
+
+    // P3. A red re-run fails like Build + Tests, is told once, and is bounded.
+    seed('P-FAIL', upTo, { testedWorkspace: { stage: 'build-test', fingerprint: treeFingerprint(h.product) } });
+    edit('three\n');
+    const failed = h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.match(failed.stdout, /^RESULT ERROR post-fix-build-test\/qa-execute: artifact\/worktree validation failed[^]*must be pass/m, failed.stdout);
+    st = h.stateOf('P-FAIL');
+    assert.deepStrictEqual([st.phases[STAGE].status, st.phases.fixes.status, st.phases.verification?.status || 'pending'], ['fail', 'pass', 'pending']);
+    let own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
+    assert.strictEqual(own.length, 1, JSON.stringify(own));
+    assert.match(own[0].body, /^Build \+ Tests \(after fixes\) failed: /);
+    const before = calledTimes();
+    const again = h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.strictEqual(again.result, 'fail', again.stdout);
+    assert.match(again.stdout, /post-fix-build-test stays fail — [^]*not re-attempted on resume/);
+    assert.strictEqual(calledTimes(), before, 'not attempted again');
+    assert.strictEqual(h.events().filter(e => e.key.startsWith('P-FAIL|')).length, 1);
+    const retried = h.retry('P-FAIL');
+    assert.match(retried, /post-fix-build-test/);
+    assert.doesNotMatch(retried, /\bfixes\b(?! \()/, 'a plain retry leaves fixes alone');
+    st = h.stateOf('P-FAIL');
+    assert.deepStrictEqual([st.phases.fixes.status, st.executionAttempts.fixes], ['pass', { fixes: fixesAttempts }]);
+    h.resume('P-FAIL', stubEnv({ STUB_BUILD: 'fail' }));
+    assert.strictEqual(h.stateOf('P-FAIL').phases[STAGE].repeatedFailure, 2);
+    own = h.events().filter(e => e.key.startsWith('P-FAIL|'));
+    assert.strictEqual(own.length, 2);
+    assert.match(own[1].body, /^Same failure as last time — this needs a fix outside Build \+ Tests \(after fixes\)\./);
+    // A failed re-run whose tree is back to the tested one is begun, then skipped.
+    edit('two\n');
+    assert.strictEqual(once('P-FAIL').result, 'skipped');
+    assert.strictEqual(h.stateOf('P-FAIL').phases[STAGE].status, 'skipped');
+
+    // P5. Build + Tests itself dirtied the tree (codegen): the tree after it is
+    // the tested one, so the post-fix re-run does not fire for it.
+    seed('P-DIRTY', h.stages.slice(0, h.stages.indexOf('build-test')));
+    const dirty = once('P-DIRTY', { STUB_BUILD: 'pass', STUB_DIRTY: '1' });
+    assert.strictEqual(dirty.result, 'pass', dirty.stdout);
+    assert.match(dirty.stderr, /build-test changed the worktree/);
+    st = h.stateOf('P-DIRTY');
+    assert.deepStrictEqual([st.testedWorkspace.stage, st.testedWorkspace.dirtied, st.testedWorkspace.fingerprint], ['build-test', true, treeFingerprint(h.product)]);
+    st.phases.reviews = { status: 'pass' }; st.phases.fixes = { status: 'pass' };
+    h.writeState('P-DIRTY', st);
+    assert.strictEqual(once('P-DIRTY').result, 'skipped');
+
+    // P6. Legacy runs: no recorded tree runs the re-run; a verified run skips it.
+    seed('P-LEGACY');
+    assert.strictEqual(once('P-LEGACY', { STUB_BUILD: 'pass' }).result, 'pass');
+    assert.strictEqual(h.stateOf('P-LEGACY').phases[STAGE].status, 'pass');
+    seed('P-VERIFIED', h.stages.filter(x => x !== STAGE && x !== 'pull-request'));
+    assert.strictEqual(once('P-VERIFIED').result, 'skipped');
+    assert.match(h.stateOf('P-VERIFIED').phases[STAGE].note, /verification passed before/);
+  } finally { h.cleanup(); }
+}
+
 function selftest() {
   {
     const assert = require('assert');
@@ -1567,6 +1703,36 @@ function selftest() {
     assert.deepStrictEqual(changedFileList(tmp, runBase), ['new.dart']);
     assert.deepStrictEqual(require('./subagent-context').changedFiles(tmp, runBase), ['new.dart'], 'the role context lists it too');
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  {
+    // The tree a build/test pass saw: HEAD, the diff and untracked files, not ignored ones.
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+    const git = (...a) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: tmp });
+    spawnSync('git', ['init', '-q', tmp]);
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'one\n'); fs.writeFileSync(path.join(tmp, '.gitignore'), 'build/\n');
+    git('add', '-A'); git('commit', '-qm', 'base');
+    const clean = treeFingerprint(tmp);
+    assert.ok(clean && clean === treeFingerprint(tmp), 'stable across calls');
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'two\n');
+    assert.notStrictEqual(treeFingerprint(tmp), clean, 'a tracked edit');
+    git('checkout', '--', 'a.txt');
+    assert.strictEqual(treeFingerprint(tmp), clean);
+    fs.mkdirSync(path.join(tmp, 'build')); fs.writeFileSync(path.join(tmp, 'build', 'out.bin'), 'x');
+    assert.strictEqual(treeFingerprint(tmp), clean, 'gitignored files do not count');
+    fs.writeFileSync(path.join(tmp, 'new.dart'), 'class A {}\n');
+    const untracked = treeFingerprint(tmp);
+    assert.notStrictEqual(untracked, clean, 'a new untracked file');
+    git('add', '-A'); git('commit', '-qm', 'second');
+    assert.ok(![clean, untracked].includes(treeFingerprint(tmp)), 'HEAD is part of it');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'not-git-'));
+    assert.strictEqual(treeFingerprint(plain), null, 'no git, no fingerprint');
+    fs.rmSync(plain, { recursive: true, force: true });
+    assert.strictEqual(testsTree({ id: 'build-test' }), true);
+    assert.strictEqual(testsTree(workflow().stages.find(x => x.id === 'post-fix-build-test')), true);
+    assert.strictEqual(testsTree({ id: 'fixes' }), false);
+    assert.strictEqual(SUPPORTED_CONDITIONS.has('changed_since_build_test'), true);
   }
   const wf = { stages: [{ id: 'a' }, { id: 'b', needs: ['a'] }, { id: 'c', needs: ['b'] }] };
   assert.strictEqual(nextEligibleStage(wf, { phases: {} }).id, 'a');
@@ -1616,6 +1782,7 @@ function selftest() {
   parallelStageSelftest();
   notificationSelftest();
   conflictDecisionSelftest();
+  postFixBuildTestSelftest();
   console.log('workflow engine selftest OK');
 }
 
@@ -1645,4 +1812,4 @@ if (require.main === module) {
   } catch (e) { console.error(`✗ ${e.message}`); process.exitCode = 1; }
 }
 
-module.exports = { workflow, executeStage, runLoop, toolFailure, claimRun, notifyRun, pullRequestCommand, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };
+module.exports = { workflow, executeStage, treeFingerprint, testsTree, recordTestedTree, runLoop, toolFailure, claimRun, notifyRun, pullRequestCommand, executeParallel, splitSequentialTail, parallelPidFile, parallelPgidFile, parallelCap, runRole, noopFailure, nextEligibleStage, depsSatisfied, analysisRoles, reviewRoles, detectStacks, inferScope, evaluateCondition, structuredSchema, productRoot, changedFileList, synthesizeAnalysis, readMode, readRefactorScope, promoteArchitectureAsCode };

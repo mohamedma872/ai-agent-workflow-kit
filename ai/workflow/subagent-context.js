@@ -4,7 +4,7 @@ const {retrieve,formatContext,loadRagConfig}=require('../rag/hybrid-rag');
 
 const INPUT_FILES={
  request:['00-request.md'], acceptance_criteria:['02-acceptance-criteria.md'], definition_of_done:['03-definition-of-done.md'],
- inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md'], fixes:['10-fixes.md'],
+ inspection:['04-inspection.md'], approved_plan:['06-plan.md'], implementation:['07-implementation.md'], build_test:['08-build-test.md','10-post-fix-build-test.md'], fixes:['10-fixes.md'],
  device_evidence:['device/mobile-device-qc.md']
 };
 // Where repositories keep their pull request template, in the order they are used.
