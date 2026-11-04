@@ -726,7 +726,12 @@ when the run completes and when `agentic pr` opens a PR. Each event is shown onc
 comes from `needsYou` in `ai/workflow/progress.js`, which the dashboard banner,
 `runs.js status` and `agentic runs` use too. `agentic progress` marks such runs
 `⚠` (and `●` while an engine runs), rings its bell, and starts a background
-`resume` (`R`) or `retry` + resume (`T`); approval stays a command. A failure
+`resume` (`R`), `retry` + resume (`T`) or, after a confirmation, approve +
+resume (`A`; `P` opens the plan), through `ai/workflow/engine-launch.js`, the
+launcher `agentic approve` uses too. Every needs-you ends with a `Commands:`
+block (`recoveryCommands` in progress.js: retry/resume/approve/select/resolve,
+status, doctor, the log and the stopped stage's artifact), and the approval
+gate shows a plan digest (counts, the head of the summary, the file). A failure
 whose normalised reason matches the previous one sets `repeatedFailure: n`
 (`ai/workflow/repeated-failure.js`) and is reported as "Same failure as last time
 — this needs a fix outside <stage>". `resume` leaves a stage the retry policy

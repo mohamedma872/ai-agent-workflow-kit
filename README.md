@@ -362,7 +362,7 @@ agentic switch FEAT-002       # make a feature the active run
  ↑↓ select · enter set active · R resume · T retry · c close · a all runs · r refresh · q quit
 ```
 
-`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
+`↑↓`/`j k` move between features, `enter` makes the highlighted feature the active run (so `agentic resume`, `approve` and `progress` default to it), `R` resumes the highlighted run in the background, `T` retries its failed or blocked stages and then resumes, `P` opens its plan, `A` approves the plan after a confirmation and then resumes, `c` closes a feature after a confirmation, `a` toggles finished runs, `r` refreshes, `q` quits. The view refreshes every second, and `*` marks the active run.
 
 A run that needs you is marked `⚠` in the list, and one whose engine is running `●`. The highlighted run gets a banner with the reason and the exact command:
 
@@ -372,9 +372,15 @@ A run that needs you is marked `⚠` in the list, and one whose engine is runnin
 │   mobile-evidence: mobile evidence is required but no Android/iOS     │
 │   target could be derived; use --platforms android,ios …              │
 │ → agentic retry FEAT-011                                              │
+│   Commands:                                                           │
+│     retry                  agentic retry FEAT-011                     │
+│     retry mobile-evidence  agentic retry FEAT-011 mobile-evidence     │
+│     status                 agentic status FEAT-011                    │
+│     doctor                 agentic doctor                             │
+│     log                    .agentic-runs/FEAT-011/engine/background…  │
 ```
 
-The engine sends the same text as a desktop notification (macOS `osascript`, Linux `notify-send`; local only), once per event, so it reaches you with the dashboard closed; the dashboard rings its bell. `R` and `T` start the engine detached, log to `<run>/engine/background.log`, and refuse while an engine for that run is alive. Plan approval has no key: run the `agentic approve <id>` the banner shows. Turn notifications off with `notifications: { desktop: false, bell: false }` in `.agentic/config.yaml`. "Same failure as last time" means the stage failed twice in a row for the same reason, so retrying it again will not help: the cause is outside that stage.
+The `Commands:` block lists everything that moves the run on, spelled as this install does, plus the engine log and the stopped stage's artifact when they exist; `agentic status <id>`, `agentic runs` and the engine's own stop message end with the same block. At the approval gate the banner shows the plan digest (counts, the head of the summary, the file); `P` opens the plan in `$PAGER` and `A` approves it after a `y`, then resumes in the background. The engine sends the same text as a desktop notification (macOS `osascript`, Linux `notify-send`; local only), once per event, so it reaches you with the dashboard closed; the dashboard rings its bell. `R`, `T` and `A` start the engine detached, log to `<run>/engine/background.log`, and refuse while an engine for that run is alive. Nothing approves without the confirmation; `agentic approve <id>` from a terminal does the same (`--wait` keeps the engine in the foreground, `--no-resume` approves only). Turn notifications off with `notifications: { desktop: false, bell: false }` in `.agentic/config.yaml`. "Same failure as last time" means the stage failed twice in a row for the same reason, so retrying it again will not help: the cause is outside that stage.
 
 Closing a feature whose verification has not passed records it as abandoned rather than complete, so an unfinished run never reads as done.
 
@@ -393,7 +399,7 @@ Once the run's pull request is open, the single-run view, `agentic status <id>` 
  🔗 Pull request: #7762 https://bitbucket.org/<workspace>/<repo>/pull-requests/7762
 ```
 
-When the stage was skipped (the default) or is blocked, the same line says how to open it: `Pull request: not opened — run: agentic pr <id>`.
+When the stage was skipped (the default) or is blocked, the same line says how to open it: `Pull request: not opened — run: agentic pr <id>`. A verified run with `pull_request` disabled reads as complete (100%, `Done`, the stage `skipped — pull_request disabled (open one with: agentic pr <id>)`) whether or not an engine recorded the skip.
 
 Details: [docs/progress-dashboard.md](docs/progress-dashboard.md).
 
@@ -449,7 +455,7 @@ agentic --project ~/projects/payment-backend \
 | `agentic doctor` | check runtime/project prerequisites |
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
-| `agentic approve <id>` | human approval of the implementation plan |
+| `agentic approve <id> [--no-resume\|--wait]` | show the plan digest, approve the plan and resume the engine in the background (`--wait`: in the foreground; `--no-resume`: approve only) |
 | `agentic retry <id> [role...]` | reset failed/blocked roles, conditional roles (`mobile-evidence`) or stages to pending and resume |
 | `agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]` | commit, push and open the run's pull request after verification (works while `pull_request` is disabled; a closed run needs `--reopen`) |
 | `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
@@ -1642,7 +1648,7 @@ Each step can be repeated. A resume after any partial failure, such as committed
 
 | `.agentic/config.yaml` | Default | Effect |
 |---|---|---|
-| `pull_request.enabled` | `false` | `true` opens the PR automatically after verification; anything else skips the stage (with the `agentic pr <id>` hint) |
+| `pull_request.enabled` | `false` | `true` opens the PR automatically after verification; anything else skips the stage (with the `agentic pr <id>` hint), and the views read a verified run as complete even before an engine records the skip |
 | `pull_request.provider` | `auto` | `github`, `bitbucket`, or `auto` to tell from the remote URL (`github.com`, `bitbucket.org`) |
 | `pull_request.remote` | `origin` | the git remote to push to |
 | `pull_request.base` | `auto` | the PR's base branch; `auto` is the branch the run's worktree was created from (older runs: `<remote>/HEAD`) |
