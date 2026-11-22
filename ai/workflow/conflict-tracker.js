@@ -31,8 +31,9 @@ function unresolvedBlocking(conflicts){return (conflicts||[]).filter(c=>c.status
 // plan still stopped until someone typed the same decision back.
 const CRITERION=/^[A-Za-z]{1,6}-?\d{1,4}[a-z]?$/;
 function settleByCriteria(conflicts,declared,bindingText,now=new Date()){
- const text=String(bindingText||'');
- const cited=id=>CRITERION.test(id)&&new RegExp(`(^|[^A-Za-z0-9-])${id.replace(/[-]/g,'\\-')}(?![A-Za-z0-9])`).test(text);
+ // Whole ids only (AC-1 is not AC-12): the text's tokens, never a pattern built from an id.
+ const tokens=new Set(String(bindingText||'').split(/[^A-Za-z0-9-]+/).map(t=>t.replace(/^-+|-+$/g,'')).filter(Boolean));
+ const cited=id=>CRITERION.test(id)&&tokens.has(id);
  const byPair=new Map((declared||[]).map(d=>[[d.findingA,d.findingB].sort().join('|'),d]));
  return (conflicts||[]).map(c=>{
   if(c.status==='resolved')return c;
