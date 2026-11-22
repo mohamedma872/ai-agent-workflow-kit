@@ -194,7 +194,7 @@ roles:
 
   conflict-arbitration:
     executor: claude
-    purpose: Read every specialist finding and declare where two of them materially disagree, referencing the specialists' own finding ids, so the plan gate can stop on a real conflict.
+    purpose: Read every specialist finding and declare where two of them materially disagree, referencing the specialists' own finding ids, so the plan gate can stop on a real conflict. When the run's own acceptance criteria, definition of done or earlier binding decisions already decide the disagreement, cite them in settledBy with the winning finding in prevails, so the engine settles it without asking a human; leave settledBy out only when a human must choose.
     read_only: true
     artifact: 05-analysis/arbitration.md
     artifact_schema: conflict-arbitration

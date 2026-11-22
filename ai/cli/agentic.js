@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { appiumLaunchPlan, launcherSpecFor, toolchainEnv } = require('../workflow/toolchain');
+const { openConflicts } = require('../workflow/conflict-tracker');
 
 const RUNTIME_ROOT = path.resolve(__dirname, '..', '..');
 const ENGINE = path.join(RUNTIME_ROOT, 'ai', 'workflow', 'engine.js');
@@ -438,7 +439,9 @@ Usage:
   agentic impact <run-id> --base <ref> --head <ref> [--prod <ref>] [--no-worktrees]
   agentic impact-report <run-id> [--json] [--output <dir>]
   agentic conflicts <run-id>       Specialist disagreements blocking the plan
-  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..."
+  agentic resolve <run-id> <conflict-id> --decision "..." --rationale "..." [--no-resume|--wait]
+                                   Decide a conflict; deciding the last open one resumes the run
+                                   in the background (--wait: in the foreground; --no-resume: decide only)
   agentic rag --query "..." [--role security] [--json]
   agentic worktree <run-id>
   agentic cleanup <run-id> [--force]
@@ -554,6 +557,34 @@ function selftest() {
   const only = cli(['approve', 'GATE-ONLY', '--no-resume']);
   assert.strictEqual(only.status, 0, only.stderr);
   assert.strictEqual(only.stdout.trim().split('\n').at(-1), '→ next: agentic resume GATE-ONLY');
+  // resolve: a readable line, no resume while a conflict is still open, the
+  // launcher once the last one is decided (refused here by the live record),
+  // and --no-resume names the resume instead of starting it.
+  const conflicted = id => {
+    gated(id);
+    // Conflicts hold the run before its plan, so the plan has not run yet.
+    const file = path.join(states, id, 'state.json'), state = loadJson(file);
+    state.phases.plan = { status: 'pending' }; fs.writeFileSync(file, JSON.stringify(state));
+    const dir = path.join(states, id, '05-analysis'); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts: [
+      { id: 'CONFLICT-001', topic: 'storage', findings: ['SEC-1', 'ARCH-2'], status: 'unresolved' },
+      { id: 'CONFLICT-002', topic: 'cache', findings: ['SEC-1', 'ARCH-3'], status: 'unresolved' }] }));
+  };
+  const decide = (id, cid, ...flags) => cli(['resolve', id, cid, '--decision', 'keep secure storage', '--rationale', 'PII', ...flags]);
+  conflicted('CONF-E2E');
+  const first = decide('CONF-E2E', 'CONFLICT-001');
+  assert.strictEqual(first.status, 0, first.stderr);
+  assert.match(first.stdout, /^✓ CONFLICT-001 decided: keep secure storage\n1 conflict\(s\) still open: CONFLICT-002/, first.stdout);
+  assert.ok(!/resuming|already running/.test(first.stdout + first.stderr), 'no resume while a conflict is open');
+  const last = decide('CONF-E2E', 'CONFLICT-002');
+  assert.match(last.stdout, /✓ CONFLICT-002 decided[\s\S]*already running/, last.stdout + last.stderr);
+  assert.ok(!/agentic resume/.test(last.stdout), 'the resume is started, not named');
+  conflicted('CONF-ONLY');
+  decide('CONF-ONLY', 'CONFLICT-001', '--no-resume');
+  const named = decide('CONF-ONLY', 'CONFLICT-002', '--no-resume');
+  assert.strictEqual(named.status, 0, named.stderr);
+  assert.match(named.stdout, /All conflicts resolved — the plan stage can run: agentic resume CONF-ONLY/);
+  assert.match(cli(['help']).stdout, /agentic resolve <run-id> <conflict-id> --decision "\.\.\." --rationale "\.\.\." \[--no-resume\|--wait\]/);
 
   fs.rmSync(temp, { recursive: true, force: true });
   console.log('standalone CLI selftest OK');
@@ -697,9 +728,17 @@ function main() {
     if (!args[1]) throw new Error('conflicts requires a run id');
     return runNode(CONFLICTS, ['list', ...args.slice(1)], project);
   }
+  // Deciding the last open conflict resumes the run in the background, as
+  // approve does: before, every resolve ended with a foreground `agentic resume`
+  // to type. --wait resumes in the foreground; --no-resume records the decision only.
   if (command === 'resolve') {
-    if (!args[1] || !args[2]) throw new Error('resolve requires <run-id> <conflict-id> --decision "..." --rationale "..."');
-    return runNode(CONFLICTS, ['resolve', ...args.slice(1)], project);
+    if (!args[1] || !args[2] || args[1].startsWith('--')) throw new Error('resolve requires <run-id> <conflict-id> --decision "..." --rationale "..." [--no-resume|--wait]');
+    const wait = args.includes('--wait'), noResume = args.includes('--no-resume');
+    const passed = args.slice(1).filter(a => a !== '--wait' && a !== '--no-resume');
+    runNode(CONFLICTS, ['resolve', ...passed], project, noResume ? {} : { env: { AI_AGENTIC_RESOLVE_CONTINUES: '1' } });
+    if (noResume || openConflicts(path.join(stateRoot(project), args[1])).length) return;
+    if (wait) return runNode(ENGINE, ['resume', args[1]], project);
+    return runNode(ENGINE_LAUNCH, ['resume', args[1]], project);
   }
   if (command === 'rag') return runNode(RAG, ['--root', project, ...args.slice(1)], project);
   if (command === 'worktree') {

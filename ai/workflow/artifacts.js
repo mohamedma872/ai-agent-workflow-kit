@@ -398,7 +398,7 @@ function renderMarkdown(name, data) {
     lines.push(`Read ${(data.consideredAgents || []).length} specialist artifact(s): ${(data.consideredAgents || []).join(', ') || '(none recorded)'}`, '');
     if (!rows.length) { lines.push('No material disagreement between specialists.'); return lines.join('\n').trim() + '\n'; }
     lines.push('| topic | severity | findings | why they cannot both be followed |', '|---|---|---|---|');
-    for (const c of rows) lines.push(`| ${escapeCell(c.topic)} | ${c.severity || '—'} | ${escapeCell(c.findingA)} vs ${escapeCell(c.findingB)} | ${escapeCell(c.reason)} |`);
+    for (const c of rows) lines.push(`| ${escapeCell(c.topic)} | ${c.severity || '—'} | ${escapeCell(c.findingA)} vs ${escapeCell(c.findingB)} | ${escapeCell(c.reason)}${Array.isArray(c.settledBy) && c.settledBy.length ? ` — settled by ${escapeCell(c.settledBy.join(', '))} for ${escapeCell(c.prevails || '?')}` : ''} |`);
     return lines.join('\n').trim() + '\n';
   }
   if (name === 'subagent-findings') {
