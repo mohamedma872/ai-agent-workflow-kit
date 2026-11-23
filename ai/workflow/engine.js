@@ -7,7 +7,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { selectAnalysis, selectReviews } = require('./subagent-selector');
 const { synthesize } = require('./finding-synthesis');
-const { detectConflicts, unresolvedBlocking } = require('./conflict-tracker');
+const { detectConflicts, unresolvedBlocking, settleByCriteria } = require('./conflict-tracker');
 const { roleContract, assertRequiredMcps } = require('./subagent-contracts');
 const { buildRoleContext, prTemplate, changedFiles, resolvedConflicts } = require('./subagent-context');
 const { detectRefactorMode } = require('./refactor-mode');
@@ -18,7 +18,7 @@ const { contractDiff, invariantProblems } = require('./refactor-contract-diff');
 const { refactorTelemetry } = require('./refactor-telemetry');
 const yaml = require('js-yaml');
 const { materialize, sidecarForMarkdown, schemaContract, validateArtifactFile } = require('./artifacts');
-const { resolveExecutionPolicy, classifyFailure, executeWithPolicy, resumeDecision } = require('./execution-policy');
+const { resolveExecutionPolicy, classifyFailure, executeWithPolicy, resumeDecision, readExecutorLimits, recordExecutorLimit } = require('./execution-policy');
 const { attemptsFor, recordAttempt } = require('./attempts');
 const { ensure: ensureWorktree, inspect: inspectWorktree, refresh: refreshWorktree, cleanup: cleanupWorktree, metadataFile: worktreeMetadataFile } = require('./worktree');
 const { runtimeRoot, projectRoot, stateRoot, relativeStatePath } = require('./paths');
@@ -302,6 +302,13 @@ function declaredConflicts(id) {
   try { return JSON.parse(fs.readFileSync(path.join(runDir(id), '05-analysis', 'arbitration.json'), 'utf8')).conflicts || []; }
   catch { return []; }
 }
+// What a conflict may be settled by: the run's request, requirements, acceptance
+// criteria, definition of done and inspection, the artifacts before analysis.
+function bindingCriteriaText(id) {
+  let names = [];
+  try { names = fs.readdirSync(runDir(id)).filter(f => /^0[0-4]-.*\.(md|json)$/.test(f)).sort(); } catch { return ''; }
+  return names.map(f => { try { return fs.readFileSync(path.join(runDir(id), f), 'utf8'); } catch { return ''; } }).join('\n');
+}
 function synthesizeAnalysis(id) {
   const sources = loadFindingArtifacts(id); if (!sources.length) return { findings: [], conflicts: [] };
   const findings = synthesize(sources);
@@ -327,6 +334,7 @@ function synthesizeAnalysis(id) {
     // id on a carried decision can name a different, still open, pair.
     conflicts = conflicts.map(x => { const prev = resolved.get(x.findings.slice().sort().join('|')); return prev ? { ...x, status: 'resolved', resolution: prev.resolution } : x; });
   } catch { /* first synthesis */ }
+  conflicts = settleByCriteria(conflicts, declaredConflicts(id), bindingCriteriaText(id));
   fs.writeFileSync(path.join(dir, 'synthesis.json'), JSON.stringify({ version: 1, findings }, null, 2) + '\n');
   fs.writeFileSync(path.join(dir, 'conflicts.json'), JSON.stringify({ schemaVersion: 1, conflicts }, null, 2) + '\n');
   return { findings, conflicts };
@@ -451,6 +459,8 @@ function executeRole(id, wf, stage, roleName, output) {
   fs.writeFileSync(prompt, body);
 
   const policy = resolveExecutionPolicy(wf, stage, roleName);
+  // Executors another run already found out of quota go last (execution-policy.js).
+  policy.limited = new Set(Object.keys(readExecutorLimits(RUNS)));
   const state = loadState(id) || {};
   const previous = attemptsFor(state, stage.id, roleName);
   const worktree = productRoot(id);
@@ -483,7 +493,11 @@ function executeRole(id, wf, stage, roleName, output) {
       if (rawOutput) { try { fs.unlinkSync(rawOutput); } catch { /* no output */ } }
       // A timeout says so in words: Node's own "spawnSync <node> ETIMEDOUT" names
       // neither the agent nor the cause, and repeated-failure.js does not compare it.
+      // A usage limit is recorded for every run on this machine, and named in
+      // the reason: "codex exited 1" told the human nothing.
+      const limit = exitType === 'unavailable' ? recordExecutorLimit(RUNS, executor, `${child.stderr || ''}\n${child.stdout || ''}`) : null;
       const reason = exitType === 'timeout' ? `${executor} timed out after ${Math.max(1, Math.ceil(timeoutMs / 60000))} min`
+        : limit ? `${executor} is out of quota until ${new Date(limit.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${limit.reason}`
         : child.error?.message || `${executor} exited ${child.status ?? child.signal}`;
       return { ok: false, exitType, reason, attemptId };
     }

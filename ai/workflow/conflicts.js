@@ -32,6 +32,8 @@ function renderList(items,{id,cli}={}){
   lines.push(`${c.status==='resolved'?'✓':'✗'} ${c.id}  topic: ${c.topic||'—'}  (${c.status})`);
   for(const p of c.positions) lines.push(`    ${p.id} · ${p.agent||'?'} · ${p.severity||'?'} — ${p.title||'(finding not found in artifacts)'}${p.recommendation?`\n        → ${p.recommendation}`:''}`);
   if(c.resolution) lines.push(`    decided: ${c.resolution.decision} (${c.resolution.owner}) — ${c.resolution.rationale}`);
+  // Settled by the run's own criteria (conflict-tracker.js); a human may still decide otherwise.
+  if(c.resolution?.owner==='criteria'&&id) lines.push(`    to decide otherwise: ${commandFor('resolve',id,cli,c.id)}`);
   lines.push('');
  }
  const pending=unresolvedBlocking(items), open=pending.length;
@@ -52,6 +54,14 @@ function resolveData(d,conflictId,{decision,rationale,owner}){
 function planGuard(id,state){
  const st=state?.phases?.plan?.status;
  if(['pass','skipped'].includes(st)) throw new Error(`the plan already ${st==='pass'?'passed':'was skipped'}, so a decision now would contradict it. Rework the plan first (${process.env.AI_AGENTIC_CLI==='1'?'agentic':'node ai/tasks/feature/runs.js'} retry ${id} plan), then resolve, then: ${commandFor('resume',id,process.env.AI_AGENTIC_CLI==='1')}`);
+}
+// What a human reads after deciding one conflict: the decision, then either the
+// ones still open or the resume (which `agentic resolve` starts itself, like approve).
+function resolvedLine(c,id,open,{cli,continues}={}){
+ const lines=[`✓ ${c.id} decided: ${c.resolution.decision}`];
+ if(open.length)lines.push(`${open.length} conflict(s) still open: ${open.map(x=>x.id).join(', ')} — decide ${open.length===1?'it':'each'} with:\n  ${commandFor('resolve',id,cli,open.length===1?open[0].id:'<conflict-id>')}`);
+ else if(!continues)lines.push(`All conflicts resolved — the plan stage can run: ${commandFor('resume',id,cli)}`);
+ return lines.join('\n');
 }
 function resolve(id,conflictId,opts){
  let state=null; try{state=JSON.parse(fs.readFileSync(path.join(RUNS,id,'state.json'),'utf8'));}catch{}
@@ -83,6 +93,10 @@ function selftest(){
  assert.match(nodeList,/node ai\/workflow\/conflicts\.js resolve FEAT-1/);assert.match(nodeList,/node ai\/workflow\/engine\.js resume FEAT-1/);
  assert.match(renderList([...openItems,{id:'CONFLICT-002',status:'unresolved',positions:[]}],{id:'FEAT-1',cli:true}),/^2 unresolved .*\n  agentic resolve FEAT-1 <conflict-id> --decision/m);
  assert.match(renderList([{...openItems[0],status:'resolved'}],{id:'FEAT-1',cli:true}),/All conflicts resolved — the plan stage can run: agentic resume FEAT-1/);
+ const decided={id:'CONFLICT-001',resolution:{decision:'keep secure storage'}};
+ assert.equal(resolvedLine(decided,'FEAT-1',[{id:'CONFLICT-002'}],{cli:true}),'✓ CONFLICT-001 decided: keep secure storage\n1 conflict(s) still open: CONFLICT-002 — decide it with:\n  agentic resolve FEAT-1 CONFLICT-002 --decision "..." --rationale "..."');
+ assert.equal(resolvedLine(decided,'FEAT-1',[],{cli:true,continues:true}),'✓ CONFLICT-001 decided: keep secure storage','agentic resolve starts the resume itself');
+ assert.match(resolvedLine(decided,'FEAT-1',[],{cli:true}),/the plan stage can run: agentic resume FEAT-1$/);
  console.log('conflicts resolution selftest OK');
 }
 function args(argv){const o={_:[]};for(let i=0;i<argv.length;i++){const a=argv[i];if(a.startsWith('--')){o[a.slice(2)]=argv[++i];}else o._.push(a);}return o;}
@@ -91,8 +105,10 @@ if(require.main===module){try{
  else{
   const a=args(process.argv.slice(2));const [cmd,id,cid]=a._;
   if(cmd==='list'){const items=list(id);console.log(a.json?JSON.stringify(items,null,2):renderList(items,{id,cli:process.env.AI_AGENTIC_CLI==='1'}));}
-  else if(cmd==='resolve')console.log(JSON.stringify(resolve(id,cid,{...a,owner:a.owner||'human'}),null,2));
+  else if(cmd==='resolve'){const c=resolve(id,cid,{...a,owner:a.owner||'human'});const cli=process.env.AI_AGENTIC_CLI==='1';
+   if(!cli&&!a.text){console.log(JSON.stringify(c,null,2));}
+   else console.log(resolvedLine(c,id,unresolvedBlocking(load(id).conflicts),{cli,continues:process.env.AI_AGENTIC_RESOLVE_CONTINUES==='1'}));}
   else throw new Error('usage: conflicts.js list <run> [--json] | resolve <run> <conflict-id> --decision TEXT --rationale TEXT [--owner NAME]');
  }
 }catch(e){console.error('✗ '+e.message);process.exitCode=1;}}
-module.exports={resolve,resolveData,planGuard,list,renderList,findingIndex};
+module.exports={resolve,resolvedLine,resolveData,planGuard,list,renderList,findingIndex};

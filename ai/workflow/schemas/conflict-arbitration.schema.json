@@ -23,7 +23,9 @@
           "findingB": {"type": "string", "minLength": 1, "description": "The finding id it materially disagrees with"},
           "topic": {"type": "string", "minLength": 2, "description": "Short slug for what is in dispute, e.g. token-storage"},
           "reason": {"type": "string", "minLength": 20, "description": "Why the two recommendations cannot both be followed"},
-          "severity": {"enum": ["critical", "high", "medium", "low"]}
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "settledBy": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z]{1,6}-?[0-9]{1,4}[a-z]?$"}, "description": "When the run's request, requirements, acceptance criteria, definition of done or inspection decisions already decide which side wins, the ids that decide it, exactly as written there (e.g. AC-12, DoD-13, D9). The engine then records the conflict as settled by those criteria instead of stopping for a human. Leave it out when the criteria do not decide it and a human must choose."},
+          "prevails": {"type": "string", "minLength": 1, "description": "With settledBy: the finding id (findingA or findingB) the cited criteria side with."}
         }
       }
     },

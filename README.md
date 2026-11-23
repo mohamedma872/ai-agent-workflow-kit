@@ -1,7 +1,7 @@
 # AI Agent Workflow Runtime
 
 [![CI](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/mohamedma872/ai-agent-workflow-kit/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-1.9.35-blue)
+![Runtime](https://img.shields.io/badge/runtime-1.9.36-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -231,7 +231,7 @@ agentic version
 Current runtime:
 
 ```text
-1.9.35
+1.9.36
 ```
 
 ### 2. Initialize a project
@@ -456,6 +456,7 @@ agentic --project ~/projects/payment-backend \
 | `agentic feature <id> --request "..."` | start a feature workflow |
 | `agentic resume <id>` | resume a paused workflow |
 | `agentic approve <id> [--no-resume\|--wait]` | show the plan digest, approve the plan and resume the engine in the background (`--wait`: in the foreground; `--no-resume`: approve only) |
+| `agentic resolve <id> <conflict-id> --decision "..." --rationale "..." [--no-resume\|--wait]` | decide a specialist conflict; deciding the last open one resumes the run in the background |
 | `agentic retry <id> [role...]` | reset failed/blocked roles, conditional roles (`mobile-evidence`) or stages to pending and resume |
 | `agentic pr <id> [--base <branch>] [--branch <name>] [--draft] [--dry-run] [--reopen]` | commit, push and open the run's pull request after verification (works while `pull_request` is disabled; a closed run needs `--reopen`) |
 | `agentic progress [<id>] [--watch]` | dashboard for all in-progress features, or one run |
@@ -1626,10 +1627,13 @@ Each role runs in its own process group, so stopping the stage also stops the ag
 
 One engine drives a run at a time. While `start`, `resume`, `run`, `run-next` or `pr` works on a run, `engine/engine.pid` names it. A second engine for the run refuses to start and names the owner, and `retry` refuses until it stops. A role or stage whose retry policy will not re-attempt it (a deterministic failure, attempts used up) is left as it is by `resume`, with its reason; `retry` resets it.
 
+An executor that cannot run at all (a usage limit, not installed, wrote nothing) does not use up an attempt: the role moves to its fallback with its full budget. A usage limit is recorded in `.agentic-runs/_executor-limits.json` until the reset time the executor printed (or an hour), and every run on the machine goes straight to the fallback until then.
+
 | Setting | Where | Effect |
 |---|---|---|
 | `AI_WORKFLOW_MAX_PARALLEL` | environment | Most roles of one stage running at once. Default `4`. `1` runs them one at a time and stops at the first failure, as before 1.9.30. A value that is not a whole number of at least 1 also means one at a time, with a warning. |
 | `max_parallel` | a stage in `ai/workflows/feature.yaml` | Same, for that stage only. Overrides the environment variable. Not set by default. |
+| `AI_WORKFLOW_USER_PLUGINS` | environment | `1` lets engine-launched claude agents load the plugins you enabled in your own Claude Code settings. By default they run with every such plugin switched off; your settings hooks still run. |
 
 Each extra role at once is one more agent session at the same moment, so a higher cap uses more of your rate limit and machine. It doesn't change total cost.
 
@@ -1781,7 +1785,7 @@ ai/runtime-version.json
 Current:
 
 ```text
-runtimeVersion         1.9.35
+runtimeVersion         1.9.36
 workflowFormatVersion  1
 artifactSchemaVersion  1
 releaseChannel         stable
@@ -1977,6 +1981,7 @@ Read-only agents do not get write access.
 Undeclared MCPs are not available to a role.
 Parallel findings are synthesized before planning.
 Explicit disagreements become explicit conflicts.
+Conflicts the run's own criteria already decide are settled by those criteria, cited by id.
 Unresolved blocking conflicts stop progression.
 Resolved conflict decisions bind the plan, which cites every one.
 Mobile evidence must belong to the exact tested build.

@@ -308,7 +308,7 @@ function execute(workflow, agents, roleName, args) {
   const activity = args['activity-file'] && typeof args['activity-file'] === 'string' ? path.resolve(args['activity-file']) : null;
   const template = (activity && resolved.agent.stream_command) || resolved.agent.command || [];
   const argv = template.map(a => fill(a, { prompt, budget, cwd, last_message_file: lastMessageFile }));
-  if (process.env.AI_AGENTIC_CLI === '1' && resolved.agentName === 'claude') argv.push('--settings', path.join(ROOT, 'ai', 'cli', 'claude-settings.json'));
+  if (process.env.AI_AGENTIC_CLI === '1' && resolved.agentName === 'claude') argv.push('--settings', engineClaudeSettings(tempDir, cwd));
   if (!argv.length) throw new Error(`executor "${resolved.agentName}" has no command`);
   const summary = { workflow: workflow.name, role: roleName, executor: resolved.agentName, runId, command: argv.map(a => /\s/.test(a) ? JSON.stringify(a.length > 120 ? `${a.slice(0, 117)}…` : a) : a).join(' ') };
   if (args['dry-run']) { console.log(args.json ? JSON.stringify(summary, null, 2) : `${workflow.name}/${roleName} → ${resolved.agentName}${runId ? ` [run ${runId}]` : ''}\n${summary.command}`); return 0; }
@@ -339,6 +339,32 @@ function finishExecution(resolved, args, budget, lastMessageFile, res) {
   if (!args['output-file'] || args.print) process.stdout.write(answer.endsWith('\n') ? answer : `${answer}\n`);
   if (res.error) throw res.error;
   return typeof res.status === 'number' ? res.status : 1;
+}
+
+// The settings every engine-launched claude runs with: the guard hook, and the
+// human's own plugins switched off. Plugins are personal tooling, not part of
+// any role: claude-mem started a worker on every agent (71 "SessionEnd hook …
+// Hook cancelled" lines over four parallel runs) and recorded the agents'
+// sessions as the human's memory; figma, chrome-devtools and the rest added
+// MCP servers no role declared. Hooks in settings.json (the human's own guard)
+// are not plugins and still run. AI_WORKFLOW_USER_PLUGINS=1 keeps the plugins.
+function enabledPluginIds(cwd, home = os.homedir()) {
+  const ids = new Set();
+  for (const file of [path.join(home, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.local.json')]) {
+    try { for (const [id, on] of Object.entries(JSON.parse(fs.readFileSync(file, 'utf8')).enabledPlugins || {})) if (on) ids.add(id); } catch { /* absent or unreadable */ }
+  }
+  return [...ids].sort();
+}
+function engineClaudeSettingsData(cwd, env = process.env, home = os.homedir()) {
+  const base = JSON.parse(fs.readFileSync(path.join(ROOT, 'ai', 'cli', 'claude-settings.json'), 'utf8'));
+  if (env.AI_WORKFLOW_USER_PLUGINS === '1') return base;
+  const off = enabledPluginIds(cwd, home);
+  return off.length ? { ...base, enabledPlugins: Object.fromEntries(off.map(id => [id, false])) } : base;
+}
+function engineClaudeSettings(tempDir, cwd) {
+  const file = path.join(tempDir, 'claude-settings.json');
+  fs.writeFileSync(file, JSON.stringify(engineClaudeSettingsData(cwd), null, 2));
+  return file;
 }
 
 function selftest() {
@@ -408,6 +434,21 @@ function selftest() {
   const streamed = `{"type":"system","subtype":"init"}\n{"type":"assistant","message":{"content":[]}}\n${JSON.stringify({ type: 'result', result: 'the artifact', total_cost_usd: 0.1 })}\n`;
   assert.strictEqual(finalAnswer({ result: { json_field: 'result' } }, streamed, '/nonexistent'), 'the artifact');
   assert.strictEqual(finalAnswer({ result: { json_field: 'result' } }, '{"result":"whole"}', '/nonexistent'), 'whole');
+  // Engine claude agents run with the human's plugins off, the guard hook kept.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'router-home-')), proj = fs.mkdtempSync(path.join(os.tmpdir(), 'router-proj-'));
+    fs.mkdirSync(path.join(home, '.claude')); fs.mkdirSync(path.join(proj, '.claude'));
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true, 'github@official': false }, hooks: { PreToolUse: [] } }));
+    fs.writeFileSync(path.join(proj, '.claude', 'settings.local.json'), JSON.stringify({ enabledPlugins: { 'figma@official': true } }));
+    const data = engineClaudeSettingsData(proj, {}, home);
+    assert.deepStrictEqual(data.enabledPlugins, { 'claude-mem@thedotmack': false, 'figma@official': false }, 'every enabled plugin is switched off, disabled ones left alone');
+    assert.strictEqual(data.hooks.PreToolUse[0].hooks[0].command, 'agentic guard-hook', 'the guard hook stays');
+    assert.strictEqual(engineClaudeSettingsData(proj, { AI_WORKFLOW_USER_PLUGINS: '1' }, home).enabledPlugins, undefined, 'opt back in');
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{broken');
+    fs.rmSync(path.join(proj, '.claude', 'settings.local.json'));
+    assert.strictEqual(engineClaudeSettingsData(proj, {}, home).enabledPlugins, undefined, 'unreadable or no settings: nothing to switch off');
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(proj, { recursive: true, force: true });
+  }
   return streamingSelftest(assert).then(() => console.log('router selftest OK'));
 }
 
@@ -493,4 +534,4 @@ if (require.main === module) {
   } catch (e) { fail(e.message); }
 }
 
-module.exports = { noPushGitEnv, executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, loadRoleStandards, safeRunId };
+module.exports = { engineClaudeSettingsData, noPushGitEnv, executorError, loadExecutorPrefs, applyExecutorPrefs, listWorkflows, loadWorkflow, loadAgents, resolveRole, validateWorkflow, buildPrompt, loadRoleStandards, safeRunId };
